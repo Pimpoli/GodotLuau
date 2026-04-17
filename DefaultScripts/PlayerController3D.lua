@@ -23,7 +23,7 @@ local CAMERA_MODE = 1  -- ← Cambia este número (1, 2 o 3)
 -- └──────────────────────────────────────────────────────────────┘
 local WALK_SPEED  = 16    -- Velocidad normal caminando (studs/segundo)
 local RUN_SPEED   = 24    -- Velocidad corriendo (mantén LeftShift)
-local JUMP_POWER  = 50    -- Fuerza del salto (más alto = salta más)
+local JUMP_POWER  = 20    -- Fuerza del salto (más alto = salta más)
 
 -- ══════════════════════════════════════════════════════════════════
 --  INICIO DEL SCRIPT - Obtener referencias del motor
