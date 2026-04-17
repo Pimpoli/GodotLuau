@@ -67,7 +67,6 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<ServerScriptService>();
         ClassDB::register_class<StarterCharacterScripts>();
         ClassDB::register_class<StarterPlayerScripts>();
-        ClassDB::register_class<StarterCharacter>();
         ClassDB::register_class<StarterPlayer>();
         ClassDB::register_class<StarterGui>();
         ClassDB::register_class<StarterPack>();

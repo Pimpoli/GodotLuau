@@ -152,7 +152,7 @@ local ConsoleModule = require(script.ConsoleModule)
 -- └────────────────────────────────────────────────────────────────┘
 ControlModule.Platform  = "PC"  -- Forzar plataforma (o "" para auto)
 ControlModule.WalkSpeed = 16
-ControlModule.JumpPower = 50
+ControlModule.JumpPower = 20
 
 local active = PCModule
 
@@ -206,7 +206,7 @@ local PCModule = {}
 -- └────────────────────────────────────────────────────────────────┘
 PCModule.WalkSpeed  = 16
 PCModule.RunSpeed   = 24
-PCModule.JumpPower  = 50
+PCModule.JumpPower  = 20
 PCModule.AutoRotate = true  -- Girar el personaje hacia la direccion del movimiento
 
 function PCModule:Initialize()
@@ -241,7 +241,7 @@ local MobileModule = {}
 -- │             "Tap"       = tocar para moverse al punto         │
 -- └────────────────────────────────────────────────────────────────┘
 MobileModule.WalkSpeed = 16
-MobileModule.JumpPower = 50
+MobileModule.JumpPower = 20
 MobileModule.TouchMode = "Joystick"
 
 function MobileModule:Initialize()
@@ -274,7 +274,7 @@ local ConsoleModule = {}
 -- │  Deadzone: zona muerta del joystick (0.0 a 1.0)               │
 -- └────────────────────────────────────────────────────────────────┘
 ConsoleModule.WalkSpeed = 16
-ConsoleModule.JumpPower = 50
+ConsoleModule.JumpPower = 20
 ConsoleModule.Deadzone  = 0.2  -- Ignorar movimientos menores a este valor
 
 function ConsoleModule:Initialize()
@@ -307,7 +307,7 @@ local TextChatService = game:GetService("TextChatService")
 -- └────────────────────────────────────────────────────────────────┘
 ChatModule.MaxMessages  = 50     -- Maximo de mensajes visibles
 ChatModule.FadeDelay    = 8.0    -- Segundos hasta desvanecer mensajes
-ChatModule.FilterWords  = false  -- Filtrar palabras inapropiadas
+ChatModule.FilterWords  = true  -- Filtrar palabras inapropiadas
 
 local messages  = {}
 local chat_open = false
@@ -376,7 +376,7 @@ local CameraModule = {}
 -- │  2 = Suave     → Sigue con un pequeño retraso elegante       │
 -- │  3 = Combinada → Retraso al moverse, centra al detenerse     │
 -- └───────────────────────────────────────────────────────────────┘
-CameraModule.Mode = 1   -- ← Cambia aquí el modo de cámara
+CameraModule.Mode = 3   -- ← Cambia aquí el modo de cámara
 
 -- Aplica el modo de cámara al jugador al iniciar
 function CameraModule:Apply(player)
