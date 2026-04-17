@@ -81,16 +81,22 @@ private:
         return dp[la][lb];
     }
 
-    static int fuzzy_match_score(const String& filter, const String& target) {
-        if (filter.is_empty()) return 100;
-        std::string f=filter.utf8().get_data(), t=target.utf8().get_data();
-        std::string fl=filter.to_lower().utf8().get_data(), tl=target.to_lower().utf8().get_data();
-        int score=0, fi=0;
-        for(int i=0;i<(int)t.size()&&fi<(int)f.size();i++) {
-            if(tl[i]==fl[fi]) { score += std::isupper(t[i])&&std::islower(f[fi]) ? 15 : 5; fi++; }
+    static int fuzzy_match_score(const std::string& f, const std::string& fl, const String& target) {
+        if (f.empty()) return 100;
+        std::string t = target.utf8().get_data();
+        std::string tl = target.to_lower().utf8().get_data();
+        int score = 0, fi = 0;
+        for(int i=0; i<(int)t.size() && fi<(int)f.size(); i++) {
+            if(tl[i] == fl[fi]) { 
+                score += std::isupper(t[i]) && std::islower(f[fi]) ? 15 : 5; 
+                fi++; 
+            }
         }
-        if(fi==(int)f.size()) return score+20;
-        if(f.size()>2&&t.size()>2) { int d=levenshtein(fl,tl); if(d<=2) return 10-d; }
+        if(fi == (int)f.size()) return score+20;
+        if(f.size() > 2 && t.size() > 2) { 
+            int d = levenshtein(fl, tl); 
+            if(d <= 2) return 10-d; 
+        }
         return 0;
     }
 
@@ -127,19 +133,35 @@ private:
             if(lang=="en") return p[0];
             if(lang=="es") return p[1];
             if(lang=="pt") return p[2];
-            return String("English: ") + p[0] + "\nEspañol: " + p[1] + "\nPortuguês: " + p[2];
+            String res = String("English: ");
+            res += p[0];
+            res += String("\nEspañol: ");
+            res += p[1];
+            res += String("\nPortuguês: ");
+            res += p[2];
+            return res;
         }
         return d;
     }
 
     static String make_desc(const char* raw, const String& lang, const String& prefix, const String& name, int usage) {
         String result = pick_lang(raw, lang);
-        if(usage>0) result += String("\n\nUsed ") + String::num(usage) + " times in this script.";
+        if(usage>0) {
+            result += String("\n\nUsed ");
+            result += String::num(usage);
+            result += String(" times in this script.");
+        }
         static const std::unordered_set<std::string> libs={"math","string","table","task","coroutine","utf8","bit32"};
         std::string pref=prefix.utf8().get_data();
         String url;
-        if(libs.count(pref)) url = String("https://create.roblox.com/docs/reference/engine/libraries/") + prefix;
-        else if(!prefix.is_empty()) url = String("https://create.roblox.com/docs/reference/engine/classes/") + prefix;
+        if(libs.count(pref)) {
+            url = String("https://create.roblox.com/docs/reference/engine/libraries/");
+            url += prefix;
+        }
+        else if(!prefix.is_empty()) {
+            url = String("https://create.roblox.com/docs/reference/engine/classes/");
+            url += prefix;
+        }
         else url = "https://create.roblox.com/docs/reference/engine/globals/LuaGlobals";
         result += "\n\n[color=#4d9de0]Learn More...[/color]";
         return result;
@@ -251,24 +273,32 @@ private:
         return hints;
     }
 
-    static void add_dynamic_suggestions(const String& class_name, const String& filter, std::vector<TempSuggestion>& out, const std::unordered_map<std::string,int>& mem) {
+    static void add_dynamic_suggestions(const String& class_name, const std::string& f, const std::string& fl, std::vector<TempSuggestion>& out, const std::unordered_map<std::string,int>& mem) {
         if(!ClassDB::class_exists(class_name)) return;
         TypedArray<Dictionary> props=ClassDB::class_get_property_list(class_name,true);
         for(int i=0;i<props.size();i++) {
             Dictionary p=props[i]; String pn=p["name"];
-            int sc=fuzzy_match_score(filter,pn); if(sc<=0) continue;
-            int layer=pn.to_lower().begins_with(filter.to_lower())?1:2;
+            int sc=fuzzy_match_score(f,fl,pn); if(sc<=0) continue;
+            int layer=pn.to_lower().begins_with(String(f.c_str()).to_lower())?1:2;
             std::string k=pn.utf8().get_data(); int u=mem.count(k)?mem.at(k):0;
-            out.push_back({layer,u,sc,pn,pn,String("[Dynamic Property] of ") + class_name,"",4,Color(0.6f,0.8f,1.0f,1.0f)});
+            
+            String desc = String("[Dynamic Property] of ");
+            desc += class_name;
+            out.push_back({layer,u,sc,pn,pn,desc,"",4,Color(0.6f,0.8f,1.0f,1.0f)});
         }
         TypedArray<Dictionary> meths=ClassDB::class_get_method_list(class_name,true);
         for(int i=0;i<meths.size();i++) {
             Dictionary m=meths[i]; String mn=m["name"];
             if(mn.begins_with("_")) continue;
-            int sc=fuzzy_match_score(filter,mn); if(sc<=0) continue;
-            int layer=mn.to_lower().begins_with(filter.to_lower())?1:2;
+            int sc=fuzzy_match_score(f,fl,mn); if(sc<=0) continue;
+            int layer=mn.to_lower().begins_with(String(f.c_str()).to_lower())?1:2;
             std::string k=mn.utf8().get_data(); int u=mem.count(k)?mem.at(k):0;
-            out.push_back({layer,u,sc,mn + String("()"), mn + String("()"), String("[Dynamic Method] of ") + class_name,"",1,Color(0.87f,0.87f,0.67f,1.0f)});
+            
+            String mns = mn;
+            mns += String("()");
+            String desc = String("[Dynamic Method] of ");
+            desc += class_name;
+            out.push_back({layer,u,sc,mns,mns,desc,"",1,Color(0.87f,0.87f,0.67f,1.0f)});
         }
     }
 
@@ -306,7 +336,6 @@ private:
             {"","Instance","Instance","Library","Master creator for all engine objects.||Creador maestro de objetos del motor.||Criador mestre de objetos do motor.",0},
             {"","TweenInfo","TweenInfo","Library","Animation interpolation configuration.||Configuración de interpolaciones.||Configuração de interpolações.",0},
 
-            // ── MATH ──
             {"math","pi","pi","number","Pi approximation (3.14159...).||Aproximación de Pi (3.14159...).||Aproximação de Pi (3.14159...).",4},
             {"math","huge","huge","number","Positive infinity.||Infinito positivo.||Infinito positivo.",4},
             {"math","abs","abs()","(x: number) -> number","Absolute value.||Valor absoluto.||Valor absoluto.",1},
@@ -342,7 +371,6 @@ private:
             {"math","tan","tan()","(x: number) -> number","Tangent of angle in radians.||Tangente en radianes.||Tangente em radianos.",1},
             {"math","tanh","tanh()","(x: number) -> number","Hyperbolic tangent.||Tangente hiperbólica.||Tangente hiperbólica.",1},
 
-            // ── STRING ──
             {"string","byte","byte()","(s: string, i: number?, j: number?) -> ...number","Numeric codes of characters.||Código numérico de los caracteres.||Código numérico dos caracteres.",1},
             {"string","char","char()","(...: number) -> string","String from numeric codes.||Cadena desde códigos numéricos.||String a partir de códigos numéricos.",1},
             {"string","find","find()","(s: string, pattern: string, init: number?, plain: boolean?) -> (number, number)","Finds pattern in string.||Busca un patrón en el string.||Busca um padrão na string.",1},
@@ -361,7 +389,6 @@ private:
             {"string","unpack","unpack()","(fmt: string, s: string, pos: number?) -> ...any","Unpacks binary values.||Desempaqueta valores binarios.||Desempacota valores binários.",1},
             {"string","upper","upper()","(s: string) -> string","Converts to uppercase.||Convierte a mayúsculas.||Converte para maiúsculas.",1},
 
-            // ── TABLE ──
             {"table","clear","clear()","(t: table) -> ()","Clears table without reallocating memory.||Vacía la tabla sin reasignar memoria.||Limpa a tabela sem realocar memória.",1},
             {"table","clone","clone()","(t: table) -> table","Shallow copy of a table.||Copia superficial de la tabla.||Cópia rasa da tabela.",1},
             {"table","concat","concat()","(t: table, sep: string?, i: number?, j: number?) -> string","Concatenates table elements into string.||Concatena elementos en string.||Concatena elementos em string.",1},
@@ -377,7 +404,6 @@ private:
             {"table","sort","sort()","(t: table, comp: function?) -> ()","Sorts array in-place (QuickSort).||Ordena el array in-place.||Ordena o array in-place.",1},
             {"table","unpack","unpack()","(list: table, i: number?, j: number?) -> ...any","Unpacks array elements as arguments.||Desempaqueta elementos del array.||Desempacota elementos do array.",1},
 
-            // ── TASK ──
             {"task","cancel","cancel()","(thread: thread) -> ()","Cancels a pending coroutine.||Cancela corrutina pendiente.||Cancela corrotina pendente.",1},
             {"task","defer","defer()","(f: any, ...: any) -> thread","Runs at end of current frame cycle.||Ejecuta al final del ciclo de frame.||Executa ao final do ciclo de frame.",1},
             {"task","delay","delay()","(sec: number, f: any, ...: any) -> thread","Executes after given time (optimized).||Ejecuta después de cierto tiempo.||Executa após um tempo determinado.",1},
@@ -386,7 +412,6 @@ private:
             {"task","synchronize","synchronize()","() -> ()","Switches coroutine to serial (main thread).||Cambia a ejecución serial.||Muda para execução serial.",1},
             {"task","wait","task.wait()","(sec: number?) -> number","Pauses thread synchronized with physics.||Pausa sincronizado con el motor físico.||Pausa sincronizado com o motor físico.",1},
 
-            // ── COROUTINE ──
             {"coroutine","create","create()","(f: function) -> thread","Creates a new coroutine.||Crea una nueva corrutina.||Cria uma nova corrotina.",1},
             {"coroutine","isyieldable","isyieldable()","() -> boolean","Checks if current coroutine can yield.||Verifica si puede pausarse.||Verifica se pode pausar.",1},
             {"coroutine","resume","resume()","(co: thread, ...: any) -> (boolean, ...any)","Starts or continues a coroutine.||Inicia o continúa una corrutina.||Inicia ou continua uma corrotina.",1},
@@ -395,7 +420,6 @@ private:
             {"coroutine","wrap","wrap()","(f: function) -> function","Creates coroutine wrapped as a function.||Corrutina envuelta como función.||Corrotina envolvida como função.",1},
             {"coroutine","yield","yield()","(...: any) -> ...any","Pauses the current coroutine.||Pausa la corrutina actual.||Pausa a corrotina atual.",1},
 
-            // ── VECTOR3 ──
             {"Vector3","new","new()","(x: number?, y: number?, z: number?) -> Vector3","Creates a 3D vector.||Crea un vector tridimensional.||Cria um vetor tridimensional.",1},
             {"Vector3","zero","zero","Vector3","Vector3(0, 0, 0) — zero vector.||Vector3(0,0,0) — vector cero.||Vector3(0,0,0) — vetor zero.",4},
             {"Vector3","one","one","Vector3","Vector3(1, 1, 1) — unit vector.||Vector3(1,1,1) — vector unitario.||Vector3(1,1,1) — vetor unitário.",4},
@@ -411,7 +435,6 @@ private:
             {"Vector3","Y","Y","number","Y component.||Componente Y.||Componente Y.",4},
             {"Vector3","Z","Z","number","Z component.||Componente Z.||Componente Z.",4},
 
-            // ── VECTOR2 ──
             {"Vector2","new","new()","(x: number?, y: number?) -> Vector2","Creates a 2D vector.||Crea un vector bidimensional.||Cria um vetor bidimensional.",1},
             {"Vector2","zero","zero","Vector2","Vector2(0, 0).||Vector2(0, 0).||Vector2(0, 0).",4},
             {"Vector2","one","one","Vector2","Vector2(1, 1).||Vector2(1, 1).||Vector2(1, 1).",4},
@@ -425,7 +448,6 @@ private:
             {"Vector2","X","X","number","X component (2D).||Componente X del 2D.||Componente X do 2D.",4},
             {"Vector2","Y","Y","number","Y component (2D).||Componente Y del 2D.||Componente Y do 2D.",4},
 
-            // ── CFRAME ──
             {"CFrame","new","new()","(x: number?, y: number?, z: number?) -> CFrame","Creates a 4x4 spatial matrix.||Crea coordenada espacial de matriz 4x4.||Cria coordenada espacial de matriz 4x4.",1},
             {"CFrame","Angles","Angles()","(rx: number, ry: number, rz: number) -> CFrame","Rotation from XYZ radians.||Rotación usando Radianes XYZ.||Rotação usando Radianos XYZ.",1},
             {"CFrame","fromAxisAngle","fromAxisAngle()","(v: Vector3, r: number) -> CFrame","Rotation around a vector axis.||Rotación alrededor de un eje vectorial.||Rotação em torno de um eixo vetorial.",1},
@@ -447,7 +469,6 @@ private:
             {"CFrame","ToWorldSpace","ToWorldSpace()","(cf: CFrame) -> CFrame","Transforms relative CFrame to global.||CFrame relativo a global.||CFrame relativo para global.",1},
             {"CFrame","ToObjectSpace","ToObjectSpace()","(cf: CFrame) -> CFrame","Transforms global CFrame to relative.||CFrame global a relativo.||CFrame global para relativo.",1},
 
-            // ── COLOR3 ──
             {"Color3","new","new()","(r: number?, g: number?, b: number?) -> Color3","Color from 0-1 float values.||Color en escala flotante 0-1.||Cor em escala flutuante 0-1.",1},
             {"Color3","fromRGB","fromRGB()","(r: number, g: number, b: number) -> Color3","Color from 0-255 byte values.||Color desde bytes 0-255.||Cor a partir de bytes 0-255.",1},
             {"Color3","fromHSV","fromHSV()","(h: number, s: number, v: number) -> Color3","Color from Hue, Saturation, Value.||Color en Matiz, Saturación, Valor.||Cor em Matiz, Saturação, Valor.",1},
@@ -459,7 +480,6 @@ private:
             {"Color3","ToHSV","ToHSV()","() -> (number, number, number)","Extracts Hue, Saturation, Value.||Extrae Matiz, Saturación y Valor.||Extrai Matiz, Saturação e Valor.",1},
             {"Color3","ToHex","ToHex()","() -> string","Converts to hex string.||Convierte a cadena Hexadecimal.||Converte para string Hexadecimal.",1},
 
-            // ── UDIM / UDIM2 ──
             {"UDim","new","new()","(scale: number, offset: number) -> UDim","1D UI dimension.||Dimensión UI unidimensional.||Dimensão UI unidimensional.",1},
             {"UDim","Scale","Scale","number","Relative screen proportion (0-1).||Proporción relativa a la pantalla (0-1).||Proporção relativa à tela (0-1).",4},
             {"UDim","Offset","Offset","number","Absolute pixel offset.||Desplazamiento absoluto en píxeles.||Deslocamento absoluto em pixels.",4},
@@ -470,10 +490,8 @@ private:
             {"UDim2","Y","Y","UDim","Y component of UDim2.||Componente Y del UDim2.||Componente Y do UDim2.",4},
             {"UDim2","Lerp","Lerp()","(goal: UDim2, alpha: number) -> UDim2","Animates UI element position.||Anima la posición de un elemento UI.||Anima a posição de um elemento UI.",1},
 
-            // ── TWEENINFO ──
             {"TweenInfo","new","new()","(time: number, easingStyle: Enum, easingDir: Enum, repeatCount: number, reverses: boolean, delayTime: number) -> TweenInfo","Configures an interpolated animation.||Configura una animación interpolada.||Configura uma animação interpolada.",1},
 
-            // ── GAME / SERVICES ──
             {"game","Workspace","Workspace","Workspace","[Service] Physical game environment.||[Servicio] Entorno físico del juego.||[Serviço] Ambiente físico do jogo.",4},
             {"game","Players","Players","Players","[Service] Manages connected players.||[Servicio] Maneja jugadores conectados.||[Serviço] Gerencia jogadores conectados.",4},
             {"game","Lighting","Lighting","Lighting","[Service] Lighting effects and sky.||[Servicio] Efectos de iluminación y cielo.||[Serviço] Efeitos de iluminação e céu.",4},
@@ -506,7 +524,6 @@ private:
             {"game","GetService","GetService(\"\")","(className: string) -> Instance","[Method] Gets a service safely by name.||[Método] Obtiene un servicio por nombre.||[Método] Obtém um serviço pelo nome.",1},
             {"game","IsLoaded","IsLoaded()","() -> boolean","[Method] True if all assets have loaded.||[Método] Verdadero si todos los assets cargaron.||[Método] Verdadeiro se todos os assets carregaram.",1},
 
-            // ── RUNSERVICE ──
             {"RunService","Heartbeat","Heartbeat","RBXScriptSignal","[Event] Every frame after physics. Args: (deltaTime: number).||[Evento] Cada frame tras la física. Args: (deltaTime: number).||[Evento] A cada frame após a física. Args: (deltaTime: number).",2},
             {"RunService","RenderStepped","RenderStepped","RBXScriptSignal","[Event] Every frame before rendering. Args: (deltaTime: number).||[Evento] Cada frame antes de renderizar.||[Evento] A cada frame antes de renderizar.",2},
             {"RunService","Stepped","Stepped","RBXScriptSignal","[Event] Every physics simulation step. Args: (time, deltaTime).||[Evento] Cada paso de simulación física.||[Evento] A cada passo de simulação física.",2},
@@ -517,7 +534,6 @@ private:
             {"RunService","BindToRenderStep","BindToRenderStep()","(name: string, priority: number, fn: function) -> ()","Binds function to render step with priority.||Vincula función al paso de renderizado.||Vincula função ao passo de renderização.",1},
             {"RunService","UnbindFromRenderStep","UnbindFromRenderStep()","(name: string) -> ()","Unbinds function from render step.||Desvincula función del paso de renderizado.||Desvincula função do passo de renderização.",1},
 
-            // ── USERINPUTSERVICE ──
             {"UserInputService","IsKeyDown","IsKeyDown()","(keyCode: string) -> boolean","Checks if a key is currently pressed.||Verifica si una tecla está presionada.||Verifica se uma tecla está pressionada.",1},
             {"UserInputService","IsMouseButtonPressed","IsMouseButtonPressed()","(button: number) -> boolean","Checks if a mouse button is pressed.||Verifica si un botón del mouse está presionado.||Verifica se um botão do mouse está pressionado.",1},
             {"UserInputService","GetMouseDelta","GetMouseDelta()","() -> {X: number, Y: number}","Returns mouse movement this frame.||Movimiento del mouse en el frame.||Movimento do mouse neste frame.",1},
@@ -528,17 +544,13 @@ private:
             {"UserInputService","MouseEnabled","MouseEnabled","boolean","True if a physical mouse is available.||Si el mouse físico está disponible.||Se o mouse físico está disponível.",4},
             {"UserInputService","KeyboardEnabled","KeyboardEnabled","boolean","True if a physical keyboard is available.||Si el teclado físico está disponible.||Se o teclado físico está disponível.",4},
 
-            // ── SOUNDSERVICE ──
             {"SoundService","SetListener","SetListener()","(listenerType: Enum, ...: any) -> ()","Sets the audio listener position.||Establece la posición del oyente de audio.||Define a posição do ouvinte de áudio.",1},
             {"SoundService","PlayLocalSound","PlayLocalSound()","(sound: Sound) -> ()","Plays a sound on the local client.||Reproduce un sonido en el cliente local.||Reproduz um som no cliente local.",1},
 
-            // ── TWEENSERVICE ──
             {"TweenService","Create","Create()","(instance: Instance, tweenInfo: TweenInfo, goals: table) -> Tween","Creates an interpolated property animation.||Crea una animación interpolada de propiedades.||Cria uma animação interpolada de propriedades.",1},
 
-            // ── DEBRIS ──
             {"Debris","AddItem","AddItem()","(instance: Instance, lifetime: number?) -> ()","Auto-destroys instance after N seconds.||Elimina automáticamente tras N segundos.||Destrói automaticamente após N segundos.",1},
 
-            // ── COLLECTIONSERVICE ──
             {"CollectionService","AddTag","AddTag()","(instance: Instance, tag: string) -> ()","Assigns a tag to an instance.||Asigna un tag a la instancia.||Atribui uma tag à instância.",1},
             {"CollectionService","RemoveTag","RemoveTag()","(instance: Instance, tag: string) -> ()","Removes a tag from an instance.||Elimina un tag de la instancia.||Remove uma tag da instância.",1},
             {"CollectionService","HasTag","HasTag()","(instance: Instance, tag: string) -> boolean","Checks if instance has the tag.||Verifica si la instancia tiene el tag.||Verifica se a instância tem a tag.",1},
@@ -546,12 +558,10 @@ private:
             {"CollectionService","GetInstanceAddedSignal","GetInstanceAddedSignal()","(tag: string) -> RBXScriptSignal","Fires when tag is added to any instance.||Se dispara cuando se agrega el tag.||Disparado quando a tag é adicionada.",1},
             {"CollectionService","GetInstanceRemovedSignal","GetInstanceRemovedSignal()","(tag: string) -> RBXScriptSignal","Fires when tag is removed from any instance.||Se dispara cuando se elimina el tag.||Disparado quando a tag é removida.",1},
 
-            // ── DATASTORESERVICE ──
             {"DataStoreService","GetDataStore","GetDataStore()","(name: string, scope: string?) -> DataStore","Gets or creates a named DataStore.||Obtiene o crea un DataStore.||Obtém ou cria um DataStore.",1},
             {"DataStoreService","GetOrderedDataStore","GetOrderedDataStore()","(name: string, scope: string?) -> OrderedDataStore","Numerically ordered DataStore.||DataStore ordenado numéricamente.||DataStore ordenado numericamente.",1},
             {"DataStoreService","GetGlobalDataStore","GetGlobalDataStore()","() -> GlobalDataStore","Global game DataStore.||DataStore global del juego.||DataStore global do jogo.",1},
 
-            // ── HTTPSERVICE ──
             {"HttpService","JSONEncode","JSONEncode()","(value: any) -> string","Serializes Lua table to JSON.||Serializa tabla Lua a JSON.||Serializa tabela Lua para JSON.",1},
             {"HttpService","JSONDecode","JSONDecode()","(json: string) -> any","Deserializes JSON to Lua table.||Deserializa JSON a tabla Lua.||Desserializa JSON para tabela Lua.",1},
             {"HttpService","GetAsync","GetAsync()","(url: string, noCache: boolean?, headers: table?) -> string","HTTP GET request.||Petición HTTP GET.||Requisição HTTP GET.",1},
@@ -560,34 +570,27 @@ private:
             {"HttpService","GenerateGUID","GenerateGUID()","(wrapInCurlyBraces: boolean?) -> string","Generates a unique GUID.||Genera un GUID único.||Gera um GUID único.",1},
             {"HttpService","UrlEncode","UrlEncode()","(input: string) -> string","URL-encodes a string.||Codifica una cadena para URLs.||Codifica uma string para URLs.",1},
 
-            // ── CONTEXTACTIONSERVICE ──
             {"ContextActionService","BindAction","BindAction()","(name: string, func: function, createButton: boolean, ...: any) -> ()","Binds function to input keys.||Vincula función a teclas de input.||Vincula função a teclas de input.",1},
             {"ContextActionService","UnbindAction","UnbindAction()","(name: string) -> ()","Unbinds a registered action.||Desvincula una acción registrada.||Desvincula uma ação registrada.",1},
             {"ContextActionService","BindActionAtPriority","BindActionAtPriority()","(name: string, func: function, createButton: boolean, priority: number, ...: any) -> ()","Binds action with explicit priority.||Vincula con prioridad explícita.||Vincula com prioridade explícita.",1},
 
-            // ── PATHFINDINGSERVICE ──
             {"PathfindingService","CreatePath","CreatePath()","(agentParameters: table?) -> Path","Creates a navigation path.||Crea una ruta de navegación.||Cria uma rota de navegação.",1},
 
-            // ── PHYSICSSERVICE ──
             {"PhysicsService","RegisterCollisionGroup","RegisterCollisionGroup()","(name: string) -> ()","Creates a new collision group.||Crea un nuevo grupo de colisión.||Cria um novo grupo de colisão.",1},
             {"PhysicsService","CollisionGroupSetCollidable","CollisionGroupSetCollidable()","(name1: string, name2: string, collidable: boolean) -> ()","Sets whether two groups collide.||Controla si dos grupos colisionan.||Controla se dois grupos colidem.",1},
             {"PhysicsService","SetPartCollisionGroup","SetPartCollisionGroup()","(part: BasePart, groupName: string) -> ()","Assigns collision group to a part.||Asigna grupo de colisión a una parte.||Atribui grupo de colisão a uma parte.",1},
 
-            // ── TELEPORTSERVICE ──
             {"TeleportService","Teleport","Teleport()","(placeId: number, player: Player?, data: table?) -> ()","Teleports player to another Place.||Teletransporta a otro Place.||Teletransporta para outro Place.",1},
             {"TeleportService","TeleportAsync","TeleportAsync()","(placeId: number, players: {Player}, opts: TeleportOptions?) -> TeleportAsyncResult","Teleports group of players.||Teletransporta grupo de jugadores.||Teletransporta grupo de jogadores.",1},
 
-            // ── BADGESERVICE ──
             {"BadgeService","AwardBadge","AwardBadge()","(userId: number, badgeId: number) -> boolean","Awards a badge to the player.||Otorga una medalla al jugador.||Concede uma medalha ao jogador.",1},
             {"BadgeService","UserHasBadgeAsync","UserHasBadgeAsync()","(userId: number, badgeId: number) -> boolean","Checks if player has the badge.||Verifica si el jugador tiene la medalla.||Verifica se o jogador tem a medalha.",1},
 
-            // ── MARKETPLACESERVICE ──
             {"MarketplaceService","PromptProductPurchase","PromptProductPurchase()","(player: Player, productId: number) -> ()","Opens purchase dialog.||Abre diálogo de compra.||Abre diálogo de compra.",1},
             {"MarketplaceService","PromptGamePassPurchase","PromptGamePassPurchase()","(player: Player, gamePassId: number) -> ()","Opens GamePass purchase dialog.||Abre diálogo de compra de GamePass.||Abre diálogo de compra de GamePass.",1},
             {"MarketplaceService","UserOwnsGamePassAsync","UserOwnsGamePassAsync()","(userId: number, gamePassId: number) -> boolean","Checks if player owns the GamePass.||Verifica si el jugador tiene el GamePass.||Verifica se o jogador tem o GamePass.",1},
             {"MarketplaceService","ProcessReceipt","ProcessReceipt","function","Purchase processing callback.||Callback de procesamiento de compras.||Callback de processamento de compras.",4},
 
-            // ── WORKSPACE ──
             {"Workspace","CurrentCamera","CurrentCamera","Camera","Active camera on local client.||Cámara activa del cliente local.||Câmera ativa no cliente local.",4},
             {"Workspace","Gravity","Gravity","number","Gravitational force (default 196.2).||Fuerza gravitacional (defecto 196.2).||Força gravitacional (padrão 196.2).",4},
             {"Workspace","Terrain","Terrain","Terrain","Voxel terrain object.||Objeto de terreno por vóxeles.||Objeto de terreno por voxels.",4},
@@ -595,7 +598,6 @@ private:
             {"Workspace","GetServerTimeNow","GetServerTimeNow()","() -> number","Synchronized server time.||Tiempo sincronizado del servidor.||Tempo sincronizado do servidor.",1},
             {"Workspace","GetPartsInPart","GetPartsInPart()","(part: BasePart, params: OverlapParams?) -> {BasePart}","Detects spatial collisions.||Detecta colisiones espaciales.||Detecta colisões espaciais.",1},
 
-            // ── PLAYERS ──
             {"Players","LocalPlayer","LocalPlayer","Player","The player on the current client.||El jugador en el cliente actual.||O jogador no cliente atual.",4},
             {"Players","MaxPlayers","MaxPlayers","number","Maximum player limit on server.||Límite de jugadores en el servidor.||Limite de jogadores no servidor.",4},
             {"Players","PlayerAdded","PlayerAdded","RBXScriptSignal","[Event] Fires when a player joins.||[Evento] Se dispara cuando entra un jugador.||[Evento] Disparado quando um jogador entra.",2},
@@ -603,7 +605,6 @@ private:
             {"Players","GetPlayers","GetPlayers()","() -> {Player}","Returns array of active players.||Array con los jugadores activos.||Array com os jogadores ativos.",1},
             {"Players","GetPlayerFromCharacter","GetPlayerFromCharacter()","(character: Model) -> Player?","Gets player from their 3D model.||Extrae jugador desde su modelo 3D.||Obtém jogador a partir do modelo 3D.",1},
 
-            // ── INSTANCE (base class) ──
             {"Instance","new","new()","(className: string, parent: Instance?) -> Instance","Dynamically instantiates a native class.||Instancia dinámicamente una clase nativa.||Instancia dinamicamente uma classe nativa.",1},
             {"Instance","Name","Name","string","Node identifier in the explorer.||Nombre del nodo en el Explorador.||Nome do nó no Explorador.",4},
             {"Instance","Parent","Parent","Instance","Container/parent node.||Nodo contenedor padre.||Nó contêiner pai.",4},
@@ -622,7 +623,6 @@ private:
             {"Instance","ChildAdded","ChildAdded","RBXScriptSignal","[Event] Fired when a child is inserted.||[Evento] Al insertar un hijo.||[Evento] Ao inserir um filho.",2},
             {"Instance","ChildRemoved","ChildRemoved","RBXScriptSignal","[Event] Fired when a child is removed.||[Evento] Al borrar un hijo.||[Evento] Ao remover um filho.",2},
             {"Instance","AncestryChanged","AncestryChanged","RBXScriptSignal","[Event] Fired when Parent changes.||[Evento] Al cambiar de Padre.||[Evento] Ao mudar de pai.",2},
-            // BasePart properties
             {"Instance","Position","Position","Vector3","3D center position of the part.||Posición central de la parte en 3D.||Posição central da parte em 3D.",4},
             {"Instance","Size","Size","Vector3","Volumetric size of the collision box.||Tamaño volumétrico del colisionador.||Tamanho volumétrico do colisor.",4},
             {"Instance","CFrame","CFrame","CFrame","Absolute transformation matrix.||Matriz de transformación absoluta.||Matriz de transformação absoluta.",4},
@@ -637,12 +637,10 @@ private:
             {"Instance","TouchEnded","TouchEnded","RBXScriptSignal","[Event] Fired when separating from collider.||[Evento] Al separarse de un colisionador.||[Evento] Ao se separar de um colisor.",2},
             {"Instance","ApplyImpulse","ApplyImpulse()","(impulse: Vector3) -> ()","Applies instant force to center of mass.||Aplica fuerza instantánea al centro de masa.||Aplica força instantânea ao centro de massa.",1},
             {"Instance","GetMass","GetMass()","() -> number","Returns total mass of the part.||Devuelve la masa total de la parte.||Retorna a massa total da parte.",1},
-            // Model
             {"Instance","PrimaryPart","PrimaryPart","BasePart","Root part guiding the whole model.||Parte raíz que guía todo el modelo.||Parte raiz que guia todo o modelo.",4},
             {"Instance","MoveTo","MoveTo()","(position: Vector3) -> ()","Teleports model to a Vector3.||Teletransporta el modelo a un Vector3.||Teletransporta o modelo para um Vector3.",1},
             {"Instance","PivotTo","PivotTo()","(cframe: CFrame) -> ()","Rotates and moves using CFrame pivot.||Gira y transporta usando el pivote CFrame.||Gira e move usando o pivô CFrame.",1},
             {"Instance","GetPivot","GetPivot()","() -> CFrame","Gets current pivot CFrame.||Obtiene el CFrame del pivote.||Obtém o CFrame do pivô.",1},
-            // Humanoid
             {"Instance","Health","Health","number","Current character health points.||Puntos de vida actuales del personaje.||Pontos de vida atuais do personagem.",4},
             {"Instance","MaxHealth","MaxHealth","number","Maximum allowed health points.||Puntos de vida máximos.||Pontos de vida máximos.",4},
             {"Instance","WalkSpeed","WalkSpeed","number","Character movement speed.||Velocidad de movimiento del personaje.||Velocidade de movimento do personagem.",4},
@@ -653,7 +651,6 @@ private:
             {"Instance","LoadAnimation","LoadAnimation()","(animation: Animation) -> AnimationTrack","Prepares an animation for playback.||Prepara una animación para reproducir.||Prepara uma animação para reprodução.",1},
             {"Instance","Died","Died","RBXScriptSignal","[Event] Fires when Health reaches zero.||[Evento] Cuando la Health llega a cero.||[Evento] Quando a Health chega a zero.",2},
             {"Instance","HealthChanged","HealthChanged","RBXScriptSignal","[Event] Fires when health changes.||[Evento] Cuando cambia la salud.||[Evento] Quando a vida muda.",2},
-            // GUI elements
             {"Instance","Text","Text","string","Visible content on Labels or Buttons.||Contenido visible en Labels o Buttons.||Conteúdo visível em Labels ou Buttons.",4},
             {"Instance","TextColor3","TextColor3","Color3","Font color.||Color de la fuente del texto.||Cor da fonte do texto.",4},
             {"Instance","TextScaled","TextScaled","boolean","Adjusts text to fit its box.||Ajusta el texto al tamaño de la caja.||Ajusta o texto ao tamanho da caixa.",4},
@@ -690,7 +687,6 @@ public:
         if(cursor_pos==-1) cursor_pos=p_code.length();
         String code_to_cursor = p_code.substr(0, cursor_pos);
 
-        // ── Parse code state ──
         bool in_str_d=false, in_str_s=false, in_comm=false, in_block_comm=false;
         StringContextType str_ctx = STR_CTX_NONE;
 
@@ -723,7 +719,6 @@ public:
             res["result"]=out; res["options"]=out; res["force"]=true; res["call_hint"]=""; return res;
         }
 
-        // ── Extract current word ──
         int last_sep=-1;
         bool is_after_equal=false, is_after_colon=false;
         for(int i=code_to_cursor.length()-1;i>=0;i--) {
@@ -747,7 +742,9 @@ public:
             target_prefix=current_word.substr(0,dot_idx); filter=current_word.substr(dot_idx+1);
         }
 
-        // ── Parse local variables ──
+        std::string filter_str = filter.utf8().get_data();
+        std::string filter_lower = filter.to_lower().utf8().get_data();
+
         std::vector<LocalVar> locals;
         std::unordered_set<std::string> known_vars;
         PackedStringArray lines = code_to_cursor.split("\n");
@@ -790,7 +787,6 @@ public:
             locals.push_back(lv); known_vars.insert(vs);
         }
 
-        // ── Resolve prefix type ──
         String resolved_type=target_prefix;
         for(const auto& v:locals) if(v.name==target_prefix) { resolved_type=v.inferred_type; break; }
         static const char* direct_maps[][2]={
@@ -811,7 +807,6 @@ public:
 
         std::vector<TempSuggestion> sorter;
 
-        // ── String context suggestions ──
         if(in_string) {
             if(str_ctx==STR_CTX_GET_SERVICE) {
                 static const char* svcs[]={"Players","RunService","Lighting","Workspace",
@@ -823,8 +818,8 @@ public:
                     "ScriptContext","MaterialService",nullptr};
                 for(int si=0;svcs[si];si++) {
                     String svc=String(svcs[si]);
-                    int sc=fuzzy_match_score(filter,svc); if(sc<=0) continue;
-                    int layer=svc.to_lower().begins_with(filter.to_lower())?1:2;
+                    int sc=fuzzy_match_score(filter_str,filter_lower,svc); if(sc<=0) continue;
+                    int layer=svc.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     std::string k=svc.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
                     sorter.push_back({layer,u,sc,svc,svc,String("[Service] ") + svc,"",5,Color(0.9f,0.7f,0.3f,1.0f)});
                 }
@@ -832,8 +827,8 @@ public:
                 auto names=extract_known_names(p_code);
                 for(const auto& n:names) {
                     String sn=String(n.c_str());
-                    int sc=fuzzy_match_score(filter,sn); if(sc<=0) continue;
-                    int layer=sn.to_lower().begins_with(filter.to_lower())?1:2;
+                    int sc=fuzzy_match_score(filter_str,filter_lower,sn); if(sc<=0) continue;
+                    int layer=sn.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     int u=usage_mem.count(n)?usage_mem.at(n):0;
                     sorter.push_back({layer,u+5,sc,sn + String(" [known child]"),sn,"Child name found in this script.","",5,Color(0.6f,0.95f,0.6f,1.0f)});
                 }
@@ -850,13 +845,12 @@ public:
                     "Vector3Value","Color3Value",nullptr};
                 for(int ci=0;classes[ci];ci++) {
                     String cl=String(classes[ci]);
-                    int sc=fuzzy_match_score(filter,cl); if(sc<=0) continue;
-                    int layer=cl.to_lower().begins_with(filter.to_lower())?1:2;
+                    int sc=fuzzy_match_score(filter_str,filter_lower,cl); if(sc<=0) continue;
+                    int layer=cl.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     std::string k=cl.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
                     sorter.push_back({layer,u,sc,cl,cl,String("[Class] ") + cl,"",5,Color(0.9f,0.8f,0.5f,1.0f)});
                 }
             }
-            // Build output from sorter
             std::sort(sorter.begin(),sorter.end());
             for(int i=0;i<(int)sorter.size()&&i<30;i++) {
                 Dictionary s;
@@ -869,13 +863,11 @@ public:
             res["result"]=out; res["options"]=out; res["force"]=true; res["call_hint"]=""; return res;
         }
 
-        // ── Dynamic Godot class suggestions ──
         if(!target_prefix.is_empty()) {
             String cls=resolved_type.is_empty()?target_prefix:resolved_type;
-            add_dynamic_suggestions(cls,filter,sorter,usage_mem);
+            add_dynamic_suggestions(cls,filter_str,filter_lower,sorter,usage_mem);
         }
 
-        // ── Static API database ──
         static const std::unordered_set<std::string> known_pfx={
             "math","string","table","task","coroutine","utf8","bit32",
             "Vector3","Vector2","CFrame","Color3","UDim","UDim2","Enum","TweenInfo","Instance",
@@ -899,27 +891,26 @@ public:
             if(search_pfx=="Instance"&&ipfx=="Workspace"&&target_prefix=="workspace") matches=true;
             if(!matches) continue;
 
-            int sc=fuzzy_match_score(filter,iname); if(sc<=0) continue;
-            int layer=iname.to_lower().begins_with(filter.to_lower())?1:2;
+            int sc=fuzzy_match_score(filter_str,filter_lower,iname); if(sc<=0) continue;
+            int layer=iname.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
             std::string k=iname.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
             Color c(0.6f,0.8f,1.0f,1.0f);
             if(api[i].kind==1) c=Color(0.87f,0.87f,0.67f,1.0f);
             else if(api[i].kind==2) c=Color(0.9f,0.5f,0.5f,1.0f);
             else if(api[i].kind==5) c=Color(0.8f,0.6f,0.4f,1.0f);
-            String display = iname + String("   ") + String(api[i].signature);
+            String display = iname;
+            display += String("   ");
+            display += String(api[i].signature);
             String desc=make_desc(api[i].desc, lang, ipfx, iname, u);
             sorter.push_back({layer,u,sc,display,api[i].insert_text,desc,api[i].signature,api[i].kind,c});
         }
 
-        // ── Global-scope suggestions ──
         if(target_prefix.is_empty()) {
             if(is_after_equal) {
-                // AI variable hints (always shown if name matches; feature flag controls enhanced hints)
                 if(!filter.is_empty()) {
                     auto hints=get_var_ai_hints(filter,usage_mem);
                     for(auto& h:hints) sorter.push_back(h);
                 }
-                // Standard assignment snippets
                 struct Snip{String tr,disp,code,desc;};
                 Snip eq_snips[]={
                     {"Instance","Instance.new(\"Part\")","Instance.new(\"Part\")","Create new instance."},
@@ -934,8 +925,8 @@ public:
                     {"0","0","0","Zero number."},
                 };
                 for(auto& s:eq_snips) {
-                    int sc=fuzzy_match_score(filter,s.tr); if(sc<=0) continue;
-                    int layer=s.tr.to_lower().begins_with(filter.to_lower())?1:2;
+                    int sc=fuzzy_match_score(filter_str,filter_lower,s.tr); if(sc<=0) continue;
+                    int layer=s.tr.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     std::string k=s.tr.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
                     sorter.push_back({layer,u,sc,s.disp,s.code,s.desc,"",0,Color(0.4f,0.9f,1.0f,1.0f)});
                 }
@@ -952,23 +943,24 @@ public:
                     {"task.wait","task.wait","task.wait()","Pause current thread."},
                 };
                 for(auto& s:snips) {
-                    int sc=fuzzy_match_score(filter,s.tr); if(sc<=0) continue;
-                    int layer=s.tr.to_lower().begins_with(filter.to_lower())?1:2;
+                    int sc=fuzzy_match_score(filter_str,filter_lower,s.tr); if(sc<=0) continue;
+                    int layer=s.tr.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     std::string k=s.tr.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
                     sorter.push_back({layer,u,sc,s.disp,s.code,s.desc,"",6,Color(0.85f,0.65f,0.95f,1.0f)});
                 }
             }
-            // Local variables
             for(auto& lv:locals) {
-                int sc=fuzzy_match_score(filter,lv.name); if(sc<=0||is_after_equal) continue;
-                int layer=lv.name.to_lower().begins_with(filter.to_lower())?1:2;
+                int sc=fuzzy_match_score(filter_str,filter_lower,lv.name); if(sc<=0||is_after_equal) continue;
+                int layer=lv.name.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                 std::string k=lv.name.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
-                sorter.push_back({layer,u,sc,lv.name,lv.name,String("Local variable — type: ") + lv.inferred_type,"",3,Color(0.6f,0.95f,0.6f,1.0f)});
+                
+                String desc = String("Local variable — type: ");
+                desc += lv.inferred_type;
+                sorter.push_back({layer,u,sc,lv.name,lv.name,desc,"",3,Color(0.6f,0.95f,0.6f,1.0f)});
             }
         }
 
-        // ── Connect snippet ──
-        if(is_after_colon&&fuzzy_match_score(filter,"Connect")>0) {
+        if(is_after_colon&&fuzzy_match_score(filter_str,filter_lower,"Connect")>0) {
             std::string k="Connect"; int u=usage_mem.count(k)?usage_mem.at(k):0;
             sorter.push_back({1,u,200,"Connect(function)","Connect(function()\n\t\nend)","Connects an event to an inline function.","",2,Color(0.85f,0.65f,0.95f,1.0f)});
         }
@@ -989,11 +981,13 @@ public:
         String lang = detect_language(code);
         const LuauAPIItem* api = get_api();
         for(int i=0;api[i].name!=nullptr;i++) {
-            if(String(api[i].name) == symbol || String(api[i].name) == symbol + String("()")) {
+            String check_sym = symbol;
+            check_sym += String("()");
+            
+            if(String(api[i].name) == symbol || String(api[i].name) == check_sym) {
                 String prefix=String(api[i].prefix);
                 String desc=pick_lang(api[i].desc,lang);
                 
-                // CORRECCIÓN: Concatenación paso a paso segura
                 String result = String("[b]");
                 result += symbol;
                 result += String("[/b]  [i]");
@@ -1015,7 +1009,6 @@ public:
                 }
                 else url = "https://create.roblox.com/docs/reference/engine/globals/LuaGlobals";
                 
-                // CORRECCIÓN: Concatenación paso a paso segura
                 result += String("\n\n[color=#4d9de0][url=");
                 result += url;
                 result += String("]Learn More...[/url][/color]");

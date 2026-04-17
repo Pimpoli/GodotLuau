@@ -111,7 +111,7 @@ if not player then return end
 local humanoid = player:FindFirstChild("Humanoid")
 if humanoid then
     humanoid.WalkSpeed = 16
-    humanoid.JumpPower = 50
+    humanoid.JumpPower = 20
 end
 
 player.CameraMode = CAMERA_MODE

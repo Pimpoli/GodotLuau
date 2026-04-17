@@ -29,7 +29,7 @@ using namespace godot;
 //
 //  Propiedades modificables desde Luau:
 //    humanoid.WalkSpeed  = 20    -- Velocidad normal
-//    humanoid.JumpPower  = 50    -- Fuerza del salto
+//    humanoid.JumpPower  = 20    -- Fuerza del salto
 //    humanoid.Health     = 100   -- Salud actual
 // ════════════════════════════════════════════════════════════════════
 class Humanoid : public Node {
