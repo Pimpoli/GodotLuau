@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="128" height="128">
+  <g stroke="#1A1A1A" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    
+    <polygon points="25,25 75,25 85,45 15,45" fill="#F0C086" />
+    
+    <rect x="15" y="45" width="70" height="40" fill="#D4A373" />
+    
+    <line x1="15" y1="45" x2="85" y2="45" />
+    
+    <polygon points="45,25 55,25 55,45 45,45" fill="#E9D4A6" />
+    
+    <polygon points="45,45 55,45 55,60 52,56 48,62 45,58" fill="#E9D4A6" />
+    
+    <polyline points="45,25 45,45 45,58 48,62 52,56 55,60 55,45 55,25" fill="none" />
+    
+  </g>
+</svg>

@@ -1,0 +1,2 @@
+# Este archivo le dice a Godot que ignore esta carpeta por completo.
+# Evita que el motor intente importar los archivos .obj de C++ como si fueran modelos 3D.

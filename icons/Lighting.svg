@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="128" height="128">
+  <g fill="#F1C40F" stroke="#1A1A1A" stroke-width="4" stroke-linejoin="round">
+
+    <circle cx="50" cy="50" r="22" />
+
+    <polygon points="45,20 55,20 50,0" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(45 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(90 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(135 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(180 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(225 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(270 50 50)" />
+    <polygon points="45,20 55,20 50,0" transform="rotate(315 50 50)" />
+
+  </g>
+</svg>

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="128" height="128">
+  <g stroke="#1A1A1A" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    
+    <rect x="10" y="10" width="40" height="40" fill="#E74C3C" />
+    <g stroke="#C0392B" stroke-width="2">
+      <line x1="10" y1="23" x2="50" y2="23" />
+      <line x1="10" y1="36" x2="50" y2="36" />
+      <line x1="30" y1="10" x2="30" y2="23" />
+      <line x1="20" y1="23" x2="20" y2="36" />
+      <line x1="40" y1="23" x2="40" y2="36" />
+      <line x1="30" y1="36" x2="30" y2="50" />
+    </g>
+
+    <rect x="50" y="10" width="40" height="40" fill="#E67E22" />
+    <g stroke="#D35400" stroke-width="2" fill="none">
+      <path d="M 60 10 C 55 25 65 35 60 50" />
+      <path d="M 75 10 C 70 25 80 35 75 50" />
+      <path d="M 85 10 C 85 25 90 35 85 50" />
+    </g>
+
+    <rect x="10" y="50" width="40" height="40" fill="#2ECC71" />
+    <g stroke="#27AE60" stroke-width="2" fill="none">
+      <path d="M 20 65 L 23 75 L 26 65" />
+      <path d="M 35 75 L 38 85 L 41 75" />
+      <path d="M 15 80 L 18 88 L 21 80" />
+    </g>
+
+    <rect x="50" y="50" width="40" height="40" fill="#F5CBA7" />
+    <g stroke="#E59866" stroke-width="2">
+      <line x1="50" y1="70" x2="90" y2="70" />
+      <line x1="70" y1="50" x2="70" y2="90" />
+    </g>
+
+    <line x1="50" y1="10" x2="50" y2="90" stroke="#1A1A1A" stroke-width="4" />
+    <line x1="10" y1="50" x2="90" y2="50" stroke="#1A1A1A" stroke-width="4" />
+
+    <rect x="10" y="10" width="80" height="80" fill="none" stroke="#1A1A1A" stroke-width="4" />
+    
+  </g>
+</svg>

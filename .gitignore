@@ -1,0 +1,18 @@
+# Archivos de caché de Godot
+.godot/
+
+# Archivos de compilación de SCons y C++
+*.obj
+*.lib
+*.exp
+*.pdb
+.sconsign.dblite
+
+# Ignorar las librerías compiladas (opcional, pero recomendado para el source code)
+bin/*.dll
+bin/*.lib
+bin/*.exp
+
+# Caché de editores
+.vs/
+.vscode/

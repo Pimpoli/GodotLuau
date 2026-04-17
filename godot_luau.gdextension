@@ -1,0 +1,48 @@
+[configuration]
+entry_symbol = "luau_extension_init"
+compatibility_minimum = 4.1
+
+[libraries]
+windows.debug.x86_64 = "res://bin/godot_luau.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/godot_luau.windows.template_release.x86_64.dll"
+
+[icons]
+RobloxDataModel = "res://icons/RobloxDataModel.svg"
+RobloxGame3D = "res://icons/RobloxGame3D.svg"
+RobloxGame2D = "res://icons/RobloxGame2D.svg"
+Folder = "res://icons/Folder.svg"
+
+; Scripts
+LocalScript = "res://icons/LocalScript.svg"
+ServerScript = "res://icons/ServerScript.svg"
+ModuleScript = "res://icons/ModuleScript.svg"
+
+; Personajes y Fisicas
+RobloxPlayer = "res://icons/RobloxPlayer.svg"
+RobloxPlayer2D = "res://icons/RobloxPlayer2D.svg"
+RobloxPart = "res://icons/RobloxPart.svg"
+Humanoid = "res://icons/Humanoid.svg"
+Humanoid2D = "res://icons/Humanoid2D.svg"
+
+; UI y Chat
+RobloxChat = "res://icons/RobloxChat.svg"
+TextChatService = "res://icons/TextChatService.svg"
+
+; Servicios de Roblox
+RobloxWorkspace = "res://icons/Workspace.svg"
+RobloxWorkspace2D = "res://icons/Workspace2D.svg"
+Players = "res://icons/Players.svg"
+Lighting = "res://icons/Lighting.svg"
+MaterialService = "res://icons/MaterialService.svg"
+ReplicatedFirst = "res://icons/ReplicatedFirst.svg"
+ReplicatedStorage = "res://icons/ReplicatedStorage.svg"
+ServerScriptService = "res://icons/ServerScriptService.svg"
+ServerStorage = "res://icons/ServerStorage.svg"
+StarterGui = "res://icons/StarterGui.svg"
+StarterPack = "res://icons/StarterPack.svg"
+StarterPlayer = "res://icons/StarterPlayer.svg"
+StarterCharacterScripts = "res://icons/StarterCharacterScripts.svg"
+StarterPlayerScripts = "res://icons/StarterPlayerScripts.svg"
+Teams = "res://icons/Teams.svg"
+SoundService = "res://icons/SoundService.svg"
+NetworkClient = "res://icons/NetworkClient.svg"
