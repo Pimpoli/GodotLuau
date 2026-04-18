@@ -3,6 +3,7 @@
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/character_body3d.hpp>
+#include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/classes/kinematic_collision3d.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -91,13 +92,24 @@ public:
     }
 
 private:
-    float health       = 100.0f;
-    float max_health   = 100.0f;
-    float walk_speed   = 16.0f;
-    float jump_power   = 20.0f;
-    float gravity      = 45.0f;
-    bool  is_dead      = false;
-    bool  auto_rotate  = true;   // Rotar el cuerpo hacia la dirección de movimiento
+    float  health                 = 100.0f;
+    float  max_health             = 100.0f;
+    float  walk_speed             = 16.0f;
+    float  jump_power             = 20.0f;
+    float  jump_height            = 7.2f;
+    float  hip_height             = 0.0f;
+    float  gravity                = 45.0f;
+    bool   is_dead                = false;
+    bool   auto_rotate            = true;
+    bool   auto_jump_enabled      = true;
+    float  name_display_distance  = 100.0f;
+    float  health_display_distance= 100.0f;
+    // 0 = R6, 1 = R15
+    int    rig_type               = 1;
+    bool   evaluate_state_machine = true;
+    bool   break_joints_on_death  = true;
+    bool   requires_neck          = true;
+    String display_name;
 
 protected:
     static void _bind_methods() {
@@ -122,6 +134,11 @@ protected:
                                   PROPERTY_HINT_RANGE, "1,1000,1"),
                      "set_max_health", "get_max_health");
 
+        ClassDB::bind_method(D_METHOD("set_jump_height","h"),  &Humanoid::set_jump_height);
+        ClassDB::bind_method(D_METHOD("get_jump_height"),      &Humanoid::get_jump_height);
+        ClassDB::bind_method(D_METHOD("set_hip_height","h"),   &Humanoid::set_hip_height);
+        ClassDB::bind_method(D_METHOD("get_hip_height"),       &Humanoid::get_hip_height);
+
         ADD_GROUP("Movimiento", "");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "WalkSpeed",
                                   PROPERTY_HINT_RANGE, "0,100,0.1"),
@@ -129,9 +146,45 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "JumpPower",
                                   PROPERTY_HINT_RANGE, "0,200,0.1"),
                      "set_jump_power", "get_jump_power");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "JumpHeight",
+                                  PROPERTY_HINT_RANGE, "0,100,0.1"),
+                     "set_jump_height", "get_jump_height");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "HipHeight",
+                                  PROPERTY_HINT_RANGE, "0,10,0.01"),
+                     "set_hip_height", "get_hip_height");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Gravity",
                                   PROPERTY_HINT_RANGE, "0,200,0.1"),
                      "set_gravity_val", "get_gravity_val");
+
+        ADD_GROUP("Personaje", "");
+        ClassDB::bind_method(D_METHOD("set_auto_rotate","b"),              &Humanoid::set_auto_rotate);
+        ClassDB::bind_method(D_METHOD("get_auto_rotate"),                  &Humanoid::get_auto_rotate);
+        ClassDB::bind_method(D_METHOD("set_auto_jump_enabled","b"),        &Humanoid::set_auto_jump_enabled);
+        ClassDB::bind_method(D_METHOD("get_auto_jump_enabled"),            &Humanoid::get_auto_jump_enabled);
+        ClassDB::bind_method(D_METHOD("set_display_name","n"),             &Humanoid::set_display_name);
+        ClassDB::bind_method(D_METHOD("get_display_name"),                 &Humanoid::get_display_name);
+        ClassDB::bind_method(D_METHOD("set_name_display_distance","d"),    &Humanoid::set_name_display_distance);
+        ClassDB::bind_method(D_METHOD("get_name_display_distance"),        &Humanoid::get_name_display_distance);
+        ClassDB::bind_method(D_METHOD("set_health_display_distance","d"),  &Humanoid::set_health_display_distance);
+        ClassDB::bind_method(D_METHOD("get_health_display_distance"),      &Humanoid::get_health_display_distance);
+        ClassDB::bind_method(D_METHOD("set_rig_type","t"),                 &Humanoid::set_rig_type);
+        ClassDB::bind_method(D_METHOD("get_rig_type"),                     &Humanoid::get_rig_type);
+        ClassDB::bind_method(D_METHOD("set_evaluate_state_machine","b"),   &Humanoid::set_evaluate_state_machine);
+        ClassDB::bind_method(D_METHOD("get_evaluate_state_machine"),       &Humanoid::get_evaluate_state_machine);
+        ClassDB::bind_method(D_METHOD("set_break_joints_on_death","b"),    &Humanoid::set_break_joints_on_death);
+        ClassDB::bind_method(D_METHOD("get_break_joints_on_death"),        &Humanoid::get_break_joints_on_death);
+        ClassDB::bind_method(D_METHOD("set_requires_neck","b"),            &Humanoid::set_requires_neck);
+        ClassDB::bind_method(D_METHOD("get_requires_neck"),                &Humanoid::get_requires_neck);
+
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AutoRotate"),            "set_auto_rotate","get_auto_rotate");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AutoJumpEnabled"),       "set_auto_jump_enabled","get_auto_jump_enabled");
+        ADD_PROPERTY(PropertyInfo(Variant::STRING,"DisplayName"),           "set_display_name","get_display_name");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "NameDisplayDistance",    PROPERTY_HINT_RANGE,"0,1000,1"), "set_name_display_distance","get_name_display_distance");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "HealthDisplayDistance",  PROPERTY_HINT_RANGE,"0,1000,1"), "set_health_display_distance","get_health_display_distance");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,   "RigType",                PROPERTY_HINT_ENUM,"R6:0,R15:1"),"set_rig_type","get_rig_type");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "EvaluateStateMachine"),  "set_evaluate_state_machine","get_evaluate_state_machine");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "BreakJointsOnDeath"),    "set_break_joints_on_death","get_break_joints_on_death");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "RequiresNeck"),          "set_requires_neck","get_requires_neck");
 
         // Señales tipo Roblox
         ADD_SIGNAL(MethodInfo("Died"));
@@ -180,12 +233,36 @@ public:
     bool is_character_dead() const { return is_dead; }
 
     // ── Movimiento ─────────────────────────────────────────────────
-    void set_walk_speed(float s)  { walk_speed = Math::max(s, 0.0f); }
-    float get_walk_speed() const  { return walk_speed; }
-    void set_jump_power(float p)  { jump_power = Math::max(p, 0.0f); }
-    float get_jump_power() const  { return jump_power; }
-    void set_gravity_val(float g) { gravity = Math::max(g, 0.0f); }
-    float get_gravity_val() const { return gravity; }
+    void  set_walk_speed(float s)   { walk_speed = Math::max(s, 0.0f); }
+    float get_walk_speed() const    { return walk_speed; }
+    void  set_jump_power(float p)   { jump_power = Math::max(p, 0.0f); }
+    float get_jump_power() const    { return jump_power; }
+    void  set_jump_height(float h)  { jump_height = Math::max(h, 0.0f); }
+    float get_jump_height() const   { return jump_height; }
+    void  set_hip_height(float h)   { hip_height = Math::max(h, 0.0f); }
+    float get_hip_height() const    { return hip_height; }
+    void  set_gravity_val(float g)  { gravity = Math::max(g, 0.0f); }
+    float get_gravity_val() const   { return gravity; }
+
+    // ── Personaje ──────────────────────────────────────────────────
+    void   set_auto_rotate(bool b)              { auto_rotate = b; }
+    bool   get_auto_rotate() const              { return auto_rotate; }
+    void   set_auto_jump_enabled(bool b)        { auto_jump_enabled = b; }
+    bool   get_auto_jump_enabled() const        { return auto_jump_enabled; }
+    void   set_display_name(String n)           { display_name = n; }
+    String get_display_name() const             { return display_name; }
+    void   set_name_display_distance(float d)   { name_display_distance = Math::max(d, 0.0f); }
+    float  get_name_display_distance() const    { return name_display_distance; }
+    void   set_health_display_distance(float d) { health_display_distance = Math::max(d, 0.0f); }
+    float  get_health_display_distance() const  { return health_display_distance; }
+    void   set_rig_type(int t)                  { rig_type = Math::clamp(t, 0, 1); }
+    int    get_rig_type() const                 { return rig_type; }
+    void   set_evaluate_state_machine(bool b)   { evaluate_state_machine = b; }
+    bool   get_evaluate_state_machine() const   { return evaluate_state_machine; }
+    void   set_break_joints_on_death(bool b)    { break_joints_on_death = b; }
+    bool   get_break_joints_on_death() const    { return break_joints_on_death; }
+    void   set_requires_neck(bool b)            { requires_neck = b; }
+    bool   get_requires_neck() const            { return requires_neck; }
 
     // ── _physics_process: toda la lógica de movimiento ─────────────
     void _physics_process(double delta) override {

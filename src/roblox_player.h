@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/variant/string.hpp>
 
 using namespace godot;
 
@@ -33,17 +34,27 @@ private:
     Camera3D* camera     = nullptr;
 
     float mouse_sensitivity = 0.003f;
-    float target_zoom = 10.0f;
+    float target_zoom       = 10.0f;
 
     // ── Modo de cámara ──────────────────────────────────────────────
-    // 1 = Fija (instantánea)
-    // 2 = Suave (lag suave, alpha 0.08)
-    // 3 = Combinada (lag + centra gradualmente al detenerse)
     int camera_mode = 1;
 
     // Para el modo 3: detectar si el jugador se está moviendo
     Vector3 last_position;
-    float idle_time = 0.0f;
+    float   idle_time = 0.0f;
+
+    // ── Propiedades de jugador tipo Roblox ─────────────────────────
+    int    user_id                   = 0;
+    String display_name;
+    int    account_age               = 0;
+    Color  team_color                = Color(1,1,1);
+    bool   auto_jump_enabled         = true;
+    // 0=Zoom, 1=Invisicam
+    int    dev_camera_occlusion_mode = 0;
+    // 0=KeyboardMouse, 1=ClickToMove, 2=Scriptable
+    int    dev_computer_movement_mode= 0;
+    // 0=Thumbstick, 1=DynamicThumbstick, 2=ClickToMove, 3=Scriptable
+    int    dev_touch_movement_mode   = 0;
 
 protected:
     static void _bind_methods() {
@@ -52,28 +63,71 @@ protected:
         ClassDB::bind_method(D_METHOD("set_mouse_sensitivity", "s"), &RobloxPlayer::set_mouse_sensitivity);
         ClassDB::bind_method(D_METHOD("get_mouse_sensitivity"),      &RobloxPlayer::get_mouse_sensitivity);
 
-        // Enum para el editor
-        ADD_GROUP("Camara", "");
-        ADD_PROPERTY(
-            PropertyInfo(Variant::INT, "CameraMode",
-                         PROPERTY_HINT_ENUM,
-                         "1:Fija (instantanea),2:Suave (con retraso),3:Combinada (retraso y centra)"),
-            "set_camera_mode", "get_camera_mode");
-        ADD_PROPERTY(
-            PropertyInfo(Variant::FLOAT, "MouseSensitivity",
-                         PROPERTY_HINT_RANGE, "0.0001,0.01,0.0001"),
-            "set_mouse_sensitivity", "get_mouse_sensitivity");
+        ADD_GROUP("Camara","");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"CameraMode",PROPERTY_HINT_ENUM,
+            "Fija:1,Suave:2,Combinada:3"),
+            "set_camera_mode","get_camera_mode");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"MouseSensitivity",PROPERTY_HINT_RANGE,"0.0001,0.01,0.0001"),
+            "set_mouse_sensitivity","get_mouse_sensitivity");
+
+        // ── Jugador ─────────────────────────────────────────────────
+        ADD_GROUP("Jugador","");
+        ClassDB::bind_method(D_METHOD("set_user_id","id"),                    &RobloxPlayer::set_user_id);
+        ClassDB::bind_method(D_METHOD("get_user_id"),                         &RobloxPlayer::get_user_id);
+        ClassDB::bind_method(D_METHOD("set_display_name","n"),                &RobloxPlayer::set_display_name);
+        ClassDB::bind_method(D_METHOD("get_display_name"),                    &RobloxPlayer::get_display_name);
+        ClassDB::bind_method(D_METHOD("set_account_age","a"),                 &RobloxPlayer::set_account_age);
+        ClassDB::bind_method(D_METHOD("get_account_age"),                     &RobloxPlayer::get_account_age);
+        ClassDB::bind_method(D_METHOD("set_team_color","c"),                  &RobloxPlayer::set_team_color);
+        ClassDB::bind_method(D_METHOD("get_team_color"),                      &RobloxPlayer::get_team_color);
+        ClassDB::bind_method(D_METHOD("set_auto_jump_enabled","b"),           &RobloxPlayer::set_auto_jump_enabled);
+        ClassDB::bind_method(D_METHOD("get_auto_jump_enabled"),               &RobloxPlayer::get_auto_jump_enabled);
+        ClassDB::bind_method(D_METHOD("set_dev_camera_occlusion_mode","m"),   &RobloxPlayer::set_dev_camera_occlusion_mode);
+        ClassDB::bind_method(D_METHOD("get_dev_camera_occlusion_mode"),       &RobloxPlayer::get_dev_camera_occlusion_mode);
+        ClassDB::bind_method(D_METHOD("set_dev_computer_movement_mode","m"),  &RobloxPlayer::set_dev_computer_movement_mode);
+        ClassDB::bind_method(D_METHOD("get_dev_computer_movement_mode"),      &RobloxPlayer::get_dev_computer_movement_mode);
+        ClassDB::bind_method(D_METHOD("set_dev_touch_movement_mode","m"),     &RobloxPlayer::set_dev_touch_movement_mode);
+        ClassDB::bind_method(D_METHOD("get_dev_touch_movement_mode"),         &RobloxPlayer::get_dev_touch_movement_mode);
+
+        ADD_PROPERTY(PropertyInfo(Variant::INT,   "UserId"),               "set_user_id","get_user_id");
+        ADD_PROPERTY(PropertyInfo(Variant::STRING,"DisplayName"),          "set_display_name","get_display_name");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,   "AccountAge"),           "set_account_age","get_account_age");
+        ADD_PROPERTY(PropertyInfo(Variant::COLOR, "TeamColor"),            "set_team_color","get_team_color");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AutoJumpEnabled"),      "set_auto_jump_enabled","get_auto_jump_enabled");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"DevCameraOcclusionMode",PROPERTY_HINT_ENUM,"Zoom:0,Invisicam:1"),
+            "set_dev_camera_occlusion_mode","get_dev_camera_occlusion_mode");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"DevComputerMovementMode",PROPERTY_HINT_ENUM,
+            "KeyboardMouse:0,ClickToMove:1,Scriptable:2"),
+            "set_dev_computer_movement_mode","get_dev_computer_movement_mode");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"DevTouchMovementMode",PROPERTY_HINT_ENUM,
+            "Thumbstick:0,DynamicThumbstick:1,ClickToMove:2,Scriptable:3"),
+            "set_dev_touch_movement_mode","get_dev_touch_movement_mode");
     }
 
 public:
-    // ── Setters / Getters ──────────────────────────────────────────
-    void set_camera_mode(int m) {
-        camera_mode = Math::clamp(m, 1, 3);
-    }
-    int get_camera_mode() const { return camera_mode; }
+    // ── Camera / Mouse ─────────────────────────────────────────────
+    void  set_camera_mode(int m)       { camera_mode = Math::clamp(m, 1, 3); }
+    int   get_camera_mode() const      { return camera_mode; }
+    void  set_mouse_sensitivity(float s){ mouse_sensitivity = s; }
+    float get_mouse_sensitivity() const{ return mouse_sensitivity; }
 
-    void set_mouse_sensitivity(float s) { mouse_sensitivity = s; }
-    float get_mouse_sensitivity() const { return mouse_sensitivity; }
+    // ── Player identity ────────────────────────────────────────────
+    void   set_user_id(int id)                  { user_id = id; }
+    int    get_user_id() const                  { return user_id; }
+    void   set_display_name(String n)           { display_name = n; }
+    String get_display_name() const             { return display_name; }
+    void   set_account_age(int a)               { account_age = a; }
+    int    get_account_age() const              { return account_age; }
+    void   set_team_color(Color c)              { team_color = c; }
+    Color  get_team_color() const               { return team_color; }
+    void   set_auto_jump_enabled(bool b)        { auto_jump_enabled = b; }
+    bool   get_auto_jump_enabled() const        { return auto_jump_enabled; }
+    void   set_dev_camera_occlusion_mode(int m) { dev_camera_occlusion_mode = Math::clamp(m,0,1); }
+    int    get_dev_camera_occlusion_mode() const{ return dev_camera_occlusion_mode; }
+    void   set_dev_computer_movement_mode(int m){ dev_computer_movement_mode = Math::clamp(m,0,2); }
+    int    get_dev_computer_movement_mode() const{ return dev_computer_movement_mode; }
+    void   set_dev_touch_movement_mode(int m)   { dev_touch_movement_mode = Math::clamp(m,0,3); }
+    int    get_dev_touch_movement_mode() const  { return dev_touch_movement_mode; }
 
     // ── _ready ─────────────────────────────────────────────────────
     void _ready() override {

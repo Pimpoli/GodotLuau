@@ -82,10 +82,9 @@ public:
         create_service("StarterGui", "StarterGui"); // Icono añadido abajo
         create_service("StarterPack", "StarterPack");
 
-        // 3. STARTERPLAYER (Sin StarterCharacter)
+        // 3. STARTERPLAYER
         Node* st_player = create_service("StarterPlayer", "StarterPlayer");
         if (st_player) {
-            // StarterCharacterScripts existe, pero NO StarterCharacter
             Node* st_char_scripts = create_service("StarterCharacterScripts", "StarterCharacterScripts", st_player);
             
             // Health: ServerScript (se clona al personaje en spawn)
@@ -110,7 +109,7 @@ public:
         create_service("TextChatService", "TextChatService");
         create_service("Folder", "Folder");
 
-        UtilityFunctions::print("[GodotLuau] Entorno 'Game' generado. StarterCharacter eliminado.");
+        UtilityFunctions::print("[GodotLuau] Entorno 'Game' generado correctamente.");
     }
 };
 

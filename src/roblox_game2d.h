@@ -19,12 +19,11 @@
 //    │   ├── StarterCharacterScripts
 //    │   │   ├── Health   (LocalScript)  ← Regeneración de vida
 //    │   │   └── Animate  (LocalScript)  ← Animaciones
-//    │   ├── StarterPlayerScripts
-//    │   │   ├── PlayerModule (LocalScript) ← Loader principal
-//    │   │   └── Modules (Folder)
-//    │   │       ├── ControlModule (ModuleScript) ← Movimiento 2D
-//    │   │       └── CameraModule  (ModuleScript) ← Cámara 2D
-//    │   └── StarterCharacter
+//    │   └── StarterPlayerScripts
+//    │       ├── PlayerModule (LocalScript) ← Loader principal
+//    │       └── Modules (Folder)
+//    │           ├── ControlModule (ModuleScript) ← Movimiento 2D
+//    │           └── CameraModule  (ModuleScript) ← Cámara 2D
 //    ├── Teams / SoundService / TextChatService
 //    └── ...
 // ════════════════════════════════════════════════════════════════════
@@ -119,7 +118,6 @@ protected:
                 }
             }
 
-            make_node("StarterCharacter", "StarterCharacter", sp, root);
         }
 
         // ─── 6. OTROS SERVICIOS ──────────────────────────────────────

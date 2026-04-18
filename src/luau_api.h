@@ -9,6 +9,7 @@
 #include "roblox_part.h"
 #include "roblox_services.h"
 #include "roblox_remote.h"
+#include "roblox_workspace.h"
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -455,6 +456,12 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "ExposureCompensation")     == 0) { lua_pushnumber(L,  light_svc->get_exposure_comp());        return 1; }
         if (strcmp(key, "EnvironmentDiffuseScale")  == 0) { lua_pushnumber(L,  light_svc->get_env_diffuse_scale());    return 1; }
         if (strcmp(key, "EnvironmentSpecularScale") == 0) { lua_pushnumber(L,  light_svc->get_env_specular_scale());   return 1; }
+        if (strcmp(key, "Technology")               == 0) { lua_pushnumber(L,  light_svc->get_technology());            return 1; }
+        if (strcmp(key, "Ambient")                  == 0) { Color c = light_svc->get_ambient();        push_color3(L, c.r, c.g, c.b); return 1; }
+        if (strcmp(key, "OutdoorAmbient")           == 0) { Color c = light_svc->get_outdoor_ambient();push_color3(L, c.r, c.g, c.b); return 1; }
+        if (strcmp(key, "FogColor")                 == 0) { Color c = light_svc->get_fog_color();      push_color3(L, c.r, c.g, c.b); return 1; }
+        if (strcmp(key, "ColorShift_Top")           == 0) { Color c = light_svc->get_color_shift_top();   push_color3(L, c.r, c.g, c.b); return 1; }
+        if (strcmp(key, "ColorShift_Bottom")        == 0) { Color c = light_svc->get_color_shift_bottom();push_color3(L, c.r, c.g, c.b); return 1; }
     }
 
     // ── Node3D ────────────────────────────────────────────────────
@@ -513,7 +520,19 @@ static int godot_object_index(lua_State* L) {
     // ── RobloxPlayer ──────────────────────────────────────────────
     RobloxPlayer* rp = Object::cast_to<RobloxPlayer>(n);
     if (rp) {
-        if (strcmp(key, "CameraMode") == 0) { lua_pushnumber(L, rp->get_camera_mode()); return 1; }
+        if (strcmp(key, "CameraMode")              == 0) { lua_pushnumber(L, rp->get_camera_mode());               return 1; }
+        if (strcmp(key, "MouseSensitivity")        == 0) { lua_pushnumber(L, rp->get_mouse_sensitivity());         return 1; }
+        if (strcmp(key, "UserId")                  == 0) { lua_pushnumber(L, rp->get_user_id());                   return 1; }
+        if (strcmp(key, "DisplayName")             == 0) { lua_pushstring(L, rp->get_display_name().utf8().get_data()); return 1; }
+        if (strcmp(key, "AccountAge")              == 0) { lua_pushnumber(L, rp->get_account_age());               return 1; }
+        if (strcmp(key, "AutoJumpEnabled")         == 0) { lua_pushboolean(L, rp->get_auto_jump_enabled());        return 1; }
+        if (strcmp(key, "DevCameraOcclusionMode")  == 0) { lua_pushnumber(L, rp->get_dev_camera_occlusion_mode()); return 1; }
+        if (strcmp(key, "DevComputerMovementMode") == 0) { lua_pushnumber(L, rp->get_dev_computer_movement_mode()); return 1; }
+        if (strcmp(key, "DevTouchMovementMode")    == 0) { lua_pushnumber(L, rp->get_dev_touch_movement_mode());   return 1; }
+        if (strcmp(key, "TeamColor") == 0) {
+            Color c = rp->get_team_color();
+            push_color3(L, c.r, c.g, c.b); return 1;
+        }
     }
 
     // ── RobloxPlayer2D ────────────────────────────────────────────
@@ -528,11 +547,23 @@ static int godot_object_index(lua_State* L) {
     // ── Humanoid 3D ───────────────────────────────────────────────
     Humanoid* hum = Object::cast_to<Humanoid>(n);
     if (hum) {
-        if (strcmp(key, "Health")    == 0) { lua_pushnumber(L, hum->get_health());     return 1; }
-        if (strcmp(key, "MaxHealth") == 0) { lua_pushnumber(L, hum->get_max_health()); return 1; }
-        if (strcmp(key, "WalkSpeed") == 0) { lua_pushnumber(L, hum->get_walk_speed()); return 1; }
-        if (strcmp(key, "JumpPower") == 0) { lua_pushnumber(L, hum->get_jump_power()); return 1; }
-        if (strcmp(key, "IsDead")    == 0) { lua_pushboolean(L, hum->is_character_dead()); return 1; }
+        if (strcmp(key, "Health")                 == 0) { lua_pushnumber(L, hum->get_health());                  return 1; }
+        if (strcmp(key, "MaxHealth")              == 0) { lua_pushnumber(L, hum->get_max_health());              return 1; }
+        if (strcmp(key, "WalkSpeed")              == 0) { lua_pushnumber(L, hum->get_walk_speed());              return 1; }
+        if (strcmp(key, "JumpPower")              == 0) { lua_pushnumber(L, hum->get_jump_power());              return 1; }
+        if (strcmp(key, "JumpHeight")             == 0) { lua_pushnumber(L, hum->get_jump_height());             return 1; }
+        if (strcmp(key, "HipHeight")              == 0) { lua_pushnumber(L, hum->get_hip_height());              return 1; }
+        if (strcmp(key, "Gravity")                == 0) { lua_pushnumber(L, hum->get_gravity_val());             return 1; }
+        if (strcmp(key, "IsDead")                 == 0) { lua_pushboolean(L, hum->is_character_dead());          return 1; }
+        if (strcmp(key, "AutoRotate")             == 0) { lua_pushboolean(L, hum->get_auto_rotate());            return 1; }
+        if (strcmp(key, "AutoJumpEnabled")        == 0) { lua_pushboolean(L, hum->get_auto_jump_enabled());      return 1; }
+        if (strcmp(key, "DisplayName")            == 0) { lua_pushstring(L, hum->get_display_name().utf8().get_data()); return 1; }
+        if (strcmp(key, "NameDisplayDistance")    == 0) { lua_pushnumber(L, hum->get_name_display_distance());   return 1; }
+        if (strcmp(key, "HealthDisplayDistance")  == 0) { lua_pushnumber(L, hum->get_health_display_distance()); return 1; }
+        if (strcmp(key, "RigType")                == 0) { lua_pushnumber(L, hum->get_rig_type());                return 1; }
+        if (strcmp(key, "EvaluateStateMachine")   == 0) { lua_pushboolean(L, hum->get_evaluate_state_machine()); return 1; }
+        if (strcmp(key, "BreakJointsOnDeath")     == 0) { lua_pushboolean(L, hum->get_break_joints_on_death());  return 1; }
+        if (strcmp(key, "RequiresNeck")           == 0) { lua_pushboolean(L, hum->get_requires_neck());          return 1; }
 
         if (strcmp(key, "TakeDamage") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
@@ -724,11 +755,31 @@ static int godot_object_index(lua_State* L) {
     // ── RobloxPart ────────────────────────────────────────────────
     RobloxPart* part = Object::cast_to<RobloxPart>(n);
     if (part) {
-        if (strcmp(key, "Anchored")     == 0) { lua_pushboolean(L, part->get_anchored());      return 1; }
-        if (strcmp(key, "CanCollide")   == 0) { lua_pushboolean(L, part->get_can_collide());   return 1; }
-        if (strcmp(key, "Transparency") == 0) { lua_pushnumber(L, part->get_transparency());   return 1; }
+        if (strcmp(key, "Anchored")          == 0) { lua_pushboolean(L, part->get_anchored());      return 1; }
+        if (strcmp(key, "CanCollide")        == 0) { lua_pushboolean(L, part->get_can_collide());   return 1; }
+        if (strcmp(key, "CanTouch")          == 0) { lua_pushboolean(L, part->get_can_touch());     return 1; }
+        if (strcmp(key, "CanQuery")          == 0) { lua_pushboolean(L, part->get_can_query());     return 1; }
+        if (strcmp(key, "CastShadow")        == 0) { lua_pushboolean(L, part->get_cast_shadow());   return 1; }
+        if (strcmp(key, "Locked")            == 0) { lua_pushboolean(L, part->get_locked());        return 1; }
+        if (strcmp(key, "Massless")          == 0) { lua_pushboolean(L, part->get_massless());      return 1; }
+        if (strcmp(key, "Transparency")      == 0) { lua_pushnumber(L, part->get_transparency());   return 1; }
+        if (strcmp(key, "Reflectance")       == 0) { lua_pushnumber(L, part->get_reflectance());    return 1; }
+        if (strcmp(key, "Material")          == 0) { lua_pushnumber(L, part->get_roblox_material());return 1; }
+        if (strcmp(key, "Shape")             == 0) { lua_pushnumber(L, part->get_roblox_shape());   return 1; }
+        if (strcmp(key, "Density")           == 0) { lua_pushnumber(L, part->get_density());        return 1; }
+        if (strcmp(key, "Friction")          == 0) { lua_pushnumber(L, part->get_friction_val());   return 1; }
+        if (strcmp(key, "Elasticity")        == 0) { lua_pushnumber(L, part->get_elasticity());     return 1; }
+        if (strcmp(key, "FrictionWeight")    == 0) { lua_pushnumber(L, part->get_friction_weight());return 1; }
+        if (strcmp(key, "ElasticityWeight")  == 0) { lua_pushnumber(L, part->get_elasticity_weight()); return 1; }
+        if (strcmp(key, "Mass")              == 0) { lua_pushnumber(L, part->get_mass_roblox());    return 1; }
+        if (strcmp(key, "TopSurface")        == 0) { lua_pushnumber(L, part->get_top_surface());    return 1; }
+        if (strcmp(key, "BottomSurface")     == 0) { lua_pushnumber(L, part->get_bottom_surface()); return 1; }
+        if (strcmp(key, "FrontSurface")      == 0) { lua_pushnumber(L, part->get_front_surface());  return 1; }
+        if (strcmp(key, "BackSurface")       == 0) { lua_pushnumber(L, part->get_back_surface());   return 1; }
+        if (strcmp(key, "LeftSurface")       == 0) { lua_pushnumber(L, part->get_left_surface());   return 1; }
+        if (strcmp(key, "RightSurface")      == 0) { lua_pushnumber(L, part->get_right_surface());  return 1; }
 
-        if (strcmp(key, "Color") == 0) {
+        if (strcmp(key, "Color") == 0 || strcmp(key, "BrickColor") == 0) {
             Color c = part->get_color();
             push_color3(L, c.r, c.g, c.b); return 1;
         }
@@ -736,30 +787,55 @@ static int godot_object_index(lua_State* L) {
             Vector3 s = part->get_size();
             push_vector3(L, s.x, s.y, s.z); return 1;
         }
+        if (strcmp(key, "Position") == 0) {
+            Vector3 p = part->get_global_position();
+            push_vector3(L, p.x, p.y, p.z); return 1;
+        }
+        if (strcmp(key, "Orientation") == 0) {
+            Vector3 r = part->get_rotation_degrees();
+            push_vector3(L, r.x, r.y, r.z); return 1;
+        }
+        if (strcmp(key, "Velocity") == 0) {
+            Vector3 v = part->get_linear_velocity();
+            push_vector3(L, v.x, v.y, v.z); return 1;
+        }
+        if (strcmp(key, "AngularVelocity") == 0) {
+            Vector3 v = part->get_angular_velocity();
+            push_vector3(L, v.x, v.y, v.z); return 1;
+        }
 
-        if (strcmp(key, "Touched") == 0) {
+        if (strcmp(key, "Touched") == 0 || strcmp(key, "TouchEnded") == 0) {
+            const char* sig_name = key; // capture the signal name
             lua_newtable(L);
-            lua_pushlightuserdata(L, n); lua_setfield(L, -2, "_node");
-            lua_pushcfunction(L, [](lua_State* L) -> int {
-                lua_getfield(L, 1, "_node");
-                Node* target = (Node*)lua_touserdata(L, -1);
-                lua_pop(L, 1);
-
+            lua_pushlightuserdata(L, n);
+            lua_pushstring(L, sig_name);
+            lua_pushcclosure(L, [](lua_State* L) -> int {
+                Node* target = (Node*)lua_touserdata(L, lua_upvalueindex(1));
+                const char* sig  = lua_tostring(L, lua_upvalueindex(2));
                 if (lua_isfunction(L, 2)) {
                     lua_pushvalue(L, 2);
                     int ref = lua_ref(L, -1);
                     int64_t ptr_L = (int64_t)L;
-
-                    if (target && target->has_signal("Touched")) {
-                        target->connect("Touched",
+                    if (target && target->has_signal(StringName(sig))) {
+                        target->connect(StringName(sig),
                             Callable(target, "_on_luau_part_touched").bind(ref, ptr_L));
                     }
                 }
                 return 0;
-            }, "Connect");
+            }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
             return 1;
         }
+    }
+
+    // ── RobloxWorkspace ────────────────────────────────────────────
+    RobloxWorkspace* ws = Object::cast_to<RobloxWorkspace>(n);
+    if (ws) {
+        if (strcmp(key, "Gravity")                  == 0) { lua_pushnumber(L, ws->get_gravity());                      return 1; }
+        if (strcmp(key, "FallenPartsDestroyHeight")  == 0) { lua_pushnumber(L, ws->get_fallen_parts_destroy_height());  return 1; }
+        if (strcmp(key, "StreamingEnabled")          == 0) { lua_pushboolean(L, ws->get_streaming_enabled());           return 1; }
+        if (strcmp(key, "AirDensity")                == 0) { lua_pushnumber(L, ws->get_air_density());                  return 1; }
+        if (strcmp(key, "TouchesUseCollisionGroups") == 0) { lua_pushboolean(L, ws->get_touches_use_collision_groups());return 1; }
     }
 
     // ── RemoteEventNode ───────────────────────────────────────────────────
@@ -992,6 +1068,11 @@ static int godot_object_newindex(lua_State* L) {
         if (rp2d) rp2d->set_camera_mode((int)luaL_checknumber(L, 3));
         return 0;
     }
+    if (strcmp(key, "MouseSensitivity") == 0) {
+        RobloxPlayer* rp = Object::cast_to<RobloxPlayer>(n);
+        if (rp) rp->set_mouse_sensitivity((float)luaL_checknumber(L, 3));
+        return 0;
+    }
 
     if (strcmp(key, "MovementType") == 0) {
         RobloxPlayer2D* rp2d = Object::cast_to<RobloxPlayer2D>(n);
@@ -1001,10 +1082,22 @@ static int godot_object_newindex(lua_State* L) {
 
     Humanoid* hum = Object::cast_to<Humanoid>(n);
     if (hum) {
-        if (strcmp(key, "Health")    == 0) { hum->set_health((float)luaL_checknumber(L, 3));    return 0; }
-        if (strcmp(key, "WalkSpeed") == 0) { hum->set_walk_speed((float)luaL_checknumber(L, 3)); return 0; }
-        if (strcmp(key, "JumpPower") == 0) { hum->set_jump_power((float)luaL_checknumber(L, 3)); return 0; }
-        if (strcmp(key, "MaxHealth") == 0) { hum->set_max_health((float)luaL_checknumber(L, 3)); return 0; }
+        if (strcmp(key, "Health")               == 0) { hum->set_health((float)luaL_checknumber(L, 3));               return 0; }
+        if (strcmp(key, "MaxHealth")            == 0) { hum->set_max_health((float)luaL_checknumber(L, 3));            return 0; }
+        if (strcmp(key, "WalkSpeed")            == 0) { hum->set_walk_speed((float)luaL_checknumber(L, 3));            return 0; }
+        if (strcmp(key, "JumpPower")            == 0) { hum->set_jump_power((float)luaL_checknumber(L, 3));            return 0; }
+        if (strcmp(key, "JumpHeight")           == 0) { hum->set_jump_height((float)luaL_checknumber(L, 3));           return 0; }
+        if (strcmp(key, "HipHeight")            == 0) { hum->set_hip_height((float)luaL_checknumber(L, 3));            return 0; }
+        if (strcmp(key, "Gravity")              == 0) { hum->set_gravity_val((float)luaL_checknumber(L, 3));           return 0; }
+        if (strcmp(key, "AutoRotate")           == 0) { hum->set_auto_rotate(lua_toboolean(L, 3) != 0);                return 0; }
+        if (strcmp(key, "AutoJumpEnabled")      == 0) { hum->set_auto_jump_enabled(lua_toboolean(L, 3) != 0);          return 0; }
+        if (strcmp(key, "DisplayName")          == 0) { hum->set_display_name(String(luaL_checkstring(L, 3)));         return 0; }
+        if (strcmp(key, "NameDisplayDistance")  == 0) { hum->set_name_display_distance((float)luaL_checknumber(L, 3)); return 0; }
+        if (strcmp(key, "HealthDisplayDistance")== 0) { hum->set_health_display_distance((float)luaL_checknumber(L,3));return 0; }
+        if (strcmp(key, "RigType")              == 0) { hum->set_rig_type((int)luaL_checknumber(L, 3));                return 0; }
+        if (strcmp(key, "EvaluateStateMachine") == 0) { hum->set_evaluate_state_machine(lua_toboolean(L, 3) != 0);    return 0; }
+        if (strcmp(key, "BreakJointsOnDeath")   == 0) { hum->set_break_joints_on_death(lua_toboolean(L, 3) != 0);     return 0; }
+        if (strcmp(key, "RequiresNeck")         == 0) { hum->set_requires_neck(lua_toboolean(L, 3) != 0);              return 0; }
     }
 
     Humanoid2D* hum2d = Object::cast_to<Humanoid2D>(n);
@@ -1027,10 +1120,29 @@ static int godot_object_newindex(lua_State* L) {
 
     RobloxPart* part = Object::cast_to<RobloxPart>(n);
     if (part) {
-        if (strcmp(key, "Anchored")     == 0) { part->set_anchored(lua_toboolean(L, 3) != 0);                  return 0; }
-        if (strcmp(key, "CanCollide")   == 0) { part->set_can_collide(lua_toboolean(L, 3) != 0);               return 0; }
-        if (strcmp(key, "Transparency") == 0) { part->set_transparency((float)luaL_checknumber(L, 3));         return 0; }
-        if (strcmp(key, "Color") == 0) {
+        if (strcmp(key, "Anchored")         == 0) { part->set_anchored(lua_toboolean(L,3)!=0);                   return 0; }
+        if (strcmp(key, "CanCollide")       == 0) { part->set_can_collide(lua_toboolean(L,3)!=0);                return 0; }
+        if (strcmp(key, "CanTouch")         == 0) { part->set_can_touch(lua_toboolean(L,3)!=0);                  return 0; }
+        if (strcmp(key, "CanQuery")         == 0) { part->set_can_query(lua_toboolean(L,3)!=0);                  return 0; }
+        if (strcmp(key, "CastShadow")       == 0) { part->set_cast_shadow(lua_toboolean(L,3)!=0);                return 0; }
+        if (strcmp(key, "Locked")           == 0) { part->set_locked(lua_toboolean(L,3)!=0);                     return 0; }
+        if (strcmp(key, "Massless")         == 0) { part->set_massless(lua_toboolean(L,3)!=0);                   return 0; }
+        if (strcmp(key, "Transparency")     == 0) { part->set_transparency((float)luaL_checknumber(L,3));        return 0; }
+        if (strcmp(key, "Reflectance")      == 0) { part->set_reflectance((float)luaL_checknumber(L,3));         return 0; }
+        if (strcmp(key, "Material")         == 0) { part->set_roblox_material((int)luaL_checknumber(L,3));       return 0; }
+        if (strcmp(key, "Shape")            == 0) { part->set_roblox_shape((int)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "Density")          == 0) { part->set_density((float)luaL_checknumber(L,3));             return 0; }
+        if (strcmp(key, "Friction")         == 0) { part->set_friction_val((float)luaL_checknumber(L,3));        return 0; }
+        if (strcmp(key, "Elasticity")       == 0) { part->set_elasticity((float)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "FrictionWeight")   == 0) { part->set_friction_weight((float)luaL_checknumber(L,3));     return 0; }
+        if (strcmp(key, "ElasticityWeight") == 0) { part->set_elasticity_weight((float)luaL_checknumber(L,3));   return 0; }
+        if (strcmp(key, "TopSurface")       == 0) { part->set_top_surface((int)luaL_checknumber(L,3));           return 0; }
+        if (strcmp(key, "BottomSurface")    == 0) { part->set_bottom_surface((int)luaL_checknumber(L,3));        return 0; }
+        if (strcmp(key, "FrontSurface")     == 0) { part->set_front_surface((int)luaL_checknumber(L,3));         return 0; }
+        if (strcmp(key, "BackSurface")      == 0) { part->set_back_surface((int)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "LeftSurface")      == 0) { part->set_left_surface((int)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "RightSurface")     == 0) { part->set_right_surface((int)luaL_checknumber(L,3));         return 0; }
+        if (strcmp(key, "Color") == 0 || strcmp(key, "BrickColor") == 0) {
             LuauColor3* col = (LuauColor3*)lua_touserdata(L, 3);
             if (col) part->set_color(Color(col->r, col->g, col->b));
             return 0;
@@ -1038,6 +1150,53 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "Size") == 0) {
             LuauVector3* vec = (LuauVector3*)lua_touserdata(L, 3);
             if (vec) part->set_size(Vector3(vec->x, vec->y, vec->z));
+            return 0;
+        }
+        if (strcmp(key, "Position") == 0) {
+            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            if (v) part->set_global_position(Vector3(v->x, v->y, v->z));
+            return 0;
+        }
+        if (strcmp(key, "Orientation") == 0) {
+            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            if (v) part->set_rotation_degrees(Vector3(v->x, v->y, v->z));
+            return 0;
+        }
+        if (strcmp(key, "Velocity") == 0) {
+            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            if (v) part->set_linear_velocity(Vector3(v->x, v->y, v->z));
+            return 0;
+        }
+        if (strcmp(key, "AngularVelocity") == 0) {
+            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            if (v) part->set_angular_velocity(Vector3(v->x, v->y, v->z));
+            return 0;
+        }
+    }
+
+    // ── RobloxWorkspace write ─────────────────────────────────────
+    RobloxWorkspace* ws = Object::cast_to<RobloxWorkspace>(n);
+    if (ws) {
+        if (strcmp(key, "Gravity")                   == 0) { ws->set_gravity((float)luaL_checknumber(L,3));                      return 0; }
+        if (strcmp(key, "FallenPartsDestroyHeight")  == 0) { ws->set_fallen_parts_destroy_height((float)luaL_checknumber(L,3));  return 0; }
+        if (strcmp(key, "StreamingEnabled")          == 0) { ws->set_streaming_enabled(lua_toboolean(L,3)!=0);                   return 0; }
+        if (strcmp(key, "AirDensity")                == 0) { ws->set_air_density((float)luaL_checknumber(L,3));                  return 0; }
+        if (strcmp(key, "TouchesUseCollisionGroups") == 0) { ws->set_touches_use_collision_groups(lua_toboolean(L,3)!=0);        return 0; }
+    }
+
+    // ── RobloxPlayer write ────────────────────────────────────────
+    RobloxPlayer* rp_w = Object::cast_to<RobloxPlayer>(n);
+    if (rp_w) {
+        if (strcmp(key, "UserId")                  == 0) { rp_w->set_user_id((int)luaL_checknumber(L,3));                    return 0; }
+        if (strcmp(key, "DisplayName")             == 0) { rp_w->set_display_name(String(luaL_checkstring(L,3)));            return 0; }
+        if (strcmp(key, "AccountAge")              == 0) { rp_w->set_account_age((int)luaL_checknumber(L,3));                return 0; }
+        if (strcmp(key, "AutoJumpEnabled")         == 0) { rp_w->set_auto_jump_enabled(lua_toboolean(L,3)!=0);               return 0; }
+        if (strcmp(key, "DevCameraOcclusionMode")  == 0) { rp_w->set_dev_camera_occlusion_mode((int)luaL_checknumber(L,3));  return 0; }
+        if (strcmp(key, "DevComputerMovementMode") == 0) { rp_w->set_dev_computer_movement_mode((int)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key, "DevTouchMovementMode")    == 0) { rp_w->set_dev_touch_movement_mode((int)luaL_checknumber(L,3));    return 0; }
+        if (strcmp(key, "TeamColor") == 0) {
+            LuauColor3* col = (LuauColor3*)lua_touserdata(L, 3);
+            if (col) rp_w->set_team_color(Color(col->r, col->g, col->b));
             return 0;
         }
     }
@@ -1055,6 +1214,12 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "ExposureCompensation")     == 0) { light->set_exposure_comp((float)luaL_checknumber(L,3));      return 0; }
         if (strcmp(key, "EnvironmentDiffuseScale")  == 0) { light->set_env_diffuse_scale((float)luaL_checknumber(L,3));  return 0; }
         if (strcmp(key, "EnvironmentSpecularScale") == 0) { light->set_env_specular_scale((float)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key, "Technology")               == 0) { light->set_technology((int)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key, "Ambient")                  == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_ambient(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "OutdoorAmbient")           == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_outdoor_ambient(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "FogColor")                 == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_fog_color(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "ColorShift_Top")           == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_top(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "ColorShift_Bottom")        == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_bottom(Color(c->r,c->g,c->b)); return 0; }
     }
 
     RemoteFunctionNode* rfall = Object::cast_to<RemoteFunctionNode>(n);

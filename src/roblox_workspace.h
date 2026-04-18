@@ -3,6 +3,9 @@
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/physics_server3d.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/variant/variant.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
@@ -30,6 +33,25 @@ class RobloxWorkspace : public Node3D {
     GDCLASS(RobloxWorkspace, Node3D);
 
 private:
+    // Roblox Workspace properties
+    float gravity                      = 196.2f;
+    float fallen_parts_destroy_height  = -500.0f;
+    bool  streaming_enabled            = false;
+    float air_density                  = 0.0f;
+    bool  touches_use_collision_groups = false;
+
+    void _apply_gravity() {
+        if (!is_inside_tree()) return;
+        Viewport* vp = get_viewport();
+        if (!vp) return;
+        Ref<World3D> world = vp->find_world_3d();
+        if (!world.is_valid()) return;
+        RID space = world->get_space();
+        if (space.is_valid())
+            PhysicsServer3D::get_singleton()->area_set_param(
+                space, PhysicsServer3D::AREA_PARAM_GRAVITY, Variant(gravity));
+    }
+
     // Genera la textura de cuadros tipo Roblox
     Ref<ImageTexture> generar_textura_grid() {
         Ref<Image> img = Image::create(64, 64, false, Image::FORMAT_RGBA8);
@@ -45,7 +67,30 @@ private:
     }
 
 protected:
-    static void _bind_methods() {}
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
+        ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
+        ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
+        ClassDB::bind_method(D_METHOD("get_fallen_parts_destroy_height"),      &RobloxWorkspace::get_fallen_parts_destroy_height);
+        ClassDB::bind_method(D_METHOD("set_streaming_enabled","b"),            &RobloxWorkspace::set_streaming_enabled);
+        ClassDB::bind_method(D_METHOD("get_streaming_enabled"),                &RobloxWorkspace::get_streaming_enabled);
+        ClassDB::bind_method(D_METHOD("set_air_density","d"),                  &RobloxWorkspace::set_air_density);
+        ClassDB::bind_method(D_METHOD("get_air_density"),                      &RobloxWorkspace::get_air_density);
+        ClassDB::bind_method(D_METHOD("set_touches_use_collision_groups","b"), &RobloxWorkspace::set_touches_use_collision_groups);
+        ClassDB::bind_method(D_METHOD("get_touches_use_collision_groups"),     &RobloxWorkspace::get_touches_use_collision_groups);
+
+        ADD_GROUP("Mundo","");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Gravity",PROPERTY_HINT_RANGE,"0,1000,0.1"),
+            "set_gravity","get_gravity");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"FallenPartsDestroyHeight",PROPERTY_HINT_RANGE,"-10000,0,1"),
+            "set_fallen_parts_destroy_height","get_fallen_parts_destroy_height");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"StreamingEnabled"),
+            "set_streaming_enabled","get_streaming_enabled");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"AirDensity",PROPERTY_HINT_RANGE,"0,10,0.01"),
+            "set_air_density","get_air_density");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"TouchesUseCollisionGroups"),
+            "set_touches_use_collision_groups","get_touches_use_collision_groups");
+    }
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE && Engine::get_singleton()->is_editor_hint()) {
@@ -126,8 +171,22 @@ protected:
     }
 
 public:
+    // ── Getters / Setters ─────────────────────────────────────────
+    void  set_gravity(float g)                     { gravity = Math::max(g, 0.0f); _apply_gravity(); }
+    float get_gravity() const                      { return gravity; }
+    void  set_fallen_parts_destroy_height(float h) { fallen_parts_destroy_height = h; }
+    float get_fallen_parts_destroy_height() const  { return fallen_parts_destroy_height; }
+    void  set_streaming_enabled(bool b)            { streaming_enabled = b; }
+    bool  get_streaming_enabled() const            { return streaming_enabled; }
+    void  set_air_density(float d)                 { air_density = Math::max(d, 0.0f); }
+    float get_air_density() const                  { return air_density; }
+    void  set_touches_use_collision_groups(bool b) { touches_use_collision_groups = b; }
+    bool  get_touches_use_collision_groups() const { return touches_use_collision_groups; }
+
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
+
+        _apply_gravity();
 
         // ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
         Node* starter_player = nullptr;
@@ -141,26 +200,8 @@ public:
         p->set_position(Vector3(0, 5, 0));
         add_child(p);
 
-        // ── 3. Personaje personalizado desde StarterCharacter ────────────────────
-        bool tiene_personaje_custom = false;
-        if (starter_player) {
-            Node* starter_char = starter_player->get_node_or_null("StarterCharacter");
-            if (starter_char && starter_char->get_child_count() > 0) {
-                tiene_personaje_custom = true;
-                TypedArray<Node> hijos = starter_char->get_children();
-                for (int i = 0; i < hijos.size(); i++) {
-                    Node* hijo = Object::cast_to<Node>(hijos[i]);
-                    if (hijo) {
-                        Node* clon = hijo->duplicate();
-                        p->add_child(clon);
-                    }
-                }
-                UtilityFunctions::print("[GodotLuau] Personaje personalizado cargado desde StarterCharacter.");
-            }
-        }
-
-        // ── 4. Personaje predeterminado si StarterCharacter está vacío ────────────
-        if (!tiene_personaje_custom) {
+        // ── 3. Personaje cápsula predeterminado (igual que Roblox) ──────────────────
+        {
             MeshInstance3D* m = memnew(MeshInstance3D);
             m->set_name("Mesh");
             Ref<CapsuleMesh> cm; cm.instantiate();
@@ -173,14 +214,14 @@ public:
             p->add_child(c);
         }
 
-        // ── 5. Siempre garantizar Humanoid (movimiento) ──────────────────────────
+        // ── 4. Siempre garantizar Humanoid (movimiento) ──────────────────────────
         if (!p->get_node_or_null("Humanoid")) {
             Humanoid* hum = memnew(Humanoid);
             hum->set_name("Humanoid");
             p->add_child(hum);
         }
 
-        // ── 6. Clonar StarterCharacterScripts al personaje ───────────────────────
+        // ── 5. Clonar StarterCharacterScripts al personaje ───────────────────────
         if (starter_player) {
             Node* char_scripts = starter_player->get_node_or_null("StarterCharacterScripts");
             if (char_scripts) {

@@ -135,7 +135,6 @@ protected:
                     make_node("ModuleScript", "ChatModule",   mods, root);
                 }
             }
-            // Sin StarterCharacter — personaje capsula por defecto
         }
 
         // ─── 6. LIGHTING FX — hijos bajo Lighting ───────────────────

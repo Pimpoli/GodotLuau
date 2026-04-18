@@ -1,6 +1,8 @@
 #ifndef LUAU_AUTOCOMPLETE_H
 #define LUAU_AUTOCOMPLETE_H
 
+#include "luau_type_database.h"
+
 #include <godot_cpp/variant/variant.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -873,16 +875,42 @@ public:
             std::string vs=var_decl.utf8().get_data();
             if(known_vars.count(vs)||is_lua_keyword(var_decl)||var_decl.is_empty()) continue;
             LocalVar lv; lv.name=var_decl; lv.inferred_type="any";
-            if(var_val.begins_with("Instance.new(")) lv.inferred_type="Instance";
+            // Instance.new("ClassName") → map to Roblox type
+            if(var_val.find("Instance.new(")!=-1) {
+                static const char* inst_map[][2]={
+                    {"\"Part\"","BasePart"},{"\"MeshPart\"","BasePart"},{"\"WedgePart\"","BasePart"},
+                    {"\"CornerWedgePart\"","BasePart"},{"\"TrussPart\"","BasePart"},
+                    {"\"VehicleSeat\"","BasePart"},{"\"Seat\"","BasePart"},
+                    {"\"Humanoid\"","Humanoid"},{"\"Sound\"","Sound"},{"\"Model\"","Model"},
+                    {"\"Tween\"","Tween"},{"\"Animation\"","AnimationTrack"},
+                    {"\"RemoteEvent\"","RemoteEvent"},{"\"RemoteFunction\"","RemoteFunction"},
+                    {"\"BindableEvent\"","BindableEvent"},{"\"BindableFunction\"","BindableFunction"},
+                    {"\"ProximityPrompt\"","ProximityPrompt"},
+                    {nullptr,nullptr}
+                };
+                bool matched=false;
+                for(int ii=0;inst_map[ii][0];ii++) {
+                    if(var_val.find(String(inst_map[ii][0]))!=-1) {
+                        lv.inferred_type=String(inst_map[ii][1]); matched=true; break;
+                    }
+                }
+                if(!matched) lv.inferred_type="Instance";
+            }
             else if(var_val.begins_with("Vector3.new")) lv.inferred_type="Vector3";
             else if(var_val.begins_with("CFrame")) lv.inferred_type="CFrame";
             else if(var_val.begins_with("Color3")) lv.inferred_type="Color3";
             else if(var_val.begins_with("workspace")) lv.inferred_type="Workspace";
-            else if(var_val.begins_with("script")) lv.inferred_type="Node";
-            else if (var_val.find("Instance.new(\"RemoteEvent\")")!=-1)    lv.inferred_type="RemoteEvent";
-            else if (var_val.find("Instance.new(\"RemoteFunction\")")!=-1) lv.inferred_type="RemoteFunction";
-            else if (var_val.find("Instance.new(\"BindableEvent\")")!=-1)  lv.inferred_type="BindableEvent";
-            else if (var_val.find("Instance.new(\"BindableFunction\")")!=-1) lv.inferred_type="BindableFunction";
+            else if(var_val.begins_with("script")) lv.inferred_type="Script";
+            // Player / Character chains
+            else if(var_val.find("LocalPlayer.Character")!=-1||var_val.find("CharacterAdded:Wait()")!=-1)
+                lv.inferred_type="Model";
+            else if(var_val.find(".LocalPlayer")!=-1)      lv.inferred_type="Player";
+            else if(var_val.find("CurrentCamera")!=-1)     lv.inferred_type="Camera";
+            else if(var_val.find(":FindFirstChildOfClass(\"Humanoid\")")!=-1||
+                    var_val.find(":FindFirstChild(\"Humanoid\")")!=-1||
+                    var_val.find("WaitForChild(\"Humanoid\")")!=-1)
+                lv.inferred_type="Humanoid";
+            else if(var_val.find("GetPlayers()")!=-1)      lv.inferred_type="Players";
             else {
                 static const char* svc_pairs[][2]={
                     {"Players","Players"},{"Lighting","Lighting"},{"RunService","RunService"},
@@ -910,7 +938,16 @@ public:
         String resolved_type=target_prefix;
         for(const auto& v:locals) if(v.name==target_prefix) { resolved_type=v.inferred_type; break; }
         static const char* direct_maps[][2]={
-            {"script","Node"},{"workspace","Workspace"},{"Workspace","Workspace"},{"game","game"},
+            {"script","Script"},{"workspace","Workspace"},{"Workspace","Workspace"},
+            {"game","DataModel"},{"game.Workspace","Workspace"},
+            {"game.Players","Players"},{"game.Lighting","Lighting"},
+            {"game.RunService","RunService"},{"game.TweenService","TweenService"},
+            {"game.UserInputService","UserInputService"},{"game.SoundService","SoundService"},
+            {"game.ReplicatedStorage","ReplicatedStorage"},{"game.ServerScriptService","ServerScriptService"},
+            {"game.StarterPlayer","StarterPlayer"},{"game.StarterGui","StarterGui"},
+            {"game.Players.LocalPlayer","Player"},
+            {"game.Players.LocalPlayer.Character","Model"},
+            {"workspace.CurrentCamera","Camera"},{"workspace.Terrain","Terrain"},
             {"RemoteEvent","RemoteEvent"},{"RemoteFunction","RemoteFunction"},
             {"BindableEvent","BindableEvent"},{"BindableFunction","BindableFunction"},
             {"RunService","RunService"},{"Players","Players"},{"Lighting","Lighting"},
@@ -922,6 +959,8 @@ public:
             {"MarketplaceService","MarketplaceService"},{"GuiService","GuiService"},
             {"InsertService","InsertService"},{"ScriptContext","ScriptContext"},
             {"SoundService","SoundService"},{"TextChatService","TextChatService"},
+            {"StarterPlayer","StarterPlayer"},{"Camera","Camera"},
+            {"Humanoid","Humanoid"},{"Player","Player"},{"Model","Model"},{"Sound","Sound"},
             {nullptr,nullptr}
         };
         for(int mi=0;direct_maps[mi][0];mi++)
@@ -988,6 +1027,25 @@ public:
         if(!target_prefix.is_empty()) {
             String cls=resolved_type.is_empty()?target_prefix:resolved_type;
             add_dynamic_suggestions(cls,filter_str,filter_lower,sorter,usage_mem);
+
+            // Roblox type database: full property/method/signal list for known classes
+            std::string roblox_cls = cls.utf8().get_data();
+            const auto& roblox_mems = roblox_get_members(roblox_cls);
+            for(const auto& m : roblox_mems) {
+                String mname(m.name);
+                int sc=fuzzy_match_score(filter_str,filter_lower,mname); if(sc<=0) continue;
+                int layer=mname.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
+                std::string k=mname.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
+                Color c(0.6f,0.8f,1.0f,1.0f);
+                if(m.kind==1) c=Color(0.87f,0.87f,0.67f,1.0f);
+                else if(m.kind==2) c=Color(0.9f,0.5f,0.8f,1.0f);
+                String insert=mname;
+                if(m.kind==1) { insert+=String("("); insert+=String(")"); }
+                String display=mname; display+=String("  "); display+=String(m.sig);
+                String desc(m.desc);
+                desc+=String("\n\n[color=#888888]"); desc+=String(m.sig); desc+=String("[/color]");
+                sorter.push_back({layer,u,sc,display,insert,desc,String(m.sig),m.kind,c});
+            }
         }
 
         static const std::unordered_set<std::string> known_pfx={
@@ -1109,6 +1167,23 @@ public:
                 std::string k=name.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
                 sorter.push_back({1,u,sc,name,insert,desc,"",kind,c});
             };
+
+            // Type-specific method suggestions from database
+            if(!target_prefix.is_empty()) {
+                String cls2=resolved_type.is_empty()?target_prefix:resolved_type;
+                std::string rblx2=cls2.utf8().get_data();
+                const auto& mems2=roblox_get_members(rblx2);
+                for(const auto& m:mems2) {
+                    if(m.kind!=1) continue; // methods only for colon completion
+                    String mname(m.name);
+                    int sc=fuzzy_match_score(filter_str,filter_lower,mname); if(sc<=0) continue;
+                    std::string k=mname.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
+                    String insert=mname; insert+=String("()");
+                    String display=mname; display+=String("  "); display+=String(m.sig);
+                    sorter.push_back({1,u,sc,display,insert,String(m.desc),String(m.sig),1,Color(0.87f,0.87f,0.67f,1.f)});
+                }
+            }
+
             static const Color kEvt(0.85f,0.65f,0.95f,1.f), kRem(0.9f,0.7f,0.4f,1.f),
                                kObj(0.6f,0.95f,0.6f,1.f),   kDel(0.9f,0.5f,0.5f,1.f);
             try_colon("Connect(function)","Connect(function()\n\t\nend)","Connect event handler.",2,kEvt);

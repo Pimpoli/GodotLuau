@@ -78,13 +78,6 @@ protected:
     static void _bind_methods() {}
 };
 
-// Plantilla del personaje. Si está vacía se usa el personaje predeterminado (cápsula)
-class StarterCharacter : public Node {
-    GDCLASS(StarterCharacter, Node);
-protected:
-    static void _bind_methods() {}
-};
-
 // Container principal del jugador — crea sus hijos automáticamente al añadirlo al editor
 class StarterPlayer : public Node {
     GDCLASS(StarterPlayer, Node);
@@ -107,7 +100,6 @@ protected:
 
             if (!get_node_or_null("StarterCharacterScripts")) make_child("StarterCharacterScripts", memnew(StarterCharacterScripts));
             if (!get_node_or_null("StarterPlayerScripts"))    make_child("StarterPlayerScripts",    memnew(StarterPlayerScripts));
-            if (!get_node_or_null("StarterCharacter"))        make_child("StarterCharacter",        memnew(StarterCharacter));
         }
     }
 };
@@ -212,6 +204,11 @@ private:
     float fog_end              = 100000.0f;
     float fog_density          = 0.0f;
     Color fog_color            = Color(0.75f, 0.85f, 1.0f);
+    // ── Color shifts (Roblox ColorShift_Top / ColorShift_Bottom) ──
+    Color color_shift_top      = Color(0, 0, 0);
+    Color color_shift_bottom   = Color(0, 0, 0);
+    // Technology: 0=Compatibility 1=Legacy 2=Future 3=ShadowMap 4=Voxel
+    int   technology           = 3; // ShadowMap default (igual que Roblox Studio moderno)
     // ── Preset ───────────────────────────────────────────────────
     int lighting_preset        = PRESET_DEFAULT;
 
@@ -250,37 +247,70 @@ private:
         return _find_sun_r((Node*)get_tree()->get_root()); // <-- AÑADIDO (Node*)
     }
 
+    // Returns sun elevation in degrees. max_elev_out receives the latitude cap.
+    float _compute_elev(float* max_elev_out = nullptr) const {
+        float max_elev = 90.0f - Math::abs(geographic_latitude);
+        if (max_elev < 10.0f) max_elev = 10.0f;
+        if (max_elev_out) *max_elev_out = max_elev;
+        float t = (clock_time - 6.0f) / 12.0f;
+        if (t >= 0.0f && t <= 1.0f)
+            return Math::sin(t * (float)Math_PI) * max_elev;
+        float t2 = (clock_time < 6.0f) ? (clock_time / 6.0f)
+                                        : ((clock_time - 18.0f) / 6.0f);
+        return -(Math::sin(t2 * (float)Math_PI) * 30.0f);
+    }
+
     void _apply_sun() {
         DirectionalLight3D* sun = _find_sun();
         if (!sun) return;
-        float max_elev = 90.0f - Math::abs(geographic_latitude);
-        if (max_elev < 10.0f) max_elev = 10.0f;
-        float t = (clock_time - 6.0f) / 12.0f;
-        float elev;
-        if (t >= 0.0f && t <= 1.0f) {
-            elev = Math::sin(t * (float)Math_PI) * max_elev;
-        } else {
-            float t2 = (clock_time < 6.0f) ? (clock_time / 6.0f)
-                                            : ((clock_time - 18.0f) / 6.0f);
-            elev = -(Math::sin(t2 * (float)Math_PI) * 30.0f);
-        }
+        float max_elev = 0.0f;
+        float elev = _compute_elev(&max_elev);
         float sun_y = 45.0f + geographic_latitude * 0.3f;
         sun->set_rotation_degrees(Vector3(-elev, sun_y, 0.0f));
         sun->set_shadow(global_shadows);
-        sun->set_param(Light3D::PARAM_SHADOW_BLUR,  shadow_softness * 4.0f);
-        sun->set_param(Light3D::PARAM_ENERGY,       brightness);
-        sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale);
-        sun->set_param(Light3D::PARAM_SPECULAR,     env_specular_scale * 0.5f);
+        sun->set_param(Light3D::PARAM_SHADOW_BLUR, shadow_softness * 4.0f);
+
+        // Energy: smooth S-curve, zero below horizon, peak at noon
+        float elev_norm = elev / Math::max(max_elev, 10.0f); // -1..1
+        float raw_e = Math::clamp(elev_norm * 2.0f + 0.5f, 0.0f, 1.0f);
+        float sun_ene = raw_e * raw_e * (3.0f - 2.0f * raw_e); // smoothstep
+        sun->set_param(Light3D::PARAM_ENERGY,          brightness * sun_ene);
+        sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale * sun_ene);
+        sun->set_param(Light3D::PARAM_SPECULAR,        env_specular_scale * 0.5f * sun_ene);
+
+        // Color: white at noon, deep orange-red at horizon
+        float horizon_f = 1.0f - Math::clamp(elev_norm * 3.0f + 0.5f, 0.0f, 1.0f);
+        Color sun_col = Color(1.0f, 1.0f, 1.0f).lerp(Color(1.0f, 0.38f, 0.04f), horizon_f * 0.92f);
+        sun->set_color(sun_col);
     }
 
     void _apply_env() {
         Ref<Environment> env = _get_env();
         if (!env.is_valid()) return;
-        env->set_ambient_light_color(ambient);
-        env->set_ambient_light_energy(brightness * 0.4f);
+
+        // Compute time-based factors from sun elevation
+        float max_elev = 0.0f;
+        float elev = _compute_elev(&max_elev);
+        float elev_norm = elev / Math::max(max_elev, 10.0f);
+        float t_day    = Math::clamp(elev_norm * 2.5f + 0.5f, 0.0f, 1.0f);
+        float t_sunset = Math::max(0.0f, 1.0f - Math::abs(elev_norm) * 4.0f) * (elev_norm > -0.25f ? 1.0f : 0.0f);
+        float t_night  = Math::clamp(-elev_norm * 3.0f, 0.0f, 1.0f);
+
+        // Dynamic ambient: neutral day → warm sunset → cool night
+        Color night_amb  = Color(0.04f, 0.05f, 0.10f);
+        Color sunset_amb = Color(0.52f, 0.26f, 0.08f);
+        Color dyn_amb    = ambient.lerp(sunset_amb, t_sunset * 0.65f).lerp(night_amb, t_night);
+
+        env->set_ambient_light_color(dyn_amb);
+        env->set_ambient_light_energy(brightness * (0.15f + t_day * 0.35f));
         env->set_ambient_light_sky_contribution(env_diffuse_scale * 0.5f);
         env->set_tonemap_exposure(1.0f + exposure_comp * 0.5f);
-        // Fog
+
+        // Dynamic fog color: neutral day → warm sunset → dark night
+        Color night_fog  = Color(0.025f, 0.032f, 0.07f);
+        Color sunset_fog = Color(0.92f, 0.42f, 0.10f);
+        Color dyn_fog    = fog_color.lerp(sunset_fog, t_sunset * 0.55f).lerp(night_fog, t_night);
+
         bool use_depth_fog = (fog_end < 99000.0f && fog_end > fog_start);
         bool use_exp_fog   = (fog_density > 0.001f);
         env->set_fog_enabled(use_depth_fog || use_exp_fog);
@@ -288,12 +318,12 @@ private:
             env->set_fog_mode(Environment::FOG_MODE_DEPTH);
             env->set_fog_depth_begin(fog_start);
             env->set_fog_depth_end(fog_end);
-            env->set_fog_light_color(fog_color);
+            env->set_fog_light_color(dyn_fog);
             env->set_fog_density(0.01f);
         } else if (use_exp_fog) {
             env->set_fog_mode(Environment::FOG_MODE_EXPONENTIAL);
             env->set_fog_density(fog_density * 0.08f);
-            env->set_fog_light_color(fog_color);
+            env->set_fog_light_color(dyn_fog);
         }
     }
 
@@ -416,6 +446,20 @@ protected:
         ClassDB::bind_method(D_METHOD("set_fog_color","c"), &Lighting::set_fog_color);
         ClassDB::bind_method(D_METHOD("get_fog_color"),     &Lighting::get_fog_color);
         ADD_PROPERTY(PropertyInfo(Variant::COLOR,"FogColor"),"set_fog_color","get_fog_color");
+
+        ClassDB::bind_method(D_METHOD("set_color_shift_top","c"),    &Lighting::set_color_shift_top);
+        ClassDB::bind_method(D_METHOD("get_color_shift_top"),        &Lighting::get_color_shift_top);
+        ADD_PROPERTY(PropertyInfo(Variant::COLOR,"ColorShift_Top"),  "set_color_shift_top","get_color_shift_top");
+
+        ClassDB::bind_method(D_METHOD("set_color_shift_bottom","c"), &Lighting::set_color_shift_bottom);
+        ClassDB::bind_method(D_METHOD("get_color_shift_bottom"),     &Lighting::get_color_shift_bottom);
+        ADD_PROPERTY(PropertyInfo(Variant::COLOR,"ColorShift_Bottom"),"set_color_shift_bottom","get_color_shift_bottom");
+
+        ClassDB::bind_method(D_METHOD("set_technology","t"), &Lighting::set_technology);
+        ClassDB::bind_method(D_METHOD("get_technology"),     &Lighting::get_technology);
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"Technology",PROPERTY_HINT_ENUM,
+            "Compatibility:0,Legacy:1,Future:2,ShadowMap:3,Voxel:4"),
+            "set_technology","get_technology");
     }
 
     void _notification(int p_what) {
@@ -456,8 +500,14 @@ public:
     float get_fog_end() const           { return fog_end; }
     void set_fog_density(float v)       { fog_density = Math::clamp(v,0.0f,1.0f);   if(is_inside_tree()) _apply_env(); }
     float get_fog_density() const       { return fog_density; }
-    void set_fog_color(Color c)         { fog_color = c;                             if(is_inside_tree()) _apply_env(); }
-    Color get_fog_color() const         { return fog_color; }
+    void set_fog_color(Color c)          { fog_color = c;                             if(is_inside_tree()) _apply_env(); }
+    Color get_fog_color() const          { return fog_color; }
+    void  set_color_shift_top(Color c)   { color_shift_top = c; }
+    Color get_color_shift_top() const    { return color_shift_top; }
+    void  set_color_shift_bottom(Color c){ color_shift_bottom = c; }
+    Color get_color_shift_bottom() const { return color_shift_bottom; }
+    void  set_technology(int t)          { technology = Math::clamp(t, 0, 4); }
+    int   get_technology() const         { return technology; }
 };
 
 // ════════════════════════════════════════════════════════════════════
