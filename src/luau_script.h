@@ -400,36 +400,123 @@ return CameraModule
 
 // GameManager.lua — Script principal del servidor (ServerScriptService)
 static const char* LUAU_TEMPLATE_GAME_MANAGER = R"LUAU(
--- > GodotLuau — PimpoliDev
--- GameManager.lua — Script del servidor principal
--- Controla la lógica global del juego (temporizadores, eventos, etc.)
-
-local Players   = game:GetService("Players")
+-- GameManager.lua — ServerScript
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local RS         = game:GetService("ReplicatedStorage")
 
-print("[Servidor] GameManager iniciado!")
+print("[Server] GameManager started!")
 
--- ══ LÓGICA DEL SERVIDOR ═══════════════════════════════════════════
--- Aquí puedes agregar lógica que afecta a todos los jugadores:
--- temporizadores, rondas, puntuaciones, eventos, etc.
+-- Create shared RemoteEvents in ReplicatedStorage
+local DamageEvent = Instance.new("RemoteEvent")
+DamageEvent.Name   = "DamageEvent"
+DamageEvent.Parent = RS
 
--- Ejemplo: temporizador del juego
-local tiempoJuego = 0
+-- Client fires DamageEvent:FireServer(targetName, amount)
+DamageEvent.OnServerEvent:Connect(function(player, targetName, amount)
+    print("[Server]", player.Name, "-> damage", targetName, amount)
+end)
 
+-- Round timer example
+local roundTime = 0
 task.spawn(function()
     while true do
         task.wait(60)
-        tiempoJuego = tiempoJuego + 1
-        print("[Servidor] Tiempo de juego: " .. tiempoJuego .. " minutos")
+        roundTime = roundTime + 1
+        print("[Server] Round time:", roundTime, "min")
     end
 end)
 
--- Ejemplo: lógica por frame del servidor
--- RunService.Heartbeat:Connect(function(dt)
---     -- Lógica que se ejecuta cada frame
+print("[Server] Game ready!")
+)LUAU";
+
+// Default LocalScript template
+static const char* LUAU_TEMPLATE_LOCAL_SCRIPT = R"LUAU(
+-- LocalScript — runs on the client
+local Players          = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService       = game:GetService("RunService")
+
+local player    = Players.LocalPlayer
+
+-- Listen for a RemoteEvent sent from the server:
+-- local MyEvent = ReplicatedStorage:WaitForChild("MyEvent")
+-- MyEvent.OnClientEvent:Connect(function(data)
+--     print("Received from server:", data)
 -- end)
 
-print("[Servidor] Juego listo!")
+-- Fire an event to the server (e.g. on button click):
+-- MyEvent:FireServer("hello from client")
+
+-- Per-frame logic:
+-- RunService.RenderStepped:Connect(function(dt)
+--     -- client-side update
+-- end)
+)LUAU";
+
+// Default ServerScript template
+static const char* LUAU_TEMPLATE_SERVER_SCRIPT = R"LUAU(
+-- ServerScript — runs on the server
+local Players          = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService       = game:GetService("RunService")
+
+-- Create a RemoteEvent so clients can communicate with this script:
+-- local MyEvent = Instance.new("RemoteEvent")
+-- MyEvent.Name   = "MyEvent"
+-- MyEvent.Parent = ReplicatedStorage
+
+-- Handle messages from clients:
+-- MyEvent.OnServerEvent:Connect(function(player, data)
+--     print(player.Name, "sent:", data)
+--     MyEvent:FireClient(player, "server reply")
+--     MyEvent:FireAllClients("broadcast to everyone")
+-- end)
+
+-- RemoteFunction — synchronous call from client, returns a value:
+-- local GetData = Instance.new("RemoteFunction")
+-- GetData.Name   = "GetData"
+-- GetData.Parent = ReplicatedStorage
+-- GetData.OnServerInvoke = function(player, key)
+--     return "value_for_" .. key
+-- end
+
+print("[Server] Script started!")
+)LUAU";
+
+// Default ModuleScript OOP template
+static const char* LUAU_TEMPLATE_MODULE_OOP = R"LUAU(
+-- ModuleScript — OOP class pattern
+local MyClass = {}
+MyClass.__index = MyClass
+
+-- Constructor
+function MyClass.new(name, value)
+    local self   = setmetatable({}, MyClass)
+    self.Name    = name
+    self.Value   = value or 0
+    return self
+end
+
+-- Methods
+function MyClass:GetValue()
+    return self.Value
+end
+
+function MyClass:SetValue(val)
+    self.Value = val
+end
+
+function MyClass:ToString()
+    return "MyClass(" .. tostring(self.Name) .. ", " .. tostring(self.Value) .. ")"
+end
+
+-- Static helper
+function MyClass.create(name)
+    return MyClass.new(name, 0)
+end
+
+return MyClass
 )LUAU";
 
 #include "luau_api.h"
@@ -632,10 +719,14 @@ protected:
                         template_code = String(LUAU_TEMPLATE_CHAT_MODULE);
                     } else if (node_name == "GameManager") {
                         template_code = String(LUAU_TEMPLATE_GAME_MANAGER);
+                    } else if (cls == "LocalScript") {
+                        template_code = String(LUAU_TEMPLATE_LOCAL_SCRIPT);
+                    } else if (cls == "ServerScript") {
+                        template_code = String(LUAU_TEMPLATE_SERVER_SCRIPT);
                     } else if (cls == "ModuleScript") {
-                        template_code = "-- > GodotLuau\nlocal module = {}\n\nreturn module\n";
+                        template_code = String(LUAU_TEMPLATE_MODULE_OOP);
                     } else {
-                        template_code = "-- > GodotLuau\nprint(\"Hola desde " + cls + "\")\n";
+                        template_code = "-- > GodotLuau\nprint(\"Hello from " + cls + "\")\n";
                     }
 
                     new_script->_set_source_code(template_code);
@@ -660,9 +751,9 @@ protected:
             }
         } else {
             if (p_what == NOTIFICATION_EXIT_TREE) {
-                // Notificar a RunService que limpie callbacks de este estado
                 if (L_main) {
                     Node* root = get_tree()->get_root();
+                    // Clean RunService callbacks
                     for (int _ri = 0; _ri < root->get_child_count(); _ri++) {
                         Node* game = root->get_child(_ri);
                         if (!game) continue;
@@ -672,6 +763,16 @@ protected:
                             if (rs) rs->remove_by_state(L_main);
                         }
                     }
+                    // Clean Remote* callbacks — traverse entire tree
+                    std::function<void(Node*)> cleanup_remotes = [&](Node* nd) {
+                        if (!nd) return;
+                        if (RemoteEventNode*    re = Object::cast_to<RemoteEventNode>(nd))    re->cleanup_state(L_main);
+                        if (RemoteFunctionNode* rf = Object::cast_to<RemoteFunctionNode>(nd)) rf->cleanup_state(L_main);
+                        if (BindableEventNode*  be = Object::cast_to<BindableEventNode>(nd))  be->cleanup_state(L_main);
+                        for (int _ci = 0; _ci < nd->get_child_count(); _ci++)
+                            cleanup_remotes(nd->get_child(_ci));
+                    };
+                    cleanup_remotes(root);
                 }
 
                 for (auto& st : spawned_threads) {

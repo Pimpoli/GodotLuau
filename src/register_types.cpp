@@ -14,6 +14,7 @@
 #include "roblox_datamodel.h"
 #include "roblox_game3d.h"
 #include "roblox_game2d.h"
+#include "roblox_remote.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -76,6 +77,9 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<NetworkClient>();
         ClassDB::register_class<Teams>();
         ClassDB::register_class<Folder>();
+        ClassDB::register_class<RemoteEventNode>();
+        ClassDB::register_class<RemoteFunctionNode>();
+        ClassDB::register_class<BindableEventNode>();
         ClassDB::register_class<SoundService>();
         ClassDB::register_class<RunService>();
         ClassDB::register_class<TextChatService>();

@@ -8,6 +8,7 @@
 #include "roblox_player2d.h"
 #include "roblox_part.h"
 #include "roblox_services.h"
+#include "roblox_remote.h"
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -628,6 +629,154 @@ static int godot_object_index(lua_State* L) {
         }
     }
 
+    // ── RemoteEventNode ───────────────────────────────────────────────────
+    RemoteEventNode* re = Object::cast_to<RemoteEventNode>(n);
+    if (re) {
+        if (strcmp(key, "FireServer") == 0) {
+            lua_pushlightuserdata(L, (void*)re);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!rev) return 0;
+                int nargs = lua_gettop(pL) - 1;
+                rev->fire_server(pL, 2, nargs < 0 ? 0 : nargs);
+                return 0;
+            }, "FireServer", 1);
+            return 1;
+        }
+        if (strcmp(key, "FireClient") == 0) {
+            lua_pushlightuserdata(L, (void*)re);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!rev) return 0;
+                int nargs = lua_gettop(pL) - 2;
+                rev->fire_client(pL, 3, nargs < 0 ? 0 : nargs);
+                return 0;
+            }, "FireClient", 1);
+            return 1;
+        }
+        if (strcmp(key, "FireAllClients") == 0) {
+            lua_pushlightuserdata(L, (void*)re);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!rev) return 0;
+                int nargs = lua_gettop(pL) - 1;
+                rev->fire_client(pL, 2, nargs < 0 ? 0 : nargs);
+                return 0;
+            }, "FireAllClients", 1);
+            return 1;
+        }
+        if (strcmp(key, "OnServerEvent") == 0) {
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)re);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                int fn_pos = -1;
+                for (int ai = 1; ai <= lua_gettop(pL); ai++) {
+                    if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
+                }
+                if (fn_pos == -1 || !rev) return 0;
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                lua_pop(pL, 1);
+                if (!mL) mL = pL;
+                lua_pushvalue(pL, fn_pos);
+                int ref = lua_ref(pL, -1);
+                lua_pop(pL, 1);
+                rev->add_server_cb(mL, ref);
+                return 0;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+        if (strcmp(key, "OnClientEvent") == 0) {
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)re);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                int fn_pos = -1;
+                for (int ai = 1; ai <= lua_gettop(pL); ai++) {
+                    if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
+                }
+                if (fn_pos == -1 || !rev) return 0;
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                lua_pop(pL, 1);
+                if (!mL) mL = pL;
+                lua_pushvalue(pL, fn_pos);
+                int ref = lua_ref(pL, -1);
+                lua_pop(pL, 1);
+                rev->add_client_cb(mL, ref);
+                return 0;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+    }
+
+    // ── RemoteFunctionNode ────────────────────────────────────────────────
+    RemoteFunctionNode* rf = Object::cast_to<RemoteFunctionNode>(n);
+    if (rf) {
+        if (strcmp(key, "InvokeServer") == 0) {
+            lua_pushlightuserdata(L, (void*)rf);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteFunctionNode* rfn = (RemoteFunctionNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!rfn) { lua_pushnil(pL); return 1; }
+                int nargs = lua_gettop(pL) - 1;
+                return rfn->invoke_server(pL, 2, nargs < 0 ? 0 : nargs);
+            }, "InvokeServer", 1);
+            return 1;
+        }
+        if (strcmp(key, "InvokeClient") == 0) {
+            lua_pushlightuserdata(L, (void*)rf);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RemoteFunctionNode* rfn = (RemoteFunctionNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!rfn) { lua_pushnil(pL); return 1; }
+                int nargs = lua_gettop(pL) - 2;
+                return rfn->invoke_client(pL, 3, nargs < 0 ? 0 : nargs);
+            }, "InvokeClient", 1);
+            return 1;
+        }
+    }
+
+    // ── BindableEventNode ─────────────────────────────────────────────────
+    BindableEventNode* be = Object::cast_to<BindableEventNode>(n);
+    if (be) {
+        if (strcmp(key, "Fire") == 0) {
+            lua_pushlightuserdata(L, (void*)be);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                BindableEventNode* bev = (BindableEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!bev) return 0;
+                int nargs = lua_gettop(pL) - 1;
+                bev->fire(pL, 2, nargs < 0 ? 0 : nargs);
+                return 0;
+            }, "Fire", 1);
+            return 1;
+        }
+        if (strcmp(key, "Event") == 0) {
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)be);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                BindableEventNode* bev = (BindableEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                int fn_pos = -1;
+                for (int ai = 1; ai <= lua_gettop(pL); ai++) {
+                    if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
+                }
+                if (fn_pos == -1 || !bev) return 0;
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                lua_pop(pL, 1);
+                if (!mL) mL = pL;
+                lua_pushvalue(pL, fn_pos);
+                int ref = lua_ref(pL, -1);
+                lua_pop(pL, 1);
+                bev->add_cb(mL, ref);
+                return 0;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+    }
+
     // ── CurrentCamera — workspace.CurrentCamera devuelve la cámara activa ─
     // Busca Camera3D o Camera2D en el workspace o en el jugador local
     if (strcmp(key, "CurrentCamera") == 0) {
@@ -762,6 +911,24 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "FogDensity")    == 0) { light->set_fog_density((float)luaL_checknumber(L, 3));  return 0; }
     }
 
+    RemoteFunctionNode* rfall = Object::cast_to<RemoteFunctionNode>(n);
+    if (rfall && lua_isfunction(L, 3)) {
+        if (strcmp(key, "OnServerInvoke") == 0) {
+            lua_pushvalue(L, 3);
+            int ref = lua_ref(L, -1);
+            lua_pop(L, 1);
+            rfall->set_server_invoke(L, ref);
+            return 0;
+        }
+        if (strcmp(key, "OnClientInvoke") == 0) {
+            lua_pushvalue(L, 3);
+            int ref = lua_ref(L, -1);
+            lua_pop(L, 1);
+            rfall->set_client_invoke(L, ref);
+            return 0;
+        }
+    }
+
     return 0;
 }
 
@@ -772,14 +939,17 @@ static int godot_instance_new(lua_State* L) {
     const char* cls = luaL_checkstring(L, 1);
     Node* nn = nullptr;
 
-    if      (strcmp(cls, "Part")           == 0) nn = memnew(RobloxPart);
-    else if (strcmp(cls, "Folder")         == 0) nn = memnew(Folder);
-    else if (strcmp(cls, "Model")          == 0) nn = memnew(Node3D);
-    else if (strcmp(cls, "Humanoid")       == 0) nn = memnew(Humanoid);
-    else if (strcmp(cls, "Humanoid2D")     == 0) nn = memnew(Humanoid2D);
-    else if (strcmp(cls, "PointLight")     == 0) nn = memnew(OmniLight3D);
-    else if (strcmp(cls, "SpotLight")      == 0) nn = memnew(SpotLight3D);
+    if      (strcmp(cls, "Part")             == 0) nn = memnew(RobloxPart);
+    else if (strcmp(cls, "Folder")           == 0) nn = memnew(Folder);
+    else if (strcmp(cls, "Model")            == 0) nn = memnew(Node3D);
+    else if (strcmp(cls, "Humanoid")         == 0) nn = memnew(Humanoid);
+    else if (strcmp(cls, "Humanoid2D")       == 0) nn = memnew(Humanoid2D);
+    else if (strcmp(cls, "PointLight")       == 0) nn = memnew(OmniLight3D);
+    else if (strcmp(cls, "SpotLight")        == 0) nn = memnew(SpotLight3D);
     else if (strcmp(cls, "DirectionalLight") == 0) nn = memnew(DirectionalLight3D);
+    else if (strcmp(cls, "RemoteEvent")      == 0) nn = memnew(RemoteEventNode);
+    else if (strcmp(cls, "RemoteFunction")   == 0) nn = memnew(RemoteFunctionNode);
+    else if (strcmp(cls, "BindableEvent")    == 0) nn = memnew(BindableEventNode);
 
     if (nn) {
         nn->set_name(cls);

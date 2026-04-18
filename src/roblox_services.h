@@ -8,6 +8,11 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
+#include <godot_cpp/classes/environment.hpp>
+#include <godot_cpp/classes/sky.hpp>
+#include <godot_cpp/classes/procedural_sky_material.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
 
 #include "lua.h"
 #include "lualib.h"

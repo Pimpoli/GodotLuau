@@ -273,6 +273,104 @@ private:
         return hints;
     }
 
+    // ── Detect which property appears on the LHS of an `=` assignment ───────
+    static String detect_assigned_property(const String& ctc) {
+        for (int i = ctc.length() - 1; i >= 1; i--) {
+            char32_t c = ctc[i];
+            if (c == '\n') break;
+            char32_t pc = ctc[i-1];
+            if (c == '=') {
+                if (pc=='='||pc=='~'||pc=='<'||pc=='>') continue;
+                String lhs = ctc.substr(0, i).strip_edges();
+                int dot = lhs.rfind(".");
+                if (dot == -1) return "";
+                String prop = lhs.substr(dot+1).strip_edges();
+                for (int k=0; k<prop.length(); k++) {
+                    char32_t ch=prop[k];
+                    if (!((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||ch=='_')) return "";
+                }
+                return prop;
+            }
+        }
+        return "";
+    }
+
+    // ── Type-specific suggestions when assigning to a known property ─────────
+    static void add_property_assign_hints(const String& prop, std::vector<TempSuggestion>& out) {
+        std::string p = prop.to_lower().utf8().get_data();
+        static const Color kColor(0.95f,0.65f,0.45f,1.f), kVec(0.5f,0.85f,1.f,1.f),
+                           kBool(0.4f,0.9f,0.6f,1.f),     kNum(0.7f,0.95f,0.5f,1.f),
+                           kStr(0.9f,0.85f,0.5f,1.f),      kSvc(0.9f,0.75f,0.4f,1.f),
+                           kEnum(0.8f,0.7f,0.5f,1.f);
+        auto add = [&](const String& disp, const String& code, const String& desc, Color c) {
+            out.push_back({0, 100, 250, disp, code, desc, "", 6, c});
+        };
+
+        if (p=="color"||p=="backgroundcolor3"||p=="textcolor3"||p=="bordercolor3"||p.find("color3")!=std::string::npos) {
+            add("Color3.fromRGB(r,g,b) → white",  "Color3.fromRGB(255, 255, 255)", "White — channels 0-255.", kColor);
+            add("Color3.fromRGB(r,g,b) → red",    "Color3.fromRGB(255, 0, 0)",     "Red.", kColor);
+            add("Color3.fromRGB(r,g,b) → green",  "Color3.fromRGB(0, 200, 0)",     "Green.", kColor);
+            add("Color3.fromRGB(r,g,b) → blue",   "Color3.fromRGB(0, 120, 255)",   "Blue.", kColor);
+            add("Color3.fromRGB(r,g,b) → black",  "Color3.fromRGB(0, 0, 0)",       "Black.", kColor);
+            add("Color3.new(r,g,b) float 0-1",    "Color3.new(1, 1, 1)",           "Float channels [0–1].", kColor);
+            add("Color3.fromHex(hex)",             "Color3.fromHex(\"#FFFFFF\")",   "Web hex color.", kColor);
+        } else if (p=="size"||p=="velocity"||p=="rotationvelocity") {
+            add("Vector3.new(x, y, z) → unit", "Vector3.new(1, 1, 1)", "Unit cube size.",  kVec);
+            add("Vector3.new(x, y, z) → zero","Vector3.new(0, 0, 0)", "Zero vector.",      kVec);
+            add("Vector3.zero",                "Vector3.zero",          "(0,0,0) shorthand.",kVec);
+            add("Vector3.one",                 "Vector3.one",           "(1,1,1) shorthand.",kVec);
+        } else if (p=="position"||p=="rotation") {
+            add("Vector3.new(x, y, z)","Vector3.new(0, 0, 0)", "World position / rotation.", kVec);
+            add("Vector3.zero",        "Vector3.zero",          "Origin.",                    kVec);
+        } else if (p=="cframe") {
+            add("CFrame.new(pos)",           "CFrame.new(Vector3.new(0, 0, 0))",      "CFrame at position.",          kVec);
+            add("CFrame.lookAt(at,target)",  "CFrame.lookAt(Vector3.new(), Vector3.new(0,0,-1))", "Pointing toward target.", kVec);
+            add("CFrame.Angles(rx,ry,rz)",   "CFrame.Angles(0, math.rad(90), 0)",     "Rotation-only CFrame.",        kVec);
+            add("CFrame.identity",           "CFrame.identity",                        "No translation or rotation.",  kVec);
+        } else if (p=="parent") {
+            add("workspace",                          "workspace",                                    "Physical world.",        kSvc);
+            add("script.Parent",                      "script.Parent",                                "Same container as this script.", kSvc);
+            add("game:GetService(\"ReplicatedStorage\")", "game:GetService(\"ReplicatedStorage\")", "Shared client+server.",   kSvc);
+            add("game:GetService(\"ServerStorage\")", "game:GetService(\"ServerStorage\")",         "Server-only storage.",    kSvc);
+            add("nil  (removes from tree)",           "nil",                                          "Detach from scene tree.", Color(0.7f,0.5f,0.5f,1.f));
+        } else if (p=="walkspeed") {
+            add("16   (default Roblox)", "16",  "Standard walk speed.",  kNum);
+            add("24   (sprint)",         "24",  "Sprint speed.",          kNum);
+            add("0    (freeze)",         "0",   "Immobilize character.",  kNum);
+            add("32   (very fast)",      "32",  "Very fast movement.",    kNum);
+        } else if (p=="jumppower") {
+            add("50   (default)", "50",  "Standard jump power.", kNum);
+            add("0    (disabled)","0",   "Disable jumping.",     kNum);
+            add("100  (high)",    "100", "Double height.",        kNum);
+        } else if (p=="health"||p=="maxhealth") {
+            add("100  (full)",   "100",                    "Full HP.",             kNum);
+            add("0    (dead)",   "0",                      "Kills the character.", kNum);
+            add("humanoid.MaxHealth","humanoid.MaxHealth","Restore to max.",       kNum);
+        } else if (p=="transparency"||p=="backgroundtransparency") {
+            add("0    (solid)",       "0",   "Fully visible.",       kNum);
+            add("0.5  (semi)",        "0.5", "Half transparent.",    kNum);
+            add("1    (invisible)",   "1",   "Fully invisible.",     kNum);
+        } else if (p=="anchored"||p=="cancollide"||p=="massless"||p=="visible"||
+                   p=="textscaled"||p=="globalshadows"||p=="enabled"||p=="castshado") {
+            add("true",  "true",  "Enable.",  kBool);
+            add("false", "false", "Disable.", Color(0.95f,0.5f,0.5f,1.f));
+        } else if (p=="name") {
+            add("\"MyObject\"", "\"MyObject\"", "Name shown in the scene explorer.", kStr);
+        } else if (p=="text") {
+            add("\"Your text here\"", "\"Your text here\"", "Visible label or button text.", kStr);
+        } else if (p=="material") {
+            add("Enum.Material.SmoothPlastic","Enum.Material.SmoothPlastic","Default smooth plastic.", kEnum);
+            add("Enum.Material.Neon",         "Enum.Material.Neon",         "Glowing neon.",           kEnum);
+            add("Enum.Material.Metal",        "Enum.Material.Metal",        "Metallic sheen.",         kEnum);
+            add("Enum.Material.Wood",         "Enum.Material.Wood",         "Wooden texture.",         kEnum);
+            add("Enum.Material.Glass",        "Enum.Material.Glass",        "Transparent glass.",      kEnum);
+        } else if (p=="zindex") {
+            add("1", "1",  "Default layer.",  kNum);
+            add("2", "2",  "Above layer 1.",  kNum);
+            add("10","10", "Topmost layer.",  kNum);
+        }
+    }
+
     static void add_dynamic_suggestions(const String& class_name, const std::string& f, const std::string& fl, std::vector<TempSuggestion>& out, const std::unordered_map<std::string,int>& mem) {
         if(!ClassDB::class_exists(class_name)) return;
         TypedArray<Dictionary> props=ClassDB::class_get_property_list(class_name,true);
@@ -661,6 +759,24 @@ private:
             {"Instance","MouseButton1Click","MouseButton1Click","RBXScriptSignal","[Event] Left click on the button.||[Evento] Clic izquierdo en el botón.||[Evento] Clique esquerdo no botão.",2},
             {"Instance","MouseEnter","MouseEnter","RBXScriptSignal","[Event] Mouse enters the frame.||[Evento] El mouse entra al frame.||[Evento] O mouse entra no frame.",2},
             {"Instance","MouseLeave","MouseLeave","RBXScriptSignal","[Event] Mouse leaves the frame.||[Evento] El mouse sale del frame.||[Evento] O mouse sai do frame.",2},
+
+            {"RemoteEvent","FireServer","FireServer()","(...: any) -> ()","Sends data from client to server.||Envía datos del cliente al servidor.||Envia dados do cliente para o servidor.",1},
+            {"RemoteEvent","FireClient","FireClient()","(player: Player, ...: any) -> ()","Sends data from server to one client.||Envía datos del servidor a un cliente.||Envia dados do servidor para um cliente.",1},
+            {"RemoteEvent","FireAllClients","FireAllClients()","(...: any) -> ()","Broadcasts from server to all clients.||Transmite del servidor a todos.||Transmite do servidor para todos.",1},
+            {"RemoteEvent","OnServerEvent","OnServerEvent","RBXScriptSignal","[Event] Server receives client :FireServer call. Args: (player, ...).||[Evento] Servidor recibe :FireServer.||[Evento] Servidor recebe :FireServer.",2},
+            {"RemoteEvent","OnClientEvent","OnClientEvent","RBXScriptSignal","[Event] Client receives :FireClient call. Args: (...).||[Evento] Cliente recibe :FireClient.||[Evento] Cliente recebe :FireClient.",2},
+
+            {"RemoteFunction","InvokeServer","InvokeServer()","(...: any) -> ...any","Calls server handler and waits for return value.||Llama al handler del servidor y espera retorno.||Chama o handler do servidor e aguarda retorno.",1},
+            {"RemoteFunction","InvokeClient","InvokeClient()","(player: Player, ...: any) -> ...any","Calls client handler and waits for return value.||Llama al handler del cliente y espera.||Chama o handler do cliente e aguarda.",1},
+            {"RemoteFunction","OnServerInvoke","OnServerInvoke","function","Assign function; called when client invokes. Args: (player, ...).||Asignar función; llamado al invocar desde cliente.||Atribuir função; chamado ao invocar do cliente.",4},
+            {"RemoteFunction","OnClientInvoke","OnClientInvoke","function","Assign function; called when server invokes. Args: (...).||Asignar función; llamado al invocar desde servidor.||Atribuir função; chamado ao invocar do servidor.",4},
+
+            {"BindableEvent","Fire","Fire()","(...: any) -> ()","Fires event to all same-side listeners.||Dispara evento a los oyentes del mismo lado.||Dispara evento para ouvintes do mesmo lado.",1},
+            {"BindableEvent","Event","Event","RBXScriptSignal","[Event] Connect to listen for :Fire(). Same side only.||[Evento] Escuchar :Fire() del mismo lado.||[Evento] Ouvir :Fire() do mesmo lado.",2},
+
+            {"BindableFunction","Invoke","Invoke()","(...: any) -> ...any","Synchronously calls OnInvoke handler.||Llama síncronamente al handler OnInvoke.||Chama sincronamente o handler OnInvoke.",1},
+            {"BindableFunction","OnInvoke","OnInvoke","function","Assign function; called by :Invoke(). Args: (...).||Asignar función; llamada por :Invoke().||Atribuir função; chamada por :Invoke().",4},
+
             {nullptr,nullptr,nullptr,nullptr,nullptr,0}
         };
         return api;
@@ -763,6 +879,10 @@ public:
             else if(var_val.begins_with("Color3")) lv.inferred_type="Color3";
             else if(var_val.begins_with("workspace")) lv.inferred_type="Workspace";
             else if(var_val.begins_with("script")) lv.inferred_type="Node";
+            else if (var_val.find("Instance.new(\"RemoteEvent\")")!=-1)    lv.inferred_type="RemoteEvent";
+            else if (var_val.find("Instance.new(\"RemoteFunction\")")!=-1) lv.inferred_type="RemoteFunction";
+            else if (var_val.find("Instance.new(\"BindableEvent\")")!=-1)  lv.inferred_type="BindableEvent";
+            else if (var_val.find("Instance.new(\"BindableFunction\")")!=-1) lv.inferred_type="BindableFunction";
             else {
                 static const char* svc_pairs[][2]={
                     {"Players","Players"},{"Lighting","Lighting"},{"RunService","RunService"},
@@ -791,6 +911,8 @@ public:
         for(const auto& v:locals) if(v.name==target_prefix) { resolved_type=v.inferred_type; break; }
         static const char* direct_maps[][2]={
             {"script","Node"},{"workspace","Workspace"},{"Workspace","Workspace"},{"game","game"},
+            {"RemoteEvent","RemoteEvent"},{"RemoteFunction","RemoteFunction"},
+            {"BindableEvent","BindableEvent"},{"BindableFunction","BindableFunction"},
             {"RunService","RunService"},{"Players","Players"},{"Lighting","Lighting"},
             {"TweenService","TweenService"},{"UserInputService","UserInputService"},
             {"HttpService","HttpService"},{"Debris","Debris"},{"CollectionService","CollectionService"},
@@ -875,7 +997,8 @@ public:
             "UserInputService","HttpService","Debris","CollectionService","DataStoreService",
             "ContextActionService","PathfindingService","PhysicsService","TeleportService",
             "BadgeService","MarketplaceService","GuiService","InsertService",
-            "SoundService","TextChatService","StarterGui","ScriptContext"
+            "SoundService","TextChatService","StarterGui","ScriptContext",
+            "RemoteEvent","RemoteFunction","BindableEvent","BindableFunction"
         };
         String search_pfx = target_prefix;
         if(!target_prefix.is_empty()&&!known_pfx.count(target_prefix.utf8().get_data()))
@@ -907,22 +1030,32 @@ public:
 
         if(target_prefix.is_empty()) {
             if(is_after_equal) {
+                // Property-aware hints (highest priority when a property is detected)
+                String assigned_prop = detect_assigned_property(code_to_cursor);
+                if (!assigned_prop.is_empty())
+                    add_property_assign_hints(assigned_prop, sorter);
+
+                // AI variable-name hints
                 if(!filter.is_empty()) {
                     auto hints=get_var_ai_hints(filter,usage_mem);
                     for(auto& h:hints) sorter.push_back(h);
                 }
                 struct Snip{String tr,disp,code,desc;};
                 Snip eq_snips[]={
-                    {"Instance","Instance.new(\"Part\")","Instance.new(\"Part\")","Create new instance."},
-                    {"Vector3","Vector3.new(0, 0, 0)","Vector3.new(0, 0, 0)","3D zero vector."},
-                    {"Color3","Color3.fromRGB(255, 255, 255)","Color3.fromRGB(255, 255, 255)","White color."},
-                    {"CFrame","CFrame.new()","CFrame.new()","Identity matrix."},
-                    {"UDim2","UDim2.new(0, 0, 0, 0)","UDim2.new(0, 0, 0, 0)","UI dimension."},
-                    {"workspace","workspace","workspace","World reference."},
-                    {"game","game","game","DataModel reference."},
+                    {"Instance","Instance.new(\"Part\")","Instance.new(\"Part\")","Create a new Part instance."},
+                    {"Instance","Instance.new(\"RemoteEvent\")","Instance.new(\"RemoteEvent\")","Create a RemoteEvent."},
+                    {"Instance","Instance.new(\"BindableEvent\")","Instance.new(\"BindableEvent\")","Create a BindableEvent."},
+                    {"Vector3","Vector3.new(x, y, z)","Vector3.new(0, 0, 0)","3D zero vector."},
+                    {"Color3","Color3.fromRGB(r,g,b)","Color3.fromRGB(255, 255, 255)","White color."},
+                    {"CFrame","CFrame.new()","CFrame.new()","Identity CFrame."},
+                    {"UDim2","UDim2.new(xs,xo,ys,yo)","UDim2.new(0, 0, 0, 0)","UI dimension."},
+                    {"workspace","workspace","workspace","Physical world reference."},
+                    {"game","game","game","DataModel root reference."},
                     {"true","true","true","Boolean true."},
                     {"false","false","false","Boolean false."},
+                    {"nil","nil","nil","Empty / null value."},
                     {"0","0","0","Zero number."},
+                    {"math.huge","math.huge","math.huge","Positive infinity."},
                 };
                 for(auto& s:eq_snips) {
                     int sc=fuzzy_match_score(filter_str,filter_lower,s.tr); if(sc<=0) continue;
@@ -933,14 +1066,24 @@ public:
             } else {
                 struct Snip{String tr,disp,code,desc;};
                 Snip snips[]={
-                    {"local","local","local ","Declare a local variable."},
-                    {"function","function","function()\n\t\nend","Function block."},
-                    {"for","for i,v in","for i, v in pairs() do\n\t\nend","Iterate over a table."},
+                    {"local","local var","local ","Declare a local variable."},
+                    {"function","function() end","function()\n\t\nend","Function block."},
+                    {"for pairs","for i,v in pairs","for i, v in pairs(t) do\n\t\nend","Iterate dictionary."},
+                    {"for ipairs","for i,v in ipairs","for i, v in ipairs(t) do\n\t\nend","Iterate ordered array."},
+                    {"for numeric","for i = 1","for i = 1, 10 do\n\t\nend","Numeric for loop."},
                     {"while","while task.wait","while task.wait() do\n\t\nend","Infinite engine loop."},
+                    {"repeat","repeat until","repeat\n\t\nuntil false","Repeat-until block."},
                     {"if","if then","if  then\n\t\nend","Condition block."},
-                    {"require","require","require()","Module call."},
+                    {"if else","if then else","if  then\n\t\nelse\n\t\nend","If/else block."},
+                    {"pcall","pcall(fn)","local ok, err = pcall(function()\n\t\nend)","Protected call."},
+                    {"do","do end","do\n\t\nend","Scoped block."},
+                    {"require","require(module)","require()","Load a ModuleScript."},
                     {"task.spawn","task.spawn","task.spawn(function()\n\t\nend)","Spawn async task."},
-                    {"task.wait","task.wait","task.wait()","Pause current thread."},
+                    {"task.wait","task.wait()","task.wait()","Pause current thread."},
+                    {"task.delay","task.delay(sec,fn)","task.delay(1, function()\n\t\nend)","Delayed execution."},
+                    {"RemoteEvent","OnServerEvent setup","event.OnServerEvent:Connect(function(player)\n\t\nend)","Server receives client event."},
+                    {"RemoteEvent","OnClientEvent setup","event.OnClientEvent:Connect(function()\n\t\nend)","Client receives server event."},
+                    {"setmetatable","class OOP","local Class = {}\nClass.__index = Class\nfunction Class.new()\n\treturn setmetatable({}, Class)\nend\nreturn Class","OOP class skeleton."},
                 };
                 for(auto& s:snips) {
                     int sc=fuzzy_match_score(filter_str,filter_lower,s.tr); if(sc<=0) continue;
@@ -960,9 +1103,35 @@ public:
             }
         }
 
-        if(is_after_colon&&fuzzy_match_score(filter_str,filter_lower,"Connect")>0) {
-            std::string k="Connect"; int u=usage_mem.count(k)?usage_mem.at(k):0;
-            sorter.push_back({1,u,200,"Connect(function)","Connect(function()\n\t\nend)","Connects an event to an inline function.","",2,Color(0.85f,0.65f,0.95f,1.0f)});
+        if(is_after_colon) {
+            auto try_colon = [&](const String& name, const String& insert, const String& desc, int kind, Color c) {
+                int sc=fuzzy_match_score(filter_str,filter_lower,name); if(sc<=0) return;
+                std::string k=name.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
+                sorter.push_back({1,u,sc,name,insert,desc,"",kind,c});
+            };
+            static const Color kEvt(0.85f,0.65f,0.95f,1.f), kRem(0.9f,0.7f,0.4f,1.f),
+                               kObj(0.6f,0.95f,0.6f,1.f),   kDel(0.9f,0.5f,0.5f,1.f);
+            try_colon("Connect(function)","Connect(function()\n\t\nend)","Connect event handler.",2,kEvt);
+            try_colon("Once(function)",   "Once(function()\n\t\nend)",   "Connect handler that fires once.",2,kEvt);
+            try_colon("Wait()",           "Wait()",                       "Yield until this signal fires.",1,kEvt);
+            try_colon("FireServer(...)",  "FireServer()",                  "Send event from client to server.",1,kRem);
+            try_colon("FireClient(player,...)", "FireClient(player)",      "Send event to one client.",1,kRem);
+            try_colon("FireAllClients(...)","FireAllClients()",            "Broadcast to all clients.",1,kRem);
+            try_colon("InvokeServer(...)","InvokeServer()",                "Synchronous call to server (returns value).",1,kRem);
+            try_colon("Fire(...)",        "Fire()",                        "Fire a BindableEvent.",1,kRem);
+            try_colon("FindFirstChild(name)","FindFirstChild(\"\")",       "Find direct child by name.",1,kObj);
+            try_colon("WaitForChild(name)","WaitForChild(\"\")",           "Wait for child to load.",1,kObj);
+            try_colon("FindFirstChildOfClass(cls)","FindFirstChildOfClass(\"\")","Find child by class.",1,kObj);
+            try_colon("GetService(name)", "GetService(\"\")",              "Get a service by class name.",1,kObj);
+            try_colon("GetChildren()",    "GetChildren()",                 "Array of direct children.",1,kObj);
+            try_colon("GetDescendants()", "GetDescendants()",              "All descendant nodes.",1,kObj);
+            try_colon("IsA(className)",   "IsA(\"\")",                     "Check class type.",1,kObj);
+            try_colon("Clone()",          "Clone()",                       "Deep copy this instance.",1,kObj);
+            try_colon("Destroy()",        "Destroy()",                     "Remove from scene and memory.",1,kDel);
+            try_colon("SetAttribute(k,v)","SetAttribute(\"\", )",          "Store custom attribute.",1,kObj);
+            try_colon("GetAttribute(k)",  "GetAttribute(\"\")",            "Read custom attribute.",1,kObj);
+            try_colon("TakeDamage(n)",    "TakeDamage()",                  "Reduce Humanoid health.",1,kObj);
+            try_colon("LoadAnimation(a)", "LoadAnimation(animation)",      "Load animation onto Humanoid.",1,kObj);
         }
 
         std::sort(sorter.begin(),sorter.end());
