@@ -15,6 +15,7 @@
 #include "roblox_game3d.h"
 #include "roblox_game2d.h"
 #include "roblox_remote.h"
+#include "roblox_lighting_fx.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -83,6 +84,15 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<SoundService>();
         ClassDB::register_class<RunService>();
         ClassDB::register_class<TextChatService>();
+
+        // Lighting FX nodes
+        ClassDB::register_class<AtmosphereNode>();
+        ClassDB::register_class<LightingSkyNode>();
+        ClassDB::register_class<SunRaysNode>();
+        ClassDB::register_class<BloomEffect>();
+        ClassDB::register_class<BlurEffect>();
+        ClassDB::register_class<ColorCorrectionEffect>();
+        ClassDB::register_class<DepthOfFieldEffect>();
 
         // DataModel (nodo raíz heredado)
         ClassDB::register_class<RobloxDataModel>();

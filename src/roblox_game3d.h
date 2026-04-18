@@ -138,7 +138,20 @@ protected:
             // Sin StarterCharacter — personaje capsula por defecto
         }
 
-        // ─── 6. OTROS SERVICIOS ──────────────────────────────────────
+        // ─── 6. LIGHTING FX — hijos bajo Lighting ───────────────────
+        Node* lit = make_node("Lighting", "Lighting", this, root);
+        // (RobloxWorkspace ya crea el nodo Lighting base; si ya existe, lit != nullptr)
+        if (lit) {
+            make_node("AtmosphereNode",       "Atmosphere",      lit, root);
+            make_node("LightingSkyNode",      "Sky",             lit, root);
+            make_node("SunRaysNode",          "SunRays",         lit, root);
+            make_node("BloomEffect",          "Bloom",           lit, root);
+            make_node("BlurEffect",           "Blur",            lit, root);
+            make_node("ColorCorrectionEffect","ColorCorrection",  lit, root);
+            make_node("DepthOfFieldEffect",   "DepthOfField",    lit, root);
+        }
+
+        // ─── 7. OTROS SERVICIOS ──────────────────────────────────────
         make_node("Teams",           "Teams",           this, root);
         make_node("SoundService",    "SoundService",    this, root);
         make_node("TextChatService", "TextChatService", this, root);

@@ -889,18 +889,62 @@ _G["__SVC_ScriptContext"] = ScriptContext
 
 -- ══════════════════════════════════════════════════════════════════════
 --  Instance.new — crear instancias en runtime
+--  Guarda la versión C++ (que tiene el mapeo Part→RobloxPart etc.)
+--  y la usa como primera opción; _InstanceNew como fallback genérico.
 -- ══════════════════════════════════════════════════════════════════════
+local _cpp_new = Instance and Instance.new or nil
+
+-- Mapeo de nombres Roblox → nombres de clase Godot registrados
+local _cls_map = {
+    Part="RobloxPart", BasePart="RobloxPart", MeshPart="RobloxPart",
+    WedgePart="RobloxPart", CornerWedgePart="RobloxPart", TrussPart="RobloxPart",
+    UnionOperation="RobloxPart", SpecialMesh="RobloxPart",
+    Folder="Folder", Model="Node3D", Configuration="Folder",
+    Humanoid="Humanoid", Humanoid2D="Humanoid2D",
+    PointLight="OmniLight3D", SpotLight="SpotLight3D",
+    DirectionalLight="DirectionalLight3D", SurfaceLight="OmniLight3D",
+    RemoteEvent="RemoteEventNode", RemoteFunction="RemoteFunctionNode",
+    BindableEvent="BindableEventNode", BindableFunction="BindableEventNode",
+    Script="ServerScript", LocalScript="LocalScript", ModuleScript="ModuleScript",
+    -- Objetos de valor (se representan como Folder genérico con metadatos)
+    StringValue="Folder", IntValue="Folder", NumberValue="Folder",
+    BoolValue="Folder", ObjectValue="Folder", Vector3Value="Folder",
+    Color3Value="Folder", CFrameValue="Folder",
+    -- UI básica
+    ScreenGui="Node", Frame="Node", TextLabel="Node", TextButton="Node",
+    TextBox="Node", ImageLabel="Node", ImageButton="Node",
+    ScrollingFrame="Node", LocalizationTable="Node",
+}
+
 Instance = Instance or {}
 Instance.new = function(className, parent)
-    if _InstanceNew then
-        local inst = _InstanceNew(className)
-        if inst ~= nil and parent ~= nil then
-            pcall(function() inst.Parent = parent end)
-        end
-        return inst
+    local inst
+    -- 1. Intentar con la función C++ original (mapeos hardcodeados)
+    if _cpp_new then
+        local ok, result = pcall(_cpp_new, className)
+        if ok and result ~= nil then inst = result end
     end
-    warn("[Instance.new] No disponible: " .. tostring(className))
-    return nil
+    -- 2. Fallback: _InstanceNew con mapeo de nombres
+    if inst == nil and _InstanceNew then
+        local godotName = _cls_map[className] or className
+        inst = _InstanceNew(godotName)
+    end
+    if inst == nil then
+        warn("[Instance.new] Clase no encontrada: '" .. tostring(className) .. "'")
+        return nil
+    end
+    -- Nombrar la instancia con el className de Roblox
+    pcall(function() inst.Name = className end)
+    -- Aplicar parent si se especificó
+    if parent ~= nil then
+        pcall(function() inst.Parent = parent end)
+    end
+    return inst
+end
+
+-- Instance.fromExisting: envuelve un nodo Godot existente (uso interno)
+Instance.fromExisting = function(node)
+    return node  -- los nodos ya vienen envueltos como GodotObject
 end
 
 -- ══════════════════════════════════════════════════════════════════════

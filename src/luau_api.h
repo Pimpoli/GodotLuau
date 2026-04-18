@@ -119,9 +119,106 @@ static int method_clearallchildren(lua_State* L) {
 static int method_findfirstchild(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* name = luaL_checkstring(L, 2);
-    if (w && w->node_ptr) {
-        Node* found = w->node_ptr->get_node_or_null(NodePath(name));
-        if (found) { wrap_node(L, found); return 1; }
+    bool recursive  = lua_isboolean(L, 3) && lua_toboolean(L, 3);
+    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    if (!recursive) {
+        // Direct children only — Roblox default
+        for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
+            Node* ch = w->node_ptr->get_child(i);
+            if (ch && ch->get_name() == StringName(name)) { wrap_node(L, ch); return 1; }
+        }
+    } else {
+        // Recursive — BFS through all descendants
+        std::vector<Node*> queue;
+        for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
+            Node* ch = w->node_ptr->get_child(i);
+            if (ch) queue.push_back(ch);
+        }
+        while (!queue.empty()) {
+            Node* cur = queue.back(); queue.pop_back();
+            if (cur->get_name() == StringName(name)) { wrap_node(L, cur); return 1; }
+            for (int i = 0; i < cur->get_child_count(); i++) {
+                Node* ch = cur->get_child(i);
+                if (ch) queue.push_back(ch);
+            }
+        }
+    }
+    lua_pushnil(L); return 1;
+}
+
+static int method_findfirstancestor(lua_State* L) {
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    Node* cur = w->node_ptr->get_parent();
+    while (cur) {
+        if (cur->get_name() == StringName(name)) { wrap_node(L, cur); return 1; }
+        cur = cur->get_parent();
+    }
+    lua_pushnil(L); return 1;
+}
+
+static int method_findfirstancestorofclass(lua_State* L) {
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    const char* cls = luaL_checkstring(L, 2);
+    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    Node* cur = w->node_ptr->get_parent();
+    while (cur) {
+        if (cur->is_class(cls)) { wrap_node(L, cur); return 1; }
+        cur = cur->get_parent();
+    }
+    lua_pushnil(L); return 1;
+}
+
+static int method_isancestorof(lua_State* L) {
+    GodotObjectWrapper* w  = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(L, 2);
+    if (!w || !w->node_ptr || !w2 || !w2->node_ptr) { lua_pushboolean(L, false); return 1; }
+    Node* cur = w2->node_ptr->get_parent();
+    while (cur) {
+        if (cur == w->node_ptr) { lua_pushboolean(L, true); return 1; }
+        cur = cur->get_parent();
+    }
+    lua_pushboolean(L, false); return 1;
+}
+
+static int method_isdescendantof(lua_State* L) {
+    GodotObjectWrapper* w  = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(L, 2);
+    if (!w || !w->node_ptr || !w2 || !w2->node_ptr) { lua_pushboolean(L, false); return 1; }
+    Node* cur = w->node_ptr->get_parent();
+    while (cur) {
+        if (cur == w2->node_ptr) { lua_pushboolean(L, true); return 1; }
+        cur = cur->get_parent();
+    }
+    lua_pushboolean(L, false); return 1;
+}
+
+static int method_getfullname(lua_State* L) {
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    if (!w || !w->node_ptr) { lua_pushstring(L, ""); return 1; }
+    // Build path by walking up the tree (stop at root or DataModel)
+    std::vector<std::string> parts;
+    Node* cur = w->node_ptr;
+    while (cur && cur->get_parent()) {
+        parts.push_back(String(cur->get_name()).utf8().get_data());
+        cur = cur->get_parent();
+    }
+    std::string result;
+    for (int i = (int)parts.size() - 1; i >= 0; i--) {
+        if (!result.empty()) result += ".";
+        result += parts[i];
+    }
+    lua_pushstring(L, result.c_str()); return 1;
+}
+
+static int method_findfirstchild_whichisa(lua_State* L) {
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    const char* cls = luaL_checkstring(L, 2);
+    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
+        Node* ch = w->node_ptr->get_child(i);
+        if (ch && ch->is_class(cls)) { wrap_node(L, ch); return 1; }
     }
     lua_pushnil(L); return 1;
 }
@@ -212,25 +309,47 @@ static int method_getattribute(lua_State* L) {
     lua_pushnil(L); return 1;
 }
 
+// BFS helper: find a child node by name anywhere in subtree
+static Node* _find_node_by_name(Node* root, const char* name) {
+    if (!root) return nullptr;
+    std::vector<Node*> queue;
+    queue.push_back(root);
+    while (!queue.empty()) {
+        Node* cur = queue.back(); queue.pop_back();
+        for (int i = 0; i < cur->get_child_count(); i++) {
+            Node* ch = cur->get_child(i);
+            if (!ch) continue;
+            if (ch->get_name() == StringName(name)) return ch;
+            queue.push_back(ch);
+        }
+    }
+    return nullptr;
+}
+
 static int method_getservice(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* svc_name = luaL_checkstring(L, 2);
     if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
 
-    // Primero buscar servicios Lua puros en _G["__SVC_Nombre"]
+    // 1. Lua pure services stored as _G["__SVC_ServiceName"]
     std::string global_key = std::string("__SVC_") + svc_name;
     lua_getglobal(L, global_key.c_str());
     if (!lua_isnil(L, -1)) return 1;
     lua_pop(L, 1);
 
-    // Luego buscar nodo C++ en el árbol de escena
-    Node* svc = w->node_ptr->get_node_or_null(NodePath(svc_name));
+    // 2. Direct child of game node by exact name
+    for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
+        Node* ch = w->node_ptr->get_child(i);
+        if (ch && ch->get_name() == StringName(svc_name)) { wrap_node(L, ch); return 1; }
+    }
+
+    // 3. Anywhere in subtree (handles nested scenes)
+    Node* svc = _find_node_by_name(w->node_ptr, svc_name);
     if (svc) { wrap_node(L, svc); return 1; }
 
-    for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
-        Node* child = w->node_ptr->get_child(i);
-        if (!child) continue;
-        svc = child->get_node_or_null(NodePath(svc_name));
+    // 4. Search whole scene tree from root
+    if (w->node_ptr->is_inside_tree()) {
+        svc = _find_node_by_name((Node*)w->node_ptr->get_tree()->get_root(), svc_name); // <-- AÑADIDO (Node*)
         if (svc) { wrap_node(L, svc); return 1; }
     }
 
@@ -246,18 +365,25 @@ static int godot_object_index(lua_State* L) {
     if (!wrapper || !wrapper->node_ptr) { lua_pushnil(L); return 1; }
     Node* n = wrapper->node_ptr;
 
-    if (strcmp(key, "Destroy")          == 0) { lua_pushcfunction(L, method_destroy,             "Destroy");          return 1; }
-    if (strcmp(key, "Clone")            == 0) { lua_pushcfunction(L, method_clone,               "Clone");            return 1; }
-    if (strcmp(key, "ClearAllChildren") == 0) { lua_pushcfunction(L, method_clearallchildren,    "ClearAllChildren"); return 1; }
+    if (strcmp(key, "Destroy")          == 0) { lua_pushcfunction(L, method_destroy,                   "Destroy");                return 1; }
+    if (strcmp(key, "Clone")            == 0) { lua_pushcfunction(L, method_clone,                     "Clone");                  return 1; }
+    if (strcmp(key, "ClearAllChildren") == 0) { lua_pushcfunction(L, method_clearallchildren,          "ClearAllChildren");       return 1; }
     if (strcmp(key, "FindFirstChild")   == 0 ||
-        strcmp(key, "WaitForChild")     == 0) { lua_pushcfunction(L, method_findfirstchild,      key);                return 1; }
-    if (strcmp(key, "FindFirstChildOfClass") == 0) { lua_pushcfunction(L, method_findfirstchildofclass, key);         return 1; }
-    if (strcmp(key, "GetChildren")      == 0) { lua_pushcfunction(L, method_getchildren,         "GetChildren");      return 1; }
-    if (strcmp(key, "GetDescendants")   == 0) { lua_pushcfunction(L, method_getdescendants,      "GetDescendants");   return 1; }
-    if (strcmp(key, "IsA")              == 0) { lua_pushcfunction(L, method_isa,                 "IsA");              return 1; }
-    if (strcmp(key, "SetAttribute")     == 0) { lua_pushcfunction(L, method_setattribute,        "SetAttribute");     return 1; }
-    if (strcmp(key, "GetAttribute")     == 0) { lua_pushcfunction(L, method_getattribute,        "GetAttribute");     return 1; }
-    if (strcmp(key, "GetService")       == 0) { lua_pushcfunction(L, method_getservice,          "GetService");       return 1; }
+        strcmp(key, "WaitForChild")     == 0) { lua_pushcfunction(L, method_findfirstchild,            key);                      return 1; }
+    if (strcmp(key, "FindFirstChildOfClass") == 0 ||
+        strcmp(key, "FindFirstChildWhichIsA")== 0) { lua_pushcfunction(L, method_findfirstchild_whichisa, key);                   return 1; }
+    if (strcmp(key, "FindFirstAncestor")     == 0) { lua_pushcfunction(L, method_findfirstancestor,    "FindFirstAncestor");      return 1; }
+    if (strcmp(key, "FindFirstAncestorOfClass") == 0 ||
+        strcmp(key, "FindFirstAncestorWhichIsA") == 0) { lua_pushcfunction(L, method_findfirstancestorofclass, key);              return 1; }
+    if (strcmp(key, "IsAncestorOf")     == 0) { lua_pushcfunction(L, method_isancestorof,             "IsAncestorOf");            return 1; }
+    if (strcmp(key, "IsDescendantOf")   == 0) { lua_pushcfunction(L, method_isdescendantof,           "IsDescendantOf");          return 1; }
+    if (strcmp(key, "GetFullName")      == 0) { lua_pushcfunction(L, method_getfullname,              "GetFullName");             return 1; }
+    if (strcmp(key, "GetChildren")      == 0) { lua_pushcfunction(L, method_getchildren,              "GetChildren");             return 1; }
+    if (strcmp(key, "GetDescendants")   == 0) { lua_pushcfunction(L, method_getdescendants,           "GetDescendants");          return 1; }
+    if (strcmp(key, "IsA")              == 0) { lua_pushcfunction(L, method_isa,                      "IsA");                     return 1; }
+    if (strcmp(key, "SetAttribute")     == 0) { lua_pushcfunction(L, method_setattribute,             "SetAttribute");            return 1; }
+    if (strcmp(key, "GetAttribute")     == 0) { lua_pushcfunction(L, method_getattribute,             "GetAttribute");            return 1; }
+    if (strcmp(key, "GetService")       == 0) { lua_pushcfunction(L, method_getservice,               "GetService");              return 1; }
 
     // ── Propiedades de Instance ───────────────────────────────────
     if (strcmp(key, "Name")      == 0) { lua_pushstring(L, String(n->get_name()).utf8().get_data()); return 1; }
@@ -318,10 +444,17 @@ static int godot_object_index(lua_State* L) {
     // ── Lighting ──────────────────────────────────────────────────
     Lighting* light_svc = Object::cast_to<Lighting>(n);
     if (light_svc) {
-        if (strcmp(key, "Brightness")    == 0) { lua_pushnumber(L, light_svc->get_brightness());    return 1; }
-        if (strcmp(key, "ClockTime")     == 0) { lua_pushnumber(L, light_svc->get_clock_time());    return 1; }
-        if (strcmp(key, "GlobalShadows") == 0) { lua_pushboolean(L, light_svc->get_global_shadows()); return 1; }
-        if (strcmp(key, "FogDensity")    == 0) { lua_pushnumber(L, light_svc->get_fog_density());   return 1; }
+        if (strcmp(key, "Brightness")               == 0) { lua_pushnumber(L,  light_svc->get_brightness());           return 1; }
+        if (strcmp(key, "ClockTime")                == 0) { lua_pushnumber(L,  light_svc->get_clock_time());           return 1; }
+        if (strcmp(key, "GeographicLatitude")       == 0) { lua_pushnumber(L,  light_svc->get_geographic_latitude());  return 1; }
+        if (strcmp(key, "GlobalShadows")            == 0) { lua_pushboolean(L, light_svc->get_global_shadows());       return 1; }
+        if (strcmp(key, "ShadowSoftness")           == 0) { lua_pushnumber(L,  light_svc->get_shadow_softness());      return 1; }
+        if (strcmp(key, "FogDensity")               == 0) { lua_pushnumber(L,  light_svc->get_fog_density());          return 1; }
+        if (strcmp(key, "FogStart")                 == 0) { lua_pushnumber(L,  light_svc->get_fog_start());            return 1; }
+        if (strcmp(key, "FogEnd")                   == 0) { lua_pushnumber(L,  light_svc->get_fog_end());              return 1; }
+        if (strcmp(key, "ExposureCompensation")     == 0) { lua_pushnumber(L,  light_svc->get_exposure_comp());        return 1; }
+        if (strcmp(key, "EnvironmentDiffuseScale")  == 0) { lua_pushnumber(L,  light_svc->get_env_diffuse_scale());    return 1; }
+        if (strcmp(key, "EnvironmentSpecularScale") == 0) { lua_pushnumber(L,  light_svc->get_env_specular_scale());   return 1; }
     }
 
     // ── Node3D ────────────────────────────────────────────────────
@@ -821,6 +954,12 @@ static int godot_object_newindex(lua_State* L) {
             if (p_wrap && p_wrap->node_ptr && p_wrap->node_ptr != n) {
                 if (n->get_parent()) n->get_parent()->remove_child(n);
                 p_wrap->node_ptr->add_child(n);
+                // Set owner so the node is visible/saveable in the editor
+                if (n->is_inside_tree()) {
+                    Node* scene_root = n->get_tree()->get_edited_scene_root();
+                    if (!scene_root) scene_root = (Node*)n->get_tree()->get_root(); // <-- AÑADIDO (Node*)
+                    if (!n->get_owner()) n->set_owner(scene_root);
+                }
             }
         }
         return 0;
@@ -905,10 +1044,17 @@ static int godot_object_newindex(lua_State* L) {
 
     Lighting* light = Object::cast_to<Lighting>(n);
     if (light) {
-        if (strcmp(key, "Brightness")    == 0) { light->set_brightness((float)luaL_checknumber(L, 3));    return 0; }
-        if (strcmp(key, "ClockTime")     == 0) { light->set_clock_time((float)luaL_checknumber(L, 3));    return 0; }
-        if (strcmp(key, "GlobalShadows") == 0) { light->set_global_shadows(lua_toboolean(L, 3) != 0);    return 0; }
-        if (strcmp(key, "FogDensity")    == 0) { light->set_fog_density((float)luaL_checknumber(L, 3));  return 0; }
+        if (strcmp(key, "Brightness")               == 0) { light->set_brightness((float)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "ClockTime")                == 0) { light->set_clock_time((float)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "GeographicLatitude")       == 0) { light->set_geographic_latitude((float)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key, "GlobalShadows")            == 0) { light->set_global_shadows(lua_toboolean(L,3) != 0);          return 0; }
+        if (strcmp(key, "ShadowSoftness")           == 0) { light->set_shadow_softness((float)luaL_checknumber(L,3));    return 0; }
+        if (strcmp(key, "FogDensity")               == 0) { light->set_fog_density((float)luaL_checknumber(L,3));        return 0; }
+        if (strcmp(key, "FogStart")                 == 0) { light->set_fog_start((float)luaL_checknumber(L,3));          return 0; }
+        if (strcmp(key, "FogEnd")                   == 0) { light->set_fog_end((float)luaL_checknumber(L,3));            return 0; }
+        if (strcmp(key, "ExposureCompensation")     == 0) { light->set_exposure_comp((float)luaL_checknumber(L,3));      return 0; }
+        if (strcmp(key, "EnvironmentDiffuseScale")  == 0) { light->set_env_diffuse_scale((float)luaL_checknumber(L,3));  return 0; }
+        if (strcmp(key, "EnvironmentSpecularScale") == 0) { light->set_env_specular_scale((float)luaL_checknumber(L,3)); return 0; }
     }
 
     RemoteFunctionNode* rfall = Object::cast_to<RemoteFunctionNode>(n);
@@ -939,17 +1085,34 @@ static int godot_instance_new(lua_State* L) {
     const char* cls = luaL_checkstring(L, 1);
     Node* nn = nullptr;
 
-    if      (strcmp(cls, "Part")             == 0) nn = memnew(RobloxPart);
-    else if (strcmp(cls, "Folder")           == 0) nn = memnew(Folder);
-    else if (strcmp(cls, "Model")            == 0) nn = memnew(Node3D);
-    else if (strcmp(cls, "Humanoid")         == 0) nn = memnew(Humanoid);
-    else if (strcmp(cls, "Humanoid2D")       == 0) nn = memnew(Humanoid2D);
-    else if (strcmp(cls, "PointLight")       == 0) nn = memnew(OmniLight3D);
-    else if (strcmp(cls, "SpotLight")        == 0) nn = memnew(SpotLight3D);
-    else if (strcmp(cls, "DirectionalLight") == 0) nn = memnew(DirectionalLight3D);
-    else if (strcmp(cls, "RemoteEvent")      == 0) nn = memnew(RemoteEventNode);
-    else if (strcmp(cls, "RemoteFunction")   == 0) nn = memnew(RemoteFunctionNode);
-    else if (strcmp(cls, "BindableEvent")    == 0) nn = memnew(BindableEventNode);
+    // Primary Roblox class names → Godot nodes
+    if      (strcmp(cls, "Part")              == 0 ||
+             strcmp(cls, "BasePart")          == 0 ||
+             strcmp(cls, "MeshPart")          == 0 ||
+             strcmp(cls, "WedgePart")         == 0 ||
+             strcmp(cls, "CornerWedgePart")   == 0 ||
+             strcmp(cls, "TrussPart")         == 0 ||
+             strcmp(cls, "UnionOperation")    == 0) nn = memnew(RobloxPart);
+    else if (strcmp(cls, "Folder")            == 0 ||
+             strcmp(cls, "Configuration")     == 0 ||
+             strcmp(cls, "StringValue")       == 0 ||
+             strcmp(cls, "IntValue")          == 0 ||
+             strcmp(cls, "NumberValue")       == 0 ||
+             strcmp(cls, "BoolValue")         == 0 ||
+             strcmp(cls, "ObjectValue")       == 0 ||
+             strcmp(cls, "Vector3Value")      == 0 ||
+             strcmp(cls, "CFrameValue")       == 0) nn = memnew(Folder);
+    else if (strcmp(cls, "Model")             == 0) nn = memnew(Node3D);
+    else if (strcmp(cls, "Humanoid")          == 0) nn = memnew(Humanoid);
+    else if (strcmp(cls, "Humanoid2D")        == 0) nn = memnew(Humanoid2D);
+    else if (strcmp(cls, "PointLight")        == 0 ||
+             strcmp(cls, "SurfaceLight")      == 0) nn = memnew(OmniLight3D);
+    else if (strcmp(cls, "SpotLight")         == 0) nn = memnew(SpotLight3D);
+    else if (strcmp(cls, "DirectionalLight")  == 0) nn = memnew(DirectionalLight3D);
+    else if (strcmp(cls, "RemoteEvent")       == 0) nn = memnew(RemoteEventNode);
+    else if (strcmp(cls, "RemoteFunction")    == 0) nn = memnew(RemoteFunctionNode);
+    else if (strcmp(cls, "BindableEvent")     == 0 ||
+             strcmp(cls, "BindableFunction")  == 0) nn = memnew(BindableEventNode);
 
     if (nn) {
         nn->set_name(cls);
