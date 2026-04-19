@@ -432,91 +432,20 @@ print("[Server] Game ready!")
 
 // Default LocalScript template
 static const char* LUAU_TEMPLATE_LOCAL_SCRIPT = R"LUAU(
--- LocalScript — runs on the client
-local Players          = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService       = game:GetService("RunService")
-
-local player    = Players.LocalPlayer
-
--- Listen for a RemoteEvent sent from the server:
--- local MyEvent = ReplicatedStorage:WaitForChild("MyEvent")
--- MyEvent.OnClientEvent:Connect(function(data)
---     print("Received from server:", data)
--- end)
-
--- Fire an event to the server (e.g. on button click):
--- MyEvent:FireServer("hello from client")
-
--- Per-frame logic:
--- RunService.RenderStepped:Connect(function(dt)
---     -- client-side update
--- end)
+-- GodotLuau - PimpoliDev
+print("Hello World Client")
 )LUAU";
 
 // Default ServerScript template
 static const char* LUAU_TEMPLATE_SERVER_SCRIPT = R"LUAU(
--- ServerScript — runs on the server
-local Players          = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService       = game:GetService("RunService")
-
--- Create a RemoteEvent so clients can communicate with this script:
--- local MyEvent = Instance.new("RemoteEvent")
--- MyEvent.Name   = "MyEvent"
--- MyEvent.Parent = ReplicatedStorage
-
--- Handle messages from clients:
--- MyEvent.OnServerEvent:Connect(function(player, data)
---     print(player.Name, "sent:", data)
---     MyEvent:FireClient(player, "server reply")
---     MyEvent:FireAllClients("broadcast to everyone")
--- end)
-
--- RemoteFunction — synchronous call from client, returns a value:
--- local GetData = Instance.new("RemoteFunction")
--- GetData.Name   = "GetData"
--- GetData.Parent = ReplicatedStorage
--- GetData.OnServerInvoke = function(player, key)
---     return "value_for_" .. key
--- end
-
-print("[Server] Script started!")
+-- GodotLuau - PimpoliDev
+print("Hello World Server")
 )LUAU";
 
 // Default ModuleScript OOP template
 static const char* LUAU_TEMPLATE_MODULE_OOP = R"LUAU(
--- ModuleScript — OOP class pattern
-local MyClass = {}
-MyClass.__index = MyClass
-
--- Constructor
-function MyClass.new(name, value)
-    local self   = setmetatable({}, MyClass)
-    self.Name    = name
-    self.Value   = value or 0
-    return self
-end
-
--- Methods
-function MyClass:GetValue()
-    return self.Value
-end
-
-function MyClass:SetValue(val)
-    self.Value = val
-end
-
-function MyClass:ToString()
-    return "MyClass(" .. tostring(self.Name) .. ", " .. tostring(self.Value) .. ")"
-end
-
--- Static helper
-function MyClass.create(name)
-    return MyClass.new(name, 0)
-end
-
-return MyClass
+-- GodotLuau - PimpoliDev
+print("Hello World Module Script")
 )LUAU";
 
 #include "luau_api.h"

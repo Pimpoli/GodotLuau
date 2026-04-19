@@ -232,20 +232,9 @@ def crear_proyecto(destino, nombre, modo):
 
     # 6. ModuleScript de ejemplo adicional (Utils)
     module_script = """-- > GodotLuau — PimpoliDev
--- ModuleScript de ejemplo
--- Úsalo con: local MiModulo = require(game:GetService("ReplicatedStorage"):FindFirstChild("Utils"))
+local Module = {}
 
-local Utils = {}
-
-function Utils.saludar(nombre)
-    print("Hola, " .. (nombre or "jugador") .. "!")
-end
-
-function Utils.sumar(a, b)
-    return a + b
-end
-
-return Utils
+return Module
 """
     with open(os.path.join(destino, "ModuleScripts", "Utils.lua"), "w", encoding="utf-8") as f:
         f.write(module_script)
