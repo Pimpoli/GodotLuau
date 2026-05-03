@@ -9,6 +9,11 @@
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  Humanoid2D — Health system for 2D characters
+//
+//  Physical movement is implemented directly in RobloxPlayer2D.
+//  This node handles health, signals, and properties configurable from Luau.
+////
 //  Humanoid2D — Sistema de salud para personajes 2D
 //
 //  El movimiento físico está implementado directamente en RobloxPlayer2D.
@@ -36,7 +41,8 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "MaxHealth", PROPERTY_HINT_RANGE, "1,1000,1"),
                      "set_max_health", "get_max_health");
 
-        // Señal equivalente a Roblox: Humanoid.Died
+        // Signal equivalent to Roblox: Humanoid.Died
+        //// Señal equivalente a Roblox: Humanoid.Died
         ADD_SIGNAL(MethodInfo("Died"));
         ADD_SIGNAL(MethodInfo("HealthChanged",
             PropertyInfo(Variant::FLOAT, "new_health"),

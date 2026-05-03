@@ -1,6 +1,9 @@
 #ifndef FOLDER_H
 #define FOLDER_H
 
+// Folder — generic container node, equivalent to Roblox's Folder
+//// Folder — nodo contenedor genérico, equivalente a Folder de Roblox
+
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/core/class_db.hpp>
 

@@ -1,6 +1,12 @@
 #ifndef ROBLOX_DATAMODEL_H
 #define ROBLOX_DATAMODEL_H
 
+// RobloxDataModel — legacy root node; prefer RobloxGame3D/2D for new scenes.
+// Provides a property-driven "Generate environment" button in the editor.
+////
+// RobloxDataModel — nodo raíz heredado; usa RobloxGame3D/2D para nuevas escenas.
+// Expone un botón de "Generar entorno" mediante una propiedad en el editor.
+
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
@@ -29,7 +35,7 @@ public:
         if (p_val > 0) {
             call_deferred(StringName("generar_entorno"), p_val);
         }
-        entorno_setup = 0; 
+        entorno_setup = 0;
     }
 
     int get_entorno_setup() const { return entorno_setup; }
@@ -41,17 +47,21 @@ public:
         Node* root = get_tree()->get_edited_scene_root();
         if (!root) root = this;
 
+        // Helper lambda: creates a service node; reuses it if already present
+        //// Lambda helper: crea un nodo de servicio; lo reutiliza si ya existe
         auto create_service = [&](const String& p_class, const String& p_name, Node* p_parent = nullptr, const String& p_source = "") -> Node* {
             if (!p_parent) p_parent = this;
             if (p_parent->has_node(NodePath(p_name))) return p_parent->get_node_or_null(NodePath(p_name));
 
             Node* new_node = Object::cast_to<Node>(ClassDB::instantiate(StringName(p_class)));
             if (!new_node) return nullptr;
-            
+
             new_node->set_name(p_name);
             p_parent->add_child(new_node);
             new_node->set_owner(root);
 
+            // Inject source code if the node is a script type
+            //// Inyectar código fuente si el nodo es un tipo de script
             if (p_source != "" && (new_node->get_class() == "ModuleScript" ||
                 new_node->get_class() == "LocalScript" ||
                 new_node->get_class() == "ServerScript")) {
@@ -60,7 +70,8 @@ public:
             return new_node;
         };
 
-        // 1. WORKSPACE (Icono añadido en .gdextension)
+        // 1. WORKSPACE (icon registered in .gdextension)
+        //// 1. WORKSPACE (Icono añadido en .gdextension)
         Node* workspace = nullptr;
         if (tipo == 1) {
             workspace = create_service("RobloxWorkspace", "Workspace");
@@ -70,7 +81,7 @@ public:
             create_service("RobloxPart2D", "Baseplate", workspace);
         }
 
-        // 2. SERVICIOS
+        // 2. SERVICES / SERVICIOS
         create_service("Players",    "Players");
         create_service("RunService", "RunService");
         create_service("Lighting",   "Lighting");
@@ -79,23 +90,27 @@ public:
         create_service("ReplicatedStorage", "ReplicatedStorage");
         create_service("ServerScriptService", "ServerScriptService");
         create_service("ServerStorage", "ServerStorage");
-        create_service("StarterGui", "StarterGui"); // Icono añadido abajo
+        create_service("StarterGui", "StarterGui"); // icon added below / Icono añadido abajo
         create_service("StarterPack", "StarterPack");
 
         // 3. STARTERPLAYER
         Node* st_player = create_service("StarterPlayer", "StarterPlayer");
         if (st_player) {
             Node* st_char_scripts = create_service("StarterCharacterScripts", "StarterCharacterScripts", st_player);
-            
-            // Health: ServerScript (se clona al personaje en spawn)
+
+            // Health: ServerScript (cloned to character on spawn)
+            //// Health: ServerScript (se clona al personaje en spawn)
             create_service("ServerScript", "Health", st_char_scripts);
 
             Node* st_player_scripts = create_service("StarterPlayerScripts", "StarterPlayerScripts", st_player);
-            // PlayerModule: LocalScript que carga ControlModule y CameraModule
+            // PlayerModule: LocalScript that loads ControlModule and CameraModule
+            //// PlayerModule: LocalScript que carga ControlModule y CameraModule
             create_service("LocalScript", "PlayerModule", st_player_scripts);
-            // Carpeta Modules con sub-módulos de movimiento, cámara y chat
+            // Modules folder with movement, camera, and chat sub-modules
+            //// Carpeta Modules con sub-módulos de movimiento, cámara y chat
             Node* modules_folder = create_service("Folder", "Modules", st_player_scripts);
-            // ControlModule contiene los sub-módulos de plataforma como hijos
+            // ControlModule contains platform sub-modules as children
+            //// ControlModule contiene los sub-módulos de plataforma como hijos
             Node* ctrl_module = create_service("ModuleScript", "ControlModule", modules_folder);
             create_service("ModuleScript", "PCModule",      ctrl_module);
             create_service("ModuleScript", "MobileModule",  ctrl_module);
@@ -109,7 +124,7 @@ public:
         create_service("TextChatService", "TextChatService");
         create_service("Folder", "Folder");
 
-        UtilityFunctions::print("[GodotLuau] Entorno 'Game' generado correctamente.");
+        UtilityFunctions::print("[GodotLuau] 'Game' environment generated successfully.");
     }
 };
 

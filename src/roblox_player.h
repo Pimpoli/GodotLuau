@@ -17,6 +17,13 @@
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  RobloxPlayer — 3D player character, equivalent to Roblox Character
+//
+//  CAMERA MODES (CameraMode property):
+//    1 = Fixed     — Camera follows the player instantly (no lag)
+//    2 = Smooth    — Camera follows with a subtle elegant delay
+//    3 = Combined  — Strong lag while moving, auto-centers when idle
+////
 //  RobloxPlayer — Personaje 3D del jugador, equivalente al Character de Roblox
 //
 //  MODOS DE CÁMARA (propiedad CameraMode):
@@ -28,22 +35,25 @@ class RobloxPlayer : public CharacterBody3D {
     GDCLASS(RobloxPlayer, CharacterBody3D);
 
 private:
-    Node3D* pivot_h    = nullptr;  // Pivote horizontal (mouse X)
-    Node3D* pivot_v    = nullptr;  // Pivote vertical (mouse Y)
-    SpringArm3D* spring_arm = nullptr; // Evita que la cámara atraviese paredes
+    Node3D* pivot_h    = nullptr;  // Horizontal pivot (mouse X) / Pivote horizontal (mouse X)
+    Node3D* pivot_v    = nullptr;  // Vertical pivot (mouse Y) / Pivote vertical (mouse Y)
+    SpringArm3D* spring_arm = nullptr; // Prevents camera clipping through walls / Evita que la cámara atraviese paredes
     Camera3D* camera     = nullptr;
 
     float mouse_sensitivity = 0.003f;
     float target_zoom       = 10.0f;
 
-    // ── Modo de cámara ──────────────────────────────────────────────
+    // ── Camera mode ────────────────────────────────────────────────
+    //// ── Modo de cámara ──────────────────────────────────────────────
     int camera_mode = 1;
 
-    // Para el modo 3: detectar si el jugador se está moviendo
+    // For mode 3: detect if the player is moving
+    //// Para el modo 3: detectar si el jugador se está moviendo
     Vector3 last_position;
     float   idle_time = 0.0f;
 
-    // ── Propiedades de jugador tipo Roblox ─────────────────────────
+    // ── Roblox-style player properties ─────────────────────────────
+    //// ── Propiedades de jugador tipo Roblox ─────────────────────────
     int    user_id                   = 0;
     String display_name;
     int    account_age               = 0;
@@ -70,7 +80,8 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"MouseSensitivity",PROPERTY_HINT_RANGE,"0.0001,0.01,0.0001"),
             "set_mouse_sensitivity","get_mouse_sensitivity");
 
-        // ── Jugador ─────────────────────────────────────────────────
+        // ── Player ──────────────────────────────────────────────────
+        //// ── Jugador ─────────────────────────────────────────────────
         ADD_GROUP("Jugador","");
         ClassDB::bind_method(D_METHOD("set_user_id","id"),                    &RobloxPlayer::set_user_id);
         ClassDB::bind_method(D_METHOD("get_user_id"),                         &RobloxPlayer::get_user_id);
@@ -135,18 +146,21 @@ public:
 
         last_position = get_global_position();
 
-        // Pivote horizontal: top-level para no heredar rotación del cuerpo
+        // Horizontal pivot: top-level so it doesn't inherit body rotation
+        //// Pivote horizontal: top-level para no heredar rotación del cuerpo
         pivot_h = memnew(Node3D);
         pivot_h->set_name("CameraPivotH");
         pivot_h->set_as_top_level(true);
         add_child(pivot_h);
 
-        // Pivote vertical: hijo del horizontal
+        // Vertical pivot: child of the horizontal one
+        //// Pivote vertical: hijo del horizontal
         pivot_v = memnew(Node3D);
         pivot_v->set_name("CameraPivotV");
         pivot_h->add_child(pivot_v);
 
-        // SpringArm: evita que la cámara corte geometría
+        // SpringArm: prevents the camera from clipping through geometry
+        //// SpringArm: evita que la cámara corte geometría
         spring_arm = memnew(SpringArm3D);
         spring_arm->set_name("SpringArm");
         Ref<SphereShape3D> sphere; sphere.instantiate();
@@ -156,7 +170,8 @@ public:
         spring_arm->add_excluded_object(get_rid());
         pivot_v->add_child(spring_arm);
 
-        // Cámara al final del brazo
+        // Camera at the end of the arm
+        //// Cámara al final del brazo
         camera = memnew(Camera3D);
         camera->set_name("Camera3D");
         camera->set_current(true);
@@ -171,7 +186,8 @@ public:
         Input* input = Input::get_singleton();
         bool is_first_person = target_zoom < 0.6f;
 
-        // Botón derecho — captura el mouse para rotar la cámara
+        // Right button — capture mouse to rotate the camera
+        //// Botón derecho — captura el mouse para rotar la cámara
         if (p_event->is_class("InputEventMouseButton")) {
             Ref<InputEventMouseButton> mb = p_event;
             if (mb->get_button_index() == MOUSE_BUTTON_RIGHT) {
@@ -179,32 +195,37 @@ public:
                     mb->is_pressed() ? Input::MOUSE_MODE_CAPTURED
                                      : Input::MOUSE_MODE_VISIBLE);
             }
-            // Rueda del mouse — zoom
+            // Mouse wheel — zoom
+            //// Rueda del mouse — zoom
             if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)
                 target_zoom = Math::max(0.0f, target_zoom - 1.5f);
             if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_DOWN)
                 target_zoom = Math::min(30.0f, target_zoom + 1.5f);
         }
 
-        // Movimiento del mouse — rotar cámara
+        // Mouse movement — rotate camera
+        //// Movimiento del mouse — rotar cámara
         Ref<InputEventMouseMotion> mm = p_event;
         if (mm.is_valid()) {
             bool mouse_captured = (input->get_mouse_mode() == Input::MOUSE_MODE_CAPTURED);
             if (mouse_captured || is_first_person) {
                 if (is_first_person) input->set_mouse_mode(Input::MOUSE_MODE_CAPTURED);
 
-                // Rotación horizontal
+                // Horizontal rotation
+                //// Rotación horizontal
                 Vector3 rot_h = pivot_h->get_rotation();
                 rot_h.y -= mm->get_relative().x * mouse_sensitivity;
                 pivot_h->set_rotation(rot_h);
 
-                // Rotación vertical (limitada para no girar demasiado)
+                // Vertical rotation (clamped to prevent over-rotation)
+                //// Rotación vertical (limitada para no girar demasiado)
                 Vector3 rot_v = pivot_v->get_rotation();
                 rot_v.x -= mm->get_relative().y * mouse_sensitivity;
                 rot_v.x = Math::clamp(rot_v.x, -1.4f, 1.4f);
                 pivot_v->set_rotation(rot_v);
 
-                // En 1ª persona el cuerpo rota con la cámara
+                // In 1st person the body rotates with the camera
+                //// En 1ª persona el cuerpo rota con la cámara
                 if (is_first_person) {
                     set_rotation(Vector3(0.0f, rot_h.y, 0.0f));
                 }
@@ -212,38 +233,46 @@ public:
         }
     }
 
-    // ── _process: cámara y zoom ────────────────────────────────────
+    // ── _process: camera and zoom ─────────────────────────────────
+    //// ── _process: cámara y zoom ────────────────────────────────────
     void _process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (!pivot_h || !spring_arm) return;
 
-        // Altura del pivot (a la altura de los ojos)
+        // Pivot height (at eye level)
+        //// Altura del pivot (a la altura de los ojos)
         Vector3 target_pos = get_global_position() + Vector3(0.0f, 1.5f, 0.0f);
 
-        // ── Detectar movimiento para modo 3 ──────────────────────
+        // ── Detect movement for mode 3 ────────────────────────────
+        //// ── Detectar movimiento para modo 3 ──────────────────────
         Vector3 current_pos = get_global_position();
         bool is_moving = (current_pos - last_position).length_squared() > 0.001f;
         last_position = current_pos;
         if (is_moving) idle_time = 0.0f;
         else           idle_time += (float)delta;
 
-        // ── Aplicar modo de cámara ────────────────────────────────
+        // ── Apply camera mode ─────────────────────────────────────
+        //// ── Aplicar modo de cámara ────────────────────────────────
         switch (camera_mode) {
             case 1: {
-                // MODO 1: Fija — sigue al instante
+                // MODE 1: Fixed — follows instantly
+                //// MODO 1: Fija — sigue al instante
                 pivot_h->set_global_position(target_pos);
                 break;
             }
             case 2: {
-                // MODO 2: Suave — lerp constante (retraso elegante)
+                // MODE 2: Smooth — constant lerp (elegant delay)
+                //// MODO 2: Suave — lerp constante (retraso elegante)
                 Vector3 cur = pivot_h->get_global_position();
                 float alpha = 1.0f - Math::pow(0.05f, (float)delta);
                 pivot_h->set_global_position(cur.lerp(target_pos, alpha));
                 break;
             }
             case 3: {
-                // MODO 3: Combinada — rápido al moverse, centra al detenerse
-                // Cuando idle_time > 0.5s, el alpha aumenta para centrar más rápido
+                // MODE 3: Combined — fast while moving, centers when idle
+                // When idle_time > 0.5s, alpha increases to re-center faster
+                //// MODO 3: Combinada — rápido al moverse, centra al detenerse
+                //// Cuando idle_time > 0.5s, el alpha aumenta para centrar más rápido
                 Vector3 cur = pivot_h->get_global_position();
                 float base_alpha = is_moving ? 0.04f : 0.25f;
                 float alpha = 1.0f - Math::pow(base_alpha, (float)delta);
@@ -252,12 +281,14 @@ public:
             }
         }
 
-        // Suavizado del zoom (igual en todos los modos)
+        // Smooth zoom (same across all modes)
+        //// Suavizado del zoom (igual en todos los modos)
         float current_len = spring_arm->get_length();
         spring_arm->set_length(
             Math::lerp(current_len, target_zoom, (float)Math::min(10.0 * delta, 1.0)));
 
-        // Ocultar el mesh en primera persona
+        // Hide the mesh in first person
+        //// Ocultar el mesh en primera persona
         MeshInstance3D* mesh = Object::cast_to<MeshInstance3D>(get_node_or_null("Mesh"));
         if (mesh) {
             mesh->set_visible(target_zoom >= 0.6f);

@@ -86,7 +86,8 @@ private:
         // Reset to neutral
         material->set_metallic(0.0f);
         material->set_roughness(0.8f);
-        // CORRECCIÓN 1: Usar set_feature para deshabilitar la emisión en Godot 4
+        // FIX 1: Use set_feature to disable emission in Godot 4
+        //// CORRECCIÓN 1: Usar set_feature para deshabilitar la emisión en Godot 4
         material->set_feature(BaseMaterial3D::FEATURE_EMISSION, false);
         material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
 
@@ -94,7 +95,8 @@ private:
             case 0:  material->set_roughness(0.8f);  break; // Plastic
             case 1:  material->set_roughness(0.25f); break; // SmoothPlastic
             case 2:  // Neon — self-illuminated
-                // CORRECCIÓN 2: Usar set_feature para habilitar la emisión
+                // FIX 2: Use set_feature to enable emission
+                //// CORRECCIÓN 2: Usar set_feature para habilitar la emisión
                 material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
                 material->set_emission(Color(color.r, color.g, color.b));
                 material->set_emission_energy_multiplier(2.0f);
@@ -127,13 +129,15 @@ private:
             case 15: // Ice
                 material->set_roughness(0.05f);
                 material->set_metallic(0.05f);
-                // CORRECCIÓN 3: Reemplazar TRANSPARENCY_GLASS por TRANSPARENCY_ALPHA
+                // FIX 3: Replace TRANSPARENCY_GLASS with TRANSPARENCY_ALPHA
+                //// CORRECCIÓN 3: Reemplazar TRANSPARENCY_GLASS por TRANSPARENCY_ALPHA
                 material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
                 break;
             case 16: // Glass
                 material->set_roughness(0.0f);
                 material->set_metallic(0.0f);
-                // CORRECCIÓN 4: Reemplazar TRANSPARENCY_GLASS por TRANSPARENCY_ALPHA
+                // FIX 4: Replace TRANSPARENCY_GLASS with TRANSPARENCY_ALPHA
+                //// CORRECCIÓN 4: Reemplazar TRANSPARENCY_GLASS por TRANSPARENCY_ALPHA
                 material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
                 break;
             case 17: material->set_roughness(1.00f); break; // Sand

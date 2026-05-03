@@ -19,66 +19,160 @@
 #include "lualib.h"
 #include <vector>
 #include <algorithm>
+#include <cstring>
+
+// ── Shared resume queue: RunService → ScriptNodeBase ─────────────────
+// RunService queues pending coroutine resumes here; ScriptNodeBase drains
+// them each frame so it can update spawned_threads correctly.
+struct LuauPendingResume {
+    lua_State* thread;   // coroutine to resume
+    lua_State* main_L;   // owning main state
+    double     delta;    // dt argument to pass
+    Node*      node_arg; // optional node (WaitForChild result); nullptr if not used
+};
+inline std::vector<LuauPendingResume>& get_pending_resumes() {
+    static std::vector<LuauPendingResume> v;
+    return v;
+}
 
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  Service placement protection: in Roblox, services only exist under
+//  the DataModel. These helpers enforce that in the editor: if someone
+//  tries to add a service to an invalid parent, it is deleted and an
+//  error is shown. At runtime there is no restriction (scene is saved).
+////
+//  Protección de servicios: en Roblox, los servicios solo existen bajo
+//  el DataModel. Estos helpers lo garantizan en el editor: si alguien
+//  intenta añadir un servicio a un nodo incorrecto, se elimina y muestra
+//  un error. En runtime no hay restricción (la escena ya está guardada).
+// ════════════════════════════════════════════════════════════════════
+
+static inline bool _is_valid_game_parent(Node* p) {
+    if (!p) return false;
+    return p->is_class("RobloxDataModel") ||
+           p->is_class("RobloxGame3D")    ||
+           p->is_class("RobloxGame2D");
+}
+
+static inline bool _is_valid_starter_parent(Node* p) {
+    if (!p) return false;
+    return p->is_class("StarterPlayer");
+}
+
+// Returns false if the node was removed (invalid parent).
+//// Retorna false si el nodo fue eliminado (padre inválido).
+static inline bool _enforce_game_parent(Node* self) {
+    if (!Engine::get_singleton()->is_editor_hint()) return true;
+    if (_is_valid_game_parent(self->get_parent())) return true;
+    UtilityFunctions::push_error(
+        String("[GodotLuau] '") + self->get_class() +
+        "' is a Roblox service and can only exist as a direct child of "
+        "RobloxGame3D, RobloxGame2D or RobloxDataModel. "
+        "Use the RobloxGame3D/2D root node to auto-generate the structure.");
+    self->queue_free();
+    return false;
+}
+
+static inline bool _enforce_starter_parent(Node* self) {
+    if (!Engine::get_singleton()->is_editor_hint()) return true;
+    if (_is_valid_starter_parent(self->get_parent())) return true;
+    UtilityFunctions::push_error(
+        String("[GodotLuau] '") + self->get_class() +
+        "' can only be a direct child of StarterPlayer.");
+    self->queue_free();
+    return false;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  STORAGE
+//  Direct equivalents to Roblox services
+////
 //  ALMACENAMIENTO
 //  Equivalentes directos a los servicios de Roblox
 // ════════════════════════════════════════════════════════════════════
 
-// Visible para cliente Y servidor — se usa para ModuleScripts y objetos compartidos
+// Visible to client AND server — used for ModuleScripts and shared objects
+//// Visible para cliente Y servidor — se usa para ModuleScripts y objetos compartidos
 class ReplicatedStorage : public Node {
     GDCLASS(ReplicatedStorage, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
-// Solo visible para el servidor — contenido seguro no accesible al cliente
+// Server-only — secure content not accessible to the client
+//// Solo visible para el servidor — contenido seguro no accesible al cliente
 class ServerStorage : public Node {
     GDCLASS(ServerStorage, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
-// Se replica al cliente ANTES de que cargue el resto de la escena
-// Ideal para pantallas de carga, assets críticos
+// Replicated to client BEFORE the rest of the scene loads
+// Ideal for loading screens and critical assets
+//// Se replica al cliente ANTES de que cargue el resto de la escena
+//// Ideal para pantallas de carga, assets críticos
 class ReplicatedFirst : public Node {
     GDCLASS(ReplicatedFirst, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════
-//  SCRIPTS DEL SERVIDOR
+//  SERVER SCRIPTS
+////  SCRIPTS DEL SERVIDOR
 // ════════════════════════════════════════════════════════════════════
 
-// Scripts que solo se ejecutan en el servidor (lógica de juego segura)
+// Scripts that run server-side only (secure game logic)
+//// Scripts que solo se ejecutan en el servidor (lógica de juego segura)
 class ServerScriptService : public Node {
     GDCLASS(ServerScriptService, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════
-//  STARTER PLAYER — Sistema de scripts y personaje del jugador
+//  STARTER PLAYER — Player scripts and character system
+////  STARTER PLAYER — Sistema de scripts y personaje del jugador
 // ════════════════════════════════════════════════════════════════════
 
-// Scripts que se clonan en cada personaje al spawnear
+// Scripts cloned onto each character when they spawn
+//// Scripts que se clonan en cada personaje al spawnear
 class StarterCharacterScripts : public Node {
     GDCLASS(StarterCharacterScripts, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_starter_parent(this);
+    }
 };
 
-// Scripts que se clonan en el jugador local al entrar
+// Scripts cloned onto the local player when they join
+//// Scripts que se clonan en el jugador local al entrar
 class StarterPlayerScripts : public Node {
     GDCLASS(StarterPlayerScripts, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_starter_parent(this);
+    }
 };
 
-// Container principal del jugador — crea sus hijos automáticamente al añadirlo al editor
+// Main player container — auto-creates its children when added in the editor
+//// Container principal del jugador — crea sus hijos automáticamente al añadirlo al editor
 class StarterPlayer : public Node {
     GDCLASS(StarterPlayer, Node);
 protected:
@@ -86,10 +180,12 @@ protected:
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE && Engine::get_singleton()->is_editor_hint()) {
+            if (!_enforce_game_parent(this)) return;
             Node* root = get_tree()->get_edited_scene_root();
             if (!root) return;
 
-            // Auto-crear hijos si no existen
+            // Auto-create children if they don't exist
+            //// Auto-crear hijos si no existen
             auto make_child = [&](const String& name, Node* child) {
                 if (!get_node_or_null(name)) {
                     child->set_name(name);
@@ -105,41 +201,75 @@ protected:
 };
 
 // ════════════════════════════════════════════════════════════════════
-//  STARTER GUI Y PACK
+//  STARTER GUI AND PACK
+////  STARTER GUI Y PACK
 // ════════════════════════════════════════════════════════════════════
 
-// ScreenGuis aquí se clonan al HUD de cada jugador
+// ScreenGuis here are cloned into each player's HUD
+//// ScreenGuis aquí se clonan al HUD de cada jugador
 class StarterGui : public Node {
     GDCLASS(StarterGui, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
-// Tools / items del inventario (mochila) del jugador
+// Tools / inventory items (backpack) for the player
+//// Tools / items del inventario (mochila) del jugador
 class StarterPack : public Node {
     GDCLASS(StarterPack, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════
-//  JUGADORES Y EQUIPOS
+//  PLAYERS AND TEAMS
+////  JUGADORES Y EQUIPOS
 // ════════════════════════════════════════════════════════════════════
 
-// Servicio de jugadores — acceso via game:GetService("Players")
+// Players service — accessed via game:GetService("Players")
+//// Servicio de jugadores — acceso via game:GetService("Players")
 class Players : public Node {
     GDCLASS(Players, Node);
+
+public:
+    struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
+    std::vector<LuaCallback> player_added_cbs;
+    std::vector<LuaCallback> player_removing_cbs;
+    int max_players = 50;
+
 protected:
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
     static void _bind_methods() {
-        ClassDB::bind_method(D_METHOD("get_local_player"), &Players::get_local_player);
-        ClassDB::bind_method(D_METHOD("get_players"),      &Players::get_players);
+        ClassDB::bind_method(D_METHOD("get_local_player"),     &Players::get_local_player);
+        ClassDB::bind_method(D_METHOD("get_players"),          &Players::get_players);
+        ClassDB::bind_method(D_METHOD("get_max_players"),      &Players::get_max_players);
+        ClassDB::bind_method(D_METHOD("set_max_players", "v"), &Players::set_max_players);
         ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "LocalPlayer",
                                   PROPERTY_HINT_NODE_TYPE, "Node"),
                      "", "get_local_player");
+        ADD_PROPERTY(PropertyInfo(Variant::INT, "MaxPlayers"), "set_max_players", "get_max_players");
     }
 
 public:
-    // Busca el personaje del jugador en Workspace (RobloxPlayer o RobloxPlayer2D)
+    int  get_max_players() const { return max_players; }
+    void set_max_players(int v)  { max_players = v; }
+
+    void add_player_added_cb(lua_State* L, int ref)    { player_added_cbs.push_back({L,ref,true}); }
+    void add_player_removing_cb(lua_State* L, int ref) { player_removing_cbs.push_back({L,ref,true}); }
+
+    void fire_player_added(Node* player)    { _fire_player_event(player_added_cbs, player); }
+    void fire_player_removing(Node* player) { _fire_player_event(player_removing_cbs, player); }
+
+    // Find the player character in Workspace (RobloxPlayer or RobloxPlayer2D)
+    //// Busca el personaje del jugador en Workspace (RobloxPlayer o RobloxPlayer2D)
     Node* get_local_player() const {
         if (!is_inside_tree()) return nullptr;
         Node* parent = get_parent(); // DataModel
@@ -161,19 +291,49 @@ public:
         if (lp) result.push_back(lp);
         return result;
     }
+
+private:
+    struct _GOW { Node* node_ptr; };
+    void _fire_player_event(std::vector<LuaCallback>& list, Node* player) {
+        for (int i = (int)list.size()-1; i >= 0; --i) {
+            auto& cb = list[i];
+            if (!cb.active) { list.erase(list.begin()+i); continue; }
+            lua_State* th = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, th, 1);
+                if (player) {
+                    _GOW* w = (_GOW*)lua_newuserdata(th, sizeof(_GOW));
+                    w->node_ptr = player;
+                    luaL_getmetatable(th, "GodotObject");
+                    lua_setmetatable(th, -2);
+                } else {
+                    lua_pushnil(th);
+                }
+                lua_resume(th, nullptr, 1);
+            } else lua_pop(cb.main_L, 1);
+            lua_pop(cb.main_L, 1);
+        }
+    }
 };
 
-// Gestión de equipos — los jugadores pueden pertenecer a equipos con colores
+// Teams management — players can belong to colored teams
+//// Gestión de equipos — los jugadores pueden pertenecer a equipos con colores
 class Teams : public Node {
     GDCLASS(Teams, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
-// Folder está definido en folder.h (ya existía antes)
+// Folder is defined in folder.h (already existed before)
+//// Folder está definido en folder.h (ya existía antes)
 
 // ════════════════════════════════════════════════════════════════════
-//  ILUMINACIÓN Y AMBIENTE
+//  LIGHTING AND ENVIRONMENT
+////  ILUMINACIÓN Y AMBIENTE
 // ════════════════════════════════════════════════════════════════════
 
 class Lighting : public Node {
@@ -208,7 +368,7 @@ private:
     Color color_shift_top      = Color(0, 0, 0);
     Color color_shift_bottom   = Color(0, 0, 0);
     // Technology: 0=Compatibility 1=Legacy 2=Future 3=ShadowMap 4=Voxel
-    int   technology           = 3; // ShadowMap default (igual que Roblox Studio moderno)
+    int   technology           = 3; // ShadowMap default (same as modern Roblox Studio / igual que Roblox Studio moderno)
     // ── Preset ───────────────────────────────────────────────────
     int lighting_preset        = PRESET_DEFAULT;
 
@@ -463,7 +623,10 @@ protected:
     }
 
     void _notification(int p_what) {
-        if (p_what == NOTIFICATION_ENTER_TREE) _apply_all();
+        if (p_what == NOTIFICATION_ENTER_TREE) {
+            if (!_enforce_game_parent(this)) return;
+            _apply_all();
+        }
     }
 
 public:
@@ -511,10 +674,12 @@ public:
 };
 
 // ════════════════════════════════════════════════════════════════════
-//  AUDIO, MATERIALES, RED
+//  AUDIO, MATERIALS, NETWORK
+////  AUDIO, MATERIALES, RED
 // ════════════════════════════════════════════════════════════════════
 
-// Controla el volumen global, reverb, y efectos de sonido del mundo
+// Controls global volume, reverb, and world sound effects
+//// Controla el volumen global, reverb, y efectos de sonido del mundo
 class SoundService : public Node {
     GDCLASS(SoundService, Node);
 
@@ -524,6 +689,9 @@ private:
     float distance_factor = 1.0f;
 
 protected:
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("set_ambient_reverb", "v"), &SoundService::set_ambient_reverb);
         ClassDB::bind_method(D_METHOD("get_ambient_reverb"),       &SoundService::get_ambient_reverb);
@@ -537,25 +705,34 @@ public:
     float get_ambient_reverb() const { return ambient_reverb; }
 };
 
-// Gestiona los materiales de superficie del mundo
+// Manages world surface materials
+//// Gestiona los materiales de superficie del mundo
 class MaterialService : public Node {
     GDCLASS(MaterialService, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
-// Gestión de la red para multijugador
+// Network management for multiplayer
+//// Gestión de la red para multijugador
 class NetworkClient : public Node {
     GDCLASS(NetworkClient, Node);
 protected:
     static void _bind_methods() {}
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════
 //  TEXT CHAT SERVICE — Chat funcional tipo Roblox
 // ════════════════════════════════════════════════════════════════════
 
-// En runtime crea la UI del chat. En Luau se accede via game:GetService("TextChatService")
+// At runtime creates the chat UI. In Luau accessed via game:GetService("TextChatService")
+//// En runtime crea la UI del chat. En Luau se accede via game:GetService("TextChatService")
 class TextChatService : public Node {
     GDCLASS(TextChatService, Node);
 
@@ -563,6 +740,9 @@ private:
     RobloxChat* chat_window = nullptr;
 
 protected:
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("send_message", "player", "message"),
                              &TextChatService::send_message_from_luau);
@@ -574,22 +754,25 @@ public:
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
 
-        // Crear el sistema de chat como hijo
+        // Create the chat system as a child
+        //// Crear el sistema de chat como hijo
         chat_window = memnew(RobloxChat);
         chat_window->set_name("ChatWindow");
         add_child(chat_window);
 
-        UtilityFunctions::print("[GodotLuau] TextChatService listo. Presiona '/' o 'Enter' para abrir el chat.");
+        UtilityFunctions::print("[GodotLuau] TextChatService ready. Press '/' or 'Enter' to open the chat.");
     }
 
-    // Enviar un mensaje (llamable desde Luau)
+    // Send a message (callable from Luau)
+    //// Enviar un mensaje (llamable desde Luau)
     void send_message_from_luau(String player, String message) {
         if (chat_window) {
             chat_window->send_message(player, message);
         }
     }
 
-    // Cambiar nombre del jugador local
+    // Change the local player name
+    //// Cambiar nombre del jugador local
     void set_player_name(String name) {
         if (chat_window) {
             chat_window->set_player_name(name);
@@ -616,23 +799,56 @@ public:
         lua_State* main_L;
         int        ref;
         bool       active = true;
+        bool       once   = false;
+    };
+
+    // Coroutines waiting on the next signal fire (Signal:Wait())
+    struct WaitCallback {
+        lua_State* thread;
+        lua_State* main_L;
     };
 
     std::vector<LuaCallback> heartbeat_cbs;
     std::vector<LuaCallback> render_stepped_cbs;
     std::vector<LuaCallback> stepped_cbs;
 
-    void add_heartbeat(lua_State* main_L, int ref)       { heartbeat_cbs.push_back({main_L, ref, true}); }
-    void add_render_stepped(lua_State* main_L, int ref)  { render_stepped_cbs.push_back({main_L, ref, true}); }
-    void add_stepped(lua_State* main_L, int ref)         { stepped_cbs.push_back({main_L, ref, true}); }
+    std::vector<WaitCallback> heartbeat_wait_cbs;
+    std::vector<WaitCallback> render_stepped_wait_cbs;
+    std::vector<WaitCallback> stepped_wait_cbs;
+
+    void add_heartbeat(lua_State* main_L, int ref, bool once = false)      { heartbeat_cbs.push_back({main_L, ref, true, once}); }
+    void add_render_stepped(lua_State* main_L, int ref, bool once = false) { render_stepped_cbs.push_back({main_L, ref, true, once}); }
+    void add_stepped(lua_State* main_L, int ref, bool once = false)        { stepped_cbs.push_back({main_L, ref, true, once}); }
+
+    void add_heartbeat_wait(lua_State* th, lua_State* mL)      { heartbeat_wait_cbs.push_back({th, mL}); }
+    void add_render_stepped_wait(lua_State* th, lua_State* mL) { render_stepped_wait_cbs.push_back({th, mL}); }
+    void add_stepped_wait(lua_State* th, lua_State* mL)        { stepped_wait_cbs.push_back({th, mL}); }
 
     void remove_by_state(lua_State* L) {
         for (auto& cb : heartbeat_cbs)      if (cb.main_L == L) cb.active = false;
         for (auto& cb : render_stepped_cbs) if (cb.main_L == L) cb.active = false;
         for (auto& cb : stepped_cbs)        if (cb.main_L == L) cb.active = false;
+        heartbeat_wait_cbs.erase(std::remove_if(heartbeat_wait_cbs.begin(), heartbeat_wait_cbs.end(),
+            [L](const WaitCallback& w){ return w.main_L == L; }), heartbeat_wait_cbs.end());
+        render_stepped_wait_cbs.erase(std::remove_if(render_stepped_wait_cbs.begin(), render_stepped_wait_cbs.end(),
+            [L](const WaitCallback& w){ return w.main_L == L; }), render_stepped_wait_cbs.end());
+        stepped_wait_cbs.erase(std::remove_if(stepped_wait_cbs.begin(), stepped_wait_cbs.end(),
+            [L](const WaitCallback& w){ return w.main_L == L; }), stepped_wait_cbs.end());
+    }
+
+    void disconnect_by_ref(const char* ev, int ref) {
+        auto deactivate = [ref](std::vector<LuaCallback>& list) {
+            for (auto& cb : list) if (cb.ref == ref) { cb.active = false; return; }
+        };
+        if      (strcmp(ev, "Heartbeat")     == 0) deactivate(heartbeat_cbs);
+        else if (strcmp(ev, "RenderStepped") == 0) deactivate(render_stepped_cbs);
+        else if (strcmp(ev, "Stepped")       == 0) deactivate(stepped_cbs);
     }
 
 protected:
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+    }
     static void _bind_methods() {}
 
     static void fire_list(std::vector<LuaCallback>& list, double delta) {
@@ -642,6 +858,7 @@ protected:
                 list.erase(list.begin() + i);
                 continue;
             }
+            if (cb.once) cb.active = false;
             lua_State* thread = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
@@ -658,16 +875,28 @@ protected:
         }
     }
 
+    // Queue Signal:Wait() coroutines into the shared pending-resume list
+    static void fire_wait_list(std::vector<WaitCallback>& list, double delta) {
+        for (int i = (int)list.size() - 1; i >= 0; --i) {
+            auto& wc = list[i];
+            get_pending_resumes().push_back({wc.thread, wc.main_L, delta, nullptr});
+            list.erase(list.begin() + i);
+        }
+    }
+
 public:
     void _process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         fire_list(heartbeat_cbs, delta);
         fire_list(render_stepped_cbs, delta);
+        fire_wait_list(heartbeat_wait_cbs, delta);
+        fire_wait_list(render_stepped_wait_cbs, delta);
     }
 
     void _physics_process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         fire_list(stepped_cbs, delta);
+        fire_wait_list(stepped_wait_cbs, delta);
     }
 };
 

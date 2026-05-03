@@ -14,6 +14,17 @@
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  RobloxPlayer2D — 2D player character
+//
+//  MOVEMENT TYPE (MovementType property):
+//    0 = Platformer — With gravity physics, the character can fall and jump
+//    1 = TopDown    — No gravity, moves in 8 directions (RPG/Zelda style)
+//
+//  2D CAMERA MODES (CameraMode property):
+//    1 = Fixed    — Camera follows the player instantly
+//    2 = Smooth   — Camera follows with a small delay
+//    3 = Combined — Delay while moving, centers when idle
+////
 //  RobloxPlayer2D — Personaje del jugador para juegos 2D
 //
 //  TIPO DE MOVIMIENTO (propiedad MovementType):
@@ -34,13 +45,13 @@ private:
     // 0 = Platformer, 1 = TopDown
     int movement_type = 0;
 
-    // 1 = Fija, 2 = Suave, 3 = Combinada
+    // 1 = Fixed, 2 = Smooth, 3 = Combined / Fija, Suave, Combinada
     int camera_mode = 1;
 
-    // Velocidades del movimiento
+    // Movement speeds / Velocidades del movimiento
     float walk_speed  = 200.0f;
     float run_speed   = 300.0f;
-    float jump_power  = -500.0f;  // Negativo porque en 2D Y crece hacia abajo
+    float jump_power  = -500.0f;  // Negative because in 2D Y grows downward / Negativo porque en 2D Y crece hacia abajo
     float gravity     = 980.0f;
 
     Vector2 last_position;
@@ -102,16 +113,16 @@ public:
         if (!camera) return;
         switch (camera_mode) {
             case 1:
-                // Fija: sin suavizado
+                // Fixed: no smoothing / Fija: sin suavizado
                 camera->set_position_smoothing_enabled(false);
                 break;
             case 2:
-                // Suave: suavizado moderado
+                // Smooth: moderate smoothing / Suave: suavizado moderado
                 camera->set_position_smoothing_enabled(true);
                 camera->set_position_smoothing_speed(8.0f);
                 break;
             case 3:
-                // Combinada: suavizado suave (se complementa con la lógica en _process)
+                // Combined: soft smoothing (complemented by logic in _process) / Combinada: suavizado suave (se complementa con la lógica en _process)
                 camera->set_position_smoothing_enabled(true);
                 camera->set_position_smoothing_speed(4.0f);
                 break;
@@ -124,7 +135,7 @@ public:
 
         last_position = get_global_position();
 
-        // Cuerpo del personaje: rectángulo simple
+        // Character body: simple rectangle / Cuerpo del personaje: rectángulo simple
         CollisionShape2D* col = memnew(CollisionShape2D);
         Ref<CapsuleShape2D> shape; shape.instantiate();
         shape->set_radius(16.0f);
@@ -132,15 +143,15 @@ public:
         col->set_shape(shape);
         add_child(col);
 
-        // Representación visual: rectángulo de color
+        // Visual representation: colored rectangle / Representación visual: rectángulo de color
         ColorRect* body_rect = memnew(ColorRect);
         body_rect->set_name("BodyRect");
         body_rect->set_size(Vector2(32.0f, 64.0f));
         body_rect->set_position(Vector2(-16.0f, -64.0f));
-        body_rect->set_color(Color(0.24f, 0.49f, 0.83f)); // Azul Roblox
+        body_rect->set_color(Color(0.24f, 0.49f, 0.83f)); // Roblox blue / Azul Roblox
         add_child(body_rect);
 
-        // Cámara 2D
+        // 2D camera / Cámara 2D
         camera = memnew(Camera2D);
         camera->set_name("Camera2D");
         camera->set_enabled(true);
@@ -149,7 +160,8 @@ public:
         apply_camera_mode();
     }
 
-    // ── _physics_process: movimiento ──────────────────────────────
+    // ── _physics_process: movement ────────────────────────────────
+    //// ── _physics_process: movimiento ──────────────────────────────
     void _physics_process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
 
@@ -158,21 +170,21 @@ public:
 
         if (movement_type == 0) {
             // ── PLATFORMER ──────────────────────────────────────
-            // Gravedad
+            // Gravity / Gravedad
             if (!is_on_floor()) {
                 vel.y += gravity * (float)delta;
             }
 
-            // Salto
+            // Jump / Salto
             if (inp->is_key_pressed(KEY_SPACE) && is_on_floor()) {
                 vel.y = jump_power;
             }
-            // También aceptar W y flecha arriba para saltar
+            // Also accept W and up arrow to jump / También aceptar W y flecha arriba para saltar
             if ((inp->is_key_pressed(KEY_W) || inp->is_key_pressed(KEY_UP)) && is_on_floor()) {
                 vel.y = jump_power;
             }
 
-            // Movimiento horizontal
+            // Horizontal movement / Movimiento horizontal
             float h = 0.0f;
             if (inp->is_key_pressed(KEY_D) || inp->is_key_pressed(KEY_RIGHT)) h += 1.0f;
             if (inp->is_key_pressed(KEY_A) || inp->is_key_pressed(KEY_LEFT))  h -= 1.0f;
@@ -183,7 +195,7 @@ public:
             if (Math::abs(h) > 0.0f) {
                 vel.x = h * speed;
             } else {
-                // Desaceleración suave
+                // Smooth deceleration / Desaceleración suave
                 vel.x = (float)Math::move_toward((double)vel.x, 0.0, (double)speed * 0.3);
             }
 
@@ -212,11 +224,12 @@ public:
         move_and_slide();
     }
 
-    // ── _process: ajuste del camera_mode 3 ────────────────────────
+    // ── _process: camera_mode 3 adjustment ───────────────────────
+    //// ── _process: ajuste del camera_mode 3 ────────────────────────
     void _process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint() || !camera) return;
 
-        // En modo 3 cambiamos la velocidad de suavizado dinámicamente
+        // In mode 3 we change the smoothing speed dynamically / En modo 3 cambiamos la velocidad de suavizado dinámicamente
         if (camera_mode == 3) {
             Vector2 cur = get_global_position();
             bool moving = (cur - last_position).length_squared() > 1.0f;
@@ -225,7 +238,7 @@ public:
             if (moving) idle_time = 0.0f;
             else        idle_time += (float)delta;
 
-            // Más lento al moverse, más rápido para centrar al detenerse
+            // Slower while moving, faster to center when idle / Más lento al moverse, más rápido para centrar al detenerse
             float target_speed = (idle_time > 0.3f) ? 10.0f : 3.0f;
             float cur_speed = camera->get_position_smoothing_speed();
             camera->set_position_smoothing_speed(

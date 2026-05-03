@@ -25,17 +25,24 @@
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  RobloxChat — Roblox-style chat system
+////
 //  RobloxChat — Sistema de chat tipo Roblox
 //
+//  Modern minimalist layout:
+////
 //  Diseño minimalista moderno:
 //  ┌───────────────────────────────┐
-//  │  PlayerName: mensaje          │  ← RichTextLabel con BBCode
-//  │  OtroJugador: otro mensaje    │
+//  │  PlayerName: message          │  ← RichTextLabel with BBCode
+//  │  OtherPlayer: another message │
 //  │  ...                         │
 //  ├───────────────────────────────┤
-//  │  Escribe algo...    [ Enviar ]│  ← LineEdit + Button
+//  │  Type something...  [ Send ]  │  ← LineEdit + Button
 //  └───────────────────────────────┘
 //
+//  Open/close chat: / key
+//  Send: Enter key or Send button
+////
 //  Para abrir/cerrar el chat: tecla /
 //  Para enviar: tecla Enter o botón Enviar
 // ════════════════════════════════════════════════════════════════════
@@ -55,11 +62,13 @@ private:
     int    max_messages = 50;
     int    message_count = 0;
 
-    // Colores del tema minimalista oscuro
+    // Dark minimalist theme alpha constants
+    //// Colores del tema minimalista oscuro
     static constexpr float PANEL_ALPHA  = 0.82f;
     static constexpr float INPUT_ALPHA  = 0.90f;
 
-    // Crear StyleBox oscuro minimalista
+    // Create a minimalist dark StyleBox
+    //// Crear StyleBox oscuro minimalista
     Ref<StyleBoxFlat> make_style(Color bg, float radius = 4.0f, Color border = Color(0, 0, 0, 0)) {
         Ref<StyleBoxFlat> s; s.instantiate();
         s->set_bg_color(bg);
@@ -73,18 +82,18 @@ private:
     }
 
     void build_ui() {
-        // ── CanvasLayer: siempre encima de todo ──────────────────
+        // ── CanvasLayer: always rendered on top / siempre encima de todo ──────────────────
         canvas = memnew(CanvasLayer);
         canvas->set_name("ChatLayer");
         canvas->set_layer(120);
         add_child(canvas);
 
-        // ── Panel principal (esquina inferior izquierda) ──────────
+        // ── Main panel (bottom-left corner) / Panel principal (esquina inferior izquierda) ──
         main_panel = memnew(Panel);
         main_panel->set_name("ChatPanel");
         main_panel->set_visible(false);
 
-        // Anclaje a esquina inferior izquierda
+        // Anchor to bottom-left corner / Anclaje a esquina inferior izquierda
         main_panel->set_anchor(SIDE_LEFT,   0.0f);
         main_panel->set_anchor(SIDE_RIGHT,  0.0f);
         main_panel->set_anchor(SIDE_TOP,    1.0f);
@@ -98,7 +107,7 @@ private:
         main_panel->add_theme_stylebox_override("panel", make_style(panel_bg, 6.0f));
         canvas->add_child(main_panel);
 
-        // ── Layout vertical dentro del panel ─────────────────────
+        // ── Vertical layout inside the panel / Layout vertical dentro del panel ──────────
         VBoxContainer* vbox = memnew(VBoxContainer);
         vbox->set_name("VBox");
         vbox->set_anchors_preset(Control::PRESET_FULL_RECT);
@@ -108,40 +117,40 @@ private:
         vbox->set_offset(SIDE_BOTTOM,-8.0f);
         main_panel->add_child(vbox);
 
-        // ── ScrollContainer para los mensajes ─────────────────────
+        // ── ScrollContainer for messages / ScrollContainer para los mensajes ──────────────
         scroll = memnew(ScrollContainer);
         scroll->set_name("Scroll");
         scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
         scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
         vbox->add_child(scroll);
 
-        // ── RichTextLabel: mensajes con BBCode ────────────────────
+        // ── RichTextLabel: messages with BBCode / mensajes con BBCode ──────────────────────
         msg_label = memnew(RichTextLabel);
         msg_label->set_name("Messages");
         msg_label->set_use_bbcode(true);
-        msg_label->set_scroll_active(false); // el scroll lo maneja ScrollContainer
+        msg_label->set_scroll_active(false); // scroll managed by ScrollContainer / el scroll lo maneja ScrollContainer
         msg_label->set_fit_content(true);
         msg_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 
-        // Estilo del área de mensajes
+        // Message area style / Estilo del área de mensajes
         msg_label->add_theme_color_override("default_color", Color(0.90f, 0.90f, 0.90f));
         msg_label->add_theme_font_size_override("normal_font_size", 14);
         scroll->add_child(msg_label);
 
-        // ── Separador visual ─────────────────────────────────────
+        // ── Visual separator / Separador visual ──────────────────────────────────────────
         Panel* sep = memnew(Panel);
         sep->set_custom_minimum_size(Vector2(0.0f, 1.0f));
         Ref<StyleBoxFlat> sep_style = make_style(Color(0.3f, 0.3f, 0.35f, 0.8f), 0.0f);
         sep->add_theme_stylebox_override("panel", sep_style);
         vbox->add_child(sep);
 
-        // ── Fila de input ─────────────────────────────────────────
+        // ── Input row / Fila de input ──────────────────────────────────────────────────────
         HBoxContainer* hbox = memnew(HBoxContainer);
         hbox->set_name("InputRow");
         hbox->add_theme_constant_override("separation", 6);
         vbox->add_child(hbox);
 
-        // LineEdit para escribir
+        // LineEdit for typing / LineEdit para escribir
         input_field = memnew(LineEdit);
         input_field->set_name("ChatInput");
         input_field->set_placeholder("Escribe un mensaje...");
@@ -155,7 +164,7 @@ private:
         input_field->add_theme_font_size_override("font_size", 14);
         hbox->add_child(input_field);
 
-        // Botón Enviar
+        // Send button / Botón Enviar
         send_btn = memnew(Button);
         send_btn->set_name("SendButton");
         send_btn->set_text("Enviar");
@@ -172,7 +181,7 @@ private:
         send_btn->add_theme_font_size_override("font_size", 13);
         hbox->add_child(send_btn);
 
-        // ── Conectar señales ──────────────────────────────────────
+        // ── Connect signals / Conectar señales ────────────────────────────────────────────
         send_btn->connect("pressed", Callable(this, "_on_send_pressed"));
         input_field->connect("text_submitted", Callable(this, "_on_text_submitted"));
     }
@@ -190,7 +199,8 @@ protected:
         ClassDB::bind_method(D_METHOD("_on_text_submitted", "text"),
                              &RobloxChat::_on_text_submitted);
 
-        // Señal para cuando alguien envía un mensaje
+        // Signal emitted when someone sends a message
+        //// Señal para cuando alguien envía un mensaje
         ADD_SIGNAL(MethodInfo("MessageSent",
             PropertyInfo(Variant::STRING, "player_name"),
             PropertyInfo(Variant::STRING, "message")));
@@ -200,7 +210,7 @@ public:
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         build_ui();
-        UtilityFunctions::print("[GodotLuau] Sistema de chat inicializado. Presiona / para abrir.");
+        UtilityFunctions::print("[GodotLuau] Chat system initialized. Press / to open.");
     }
 
     void _input(const Ref<InputEvent>& p_event) override {
@@ -208,22 +218,22 @@ public:
 
         Ref<InputEventKey> key = p_event;
         if (key.is_valid() && key->is_pressed() && !key->is_echo()) {
-            // / para abrir/cerrar el chat
+            // / to open/close chat / para abrir/cerrar el chat
             if (key->get_keycode() == KEY_SLASH && !chat_open) {
                 toggle_chat();
-                // Abrir y escribir /
+                // Open and pre-fill with / / Abrir y escribir /
                 if (input_field) {
                     input_field->set_text("/");
                     input_field->set_caret_column(1);
                 }
                 get_viewport()->set_input_as_handled();
             }
-            // Enter para abrir el chat vacío
+            // Enter to open empty chat / Enter para abrir el chat vacío
             else if (key->get_keycode() == KEY_ENTER && !chat_open) {
                 toggle_chat();
                 get_viewport()->set_input_as_handled();
             }
-            // Escape para cerrar
+            // Escape to close / Escape para cerrar
             else if (key->get_keycode() == KEY_ESCAPE && chat_open) {
                 close_chat();
                 get_viewport()->set_input_as_handled();
@@ -231,21 +241,25 @@ public:
         }
     }
 
-    // ── API pública ────────────────────────────────────────────────
+    // ── Public API / API pública ──────────────────────────────────────
 
-    // Enviar un mensaje al chat (puede llamarse desde Luau)
+    // Send a message to the chat (callable from Luau)
+    //// Enviar un mensaje al chat (puede llamarse desde Luau)
     void send_message(String p_player, String p_msg) {
         if (!msg_label || p_msg.is_empty()) return;
 
+        // Name color by hash of player name (variety of colors)
+        // Vibrant but not aggressive palette for dark mode
+        ////
         // Colores de nombre por hash del nombre (variedad de colores)
         // Paleta de colores vivos pero no agresivos para modo oscuro
         Color name_colors[] = {
-            Color(0.40f, 0.76f, 0.98f), // Azul claro
-            Color(0.98f, 0.73f, 0.40f), // Naranja suave
-            Color(0.67f, 0.95f, 0.60f), // Verde claro
-            Color(0.95f, 0.60f, 0.80f), // Rosa
-            Color(0.80f, 0.65f, 0.98f), // Lila
-            Color(0.98f, 0.90f, 0.45f), // Amarillo suave
+            Color(0.40f, 0.76f, 0.98f), // Light blue / Azul claro
+            Color(0.98f, 0.73f, 0.40f), // Soft orange / Naranja suave
+            Color(0.67f, 0.95f, 0.60f), // Light green / Verde claro
+            Color(0.95f, 0.60f, 0.80f), // Pink / Rosa
+            Color(0.80f, 0.65f, 0.98f), // Lilac / Lila
+            Color(0.98f, 0.90f, 0.45f), // Soft yellow / Amarillo suave
         };
         int color_idx = 0;
         for (int i = 0; i < p_player.length(); i++) {
@@ -254,18 +268,20 @@ public:
         Color nc = name_colors[color_idx % 6];
         String hex = "#" + nc.to_html(false).substr(0, 6);
 
-        // Formato: [color=hex][b]Nombre[/b][/color]: mensaje
+        // Format: [color=hex][b]Name[/b][/color]: message
+        //// Formato: [color=hex][b]Nombre[/b][/color]: mensaje
         String formatted = "[color=" + hex + "][b]" + p_player + "[/b][/color][color=#c8c8cc]: " + p_msg + "[/color]\n";
         msg_label->append_text(formatted);
 
         message_count++;
-        // Limpiar mensajes viejos si hay demasiados
+        // Clear old messages if there are too many
+        //// Limpiar mensajes viejos si hay demasiados
         if (message_count > max_messages) {
             msg_label->clear();
             message_count = 0;
         }
 
-        // Scroll al final
+        // Scroll to bottom / Scroll al final
         if (scroll) {
             scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
         }
@@ -293,7 +309,8 @@ public:
             input_field->grab_focus();
             input_field->clear();
         }
-        // Capturar el input para que no mueva al personaje
+        // Capture input so it doesn't move the character
+        //// Capturar el input para que no mueva al personaje
         Input::get_singleton()->set_mouse_mode(Input::MOUSE_MODE_VISIBLE);
     }
 
@@ -306,7 +323,7 @@ public:
 
     bool is_chat_open() const { return chat_open; }
 
-    // ── Callbacks de UI ────────────────────────────────────────────
+    // ── UI callbacks / Callbacks de UI ────────────────────────────────
     void _on_send_pressed() {
         if (!input_field) return;
         String text = input_field->get_text().strip_edges();

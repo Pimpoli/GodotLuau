@@ -16,6 +16,15 @@
 #include "roblox_game2d.h"
 #include "roblox_remote.h"
 #include "roblox_lighting_fx.h"
+#include "roblox_bodymovers.h"
+#include "roblox_constraints.h"
+#include "roblox_gui.h"
+#include "roblox_tween.h"
+#include "roblox_sound.h"
+#include "roblox_interactive.h"
+#include "roblox_billboard.h"
+#include "roblox_input.h"
+#include "roblox_animation.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -31,7 +40,8 @@ static Ref<LuauSaver>   luau_saver;
 
 void initialize_luau_module(ModuleInitializationLevel p_level) {
 
-    // ── Nivel SERVERS: registrar el lenguaje Luau ─────────────────
+    // ── SERVERS level: register the Luau scripting language
+    //// ── Nivel SERVERS: registrar el lenguaje Luau
     if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
         ClassDB::register_class<LuauScript>();
         ClassDB::register_class<LuauLanguage>();
@@ -39,30 +49,36 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         Engine::get_singleton()->register_script_language(luau_lang);
     }
 
-    // ── Nivel SCENE: registrar todos los nodos y servicios ────────
+    // ── SCENE level: register all nodes and services
+    //// ── Nivel SCENE: registrar todos los nodos y servicios
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 
-        // Scripts
+        // Scripts (color in editor: Blue / Naranja / Purple)
+        //// Scripts (color en el editor: Azul / Naranja / Morado)
         ClassDB::register_class<ScriptNodeBase>();
-        ClassDB::register_class<LocalScript>();   // Azul
-        ClassDB::register_class<ServerScript>();  // Naranja
-        ClassDB::register_class<ModuleScript>();  // Morado
+        ClassDB::register_class<LocalScript>();   // Blue / Azul
+        ClassDB::register_class<ServerScript>();  // Orange / Naranja
+        ClassDB::register_class<ModuleScript>();  // Purple / Morado
 
-        // Personajes y físicas 3D
+        // 3D characters and physics
+        //// Personajes y físicas 3D
         ClassDB::register_class<Humanoid>();
         ClassDB::register_class<RobloxWorkspace>();
         ClassDB::register_class<RobloxPlayer>();
         ClassDB::register_class<RobloxPart>();
 
-        // Personajes y físicas 2D
+        // 2D characters and physics
+        //// Personajes y físicas 2D
         ClassDB::register_class<Humanoid2D>();
         ClassDB::register_class<RobloxWorkspace2D>();
         ClassDB::register_class<RobloxPlayer2D>();
 
         // Chat
+        //// Chat
         ClassDB::register_class<RobloxChat>();
 
-        // Servicios equivalentes a Roblox
+        // Services equivalent to Roblox
+        //// Servicios equivalentes a Roblox
         ClassDB::register_class<ReplicatedStorage>();
         ClassDB::register_class<ServerStorage>();
         ClassDB::register_class<ReplicatedFirst>();
@@ -85,7 +101,34 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<RunService>();
         ClassDB::register_class<TextChatService>();
 
+        // BodyMovers — equivalent to Roblox's BodyMovers
+        //// BodyMovers — equivalentes a los BodyMovers de Roblox
+        ClassDB::register_class<BodyVelocity>();
+        ClassDB::register_class<BodyPosition>();
+        ClassDB::register_class<BodyForce>();
+        ClassDB::register_class<BodyAngularVelocity>();
+        ClassDB::register_class<BodyGyro>();
+
+        // Constraints — joints and physical restrictions
+        //// Constraints — juntas y restricciones físicas
+        ClassDB::register_class<WeldConstraint>();
+        ClassDB::register_class<HingeConstraint>();
+        ClassDB::register_class<BallSocketConstraint>();
+        ClassDB::register_class<RodConstraint>();
+        ClassDB::register_class<SpringConstraint>();
+
+        // Roblox-style GUI — ScreenGui, Frame, TextLabel, etc.
+        //// GUI tipo Roblox — ScreenGui, Frame, TextLabel, etc.
+        ClassDB::register_class<ScreenGui>();
+        ClassDB::register_class<RobloxFrame>();
+        ClassDB::register_class<RobloxTextLabel>();
+        ClassDB::register_class<RobloxTextButton>();
+        ClassDB::register_class<RobloxTextBox>();
+        ClassDB::register_class<RobloxImageLabel>();
+        ClassDB::register_class<RobloxScrollingFrame>();
+
         // Lighting FX nodes
+        //// Nodos de efectos de iluminación
         ClassDB::register_class<AtmosphereNode>();
         ClassDB::register_class<LightingSkyNode>();
         ClassDB::register_class<SunRaysNode>();
@@ -94,14 +137,51 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<ColorCorrectionEffect>();
         ClassDB::register_class<DepthOfFieldEffect>();
 
-        // DataModel (nodo raíz heredado)
+        // DataModel (legacy root node)
+        //// DataModel (nodo raíz heredado)
         ClassDB::register_class<RobloxDataModel>();
 
-        // Nuevos nodos raíz: selecciona 3D o 2D al crear la escena
+        // New root nodes: choose 3D or 2D when creating the scene
+        //// Nuevos nodos raíz: selecciona 3D o 2D al crear la escena
         ClassDB::register_class<RobloxGame3D>();
         ClassDB::register_class<RobloxGame2D>();
 
-        // Cargador y guardador de scripts .lua
+        // TweenService
+        //// TweenService
+        ClassDB::register_class<RobloxTween>();
+        ClassDB::register_class<TweenService>();
+
+        // Sound
+        //// Sonido
+        ClassDB::register_class<RobloxSound>();
+        ClassDB::register_class<RobloxSoundGroup>();
+
+        // Interactive
+        //// Elementos interactivos
+        ClassDB::register_class<ClickDetector>();
+        ClassDB::register_class<ProximityPrompt>();
+        ClassDB::register_class<SpawnLocation>();
+
+        // Billboard / Surface / Motor6D / Tool
+        //// Billboard / Surface / Motor6D / Herramienta
+        ClassDB::register_class<BillboardGui>();
+        ClassDB::register_class<SurfaceGui>();
+        ClassDB::register_class<Motor6D>();
+        ClassDB::register_class<RobloxTool>();
+        ClassDB::register_class<Backpack>();
+
+        // Input / Collection
+        //// Entrada / Colección
+        ClassDB::register_class<UserInputService>();
+        ClassDB::register_class<CollectionService>();
+
+        // Animation
+        //// Animación
+        ClassDB::register_class<AnimationTrack>();
+        ClassDB::register_class<AnimationObject>();
+
+        // .lua script loader and saver
+        //// Cargador y guardador de scripts .lua
         ClassDB::register_class<LuauLoader>();
         ClassDB::register_class<LuauSaver>();
         luau_loader.instantiate();
@@ -109,7 +189,8 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         luau_saver.instantiate();
         ResourceSaver::get_singleton()->add_resource_format_saver(luau_saver);
 
-        // Asegurar carpeta de iconos (necesaria para colores de nodos en editor)
+        // Ensure the icons folder exists (required for node colors in the editor)
+        //// Asegurar carpeta de iconos (necesaria para colores de nodos en editor)
         if (Engine::get_singleton()->is_editor_hint()) {
             Ref<DirAccess> dir = DirAccess::open("res://");
             if (dir.is_valid() && !dir->dir_exists("icons")) {

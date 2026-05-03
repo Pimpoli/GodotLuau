@@ -52,7 +52,8 @@ private:
                 space, PhysicsServer3D::AREA_PARAM_GRAVITY, Variant(gravity));
     }
 
-    // Genera la textura de cuadros tipo Roblox
+    // Generates the Roblox-style grid texture
+    //// Genera la textura de cuadros tipo Roblox
     Ref<ImageTexture> generar_textura_grid() {
         Ref<Image> img = Image::create(64, 64, false, Image::FORMAT_RGBA8);
         Color color_fondo(0.2, 0.2, 0.2); 
@@ -98,7 +99,8 @@ protected:
                 Node* root = get_tree()->get_edited_scene_root();
                 if (!root) root = this;
 
-                // 1. CIELO AZUL ROBLOX
+                // 1. ROBLOX BLUE SKY
+                //// 1. CIELO AZUL ROBLOX
                 WorldEnvironment* env_node = memnew(WorldEnvironment);
                 env_node->set_name("WorldEnvironment");
                 Ref<Environment> env; env.instantiate();
@@ -119,7 +121,8 @@ protected:
                 add_child(env_node);
                 env_node->set_owner(root);
 
-                // 2. SOL
+                // 2. SUN
+                //// 2. SOL
                 DirectionalLight3D* sol = memnew(DirectionalLight3D);
                 sol->set_name("SunLight");
                 sol->set_rotation_degrees(Vector3(-45, 45, 0));
@@ -127,7 +130,8 @@ protected:
                 add_child(sol);
                 sol->set_owner(root);
 
-                // 3. BASEPLATE CON CUADRÍCULA
+                // 3. BASEPLATE WITH GRID
+                //// 3. BASEPLATE CON CUADRÍCULA
                 StaticBody3D* bp = memnew(StaticBody3D);
                 bp->set_name("BasePlate");
                 add_child(bp);
@@ -138,7 +142,8 @@ protected:
                 m->set_size(Vector3(1000, 1, 1000));
                 
                 Ref<StandardMaterial3D> mat; mat.instantiate();
-                // Usamos el método oficial set_texture
+                // Use the official set_texture method
+                //// Usamos el método oficial set_texture
                 mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, generar_textura_grid());
                 mat->set_uv1_scale(Vector3(100, 100, 1)); 
                 mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_NEAREST);
@@ -155,9 +160,12 @@ protected:
                 bp->add_child(col);
                 col->set_owner(root);
 
-                // 4. CÁMARA ACTUAL — visible en el árbol de escena como en Roblox
-                // workspace.CurrentCamera es la cámara que renderiza el juego.
-                // En runtime el jugador la controla; en el editor puedes ver su posición.
+                // 4. CURRENT CAMERA — visible in the scene tree like Roblox
+                // workspace.CurrentCamera is the camera that renders the game.
+                // At runtime the player controls it; in the editor you can see its position.
+                //// 4. CÁMARA ACTUAL — visible en el árbol de escena como en Roblox
+                //// workspace.CurrentCamera es la cámara que renderiza el juego.
+                //// En runtime el jugador la controla; en el editor puedes ver su posición.
                 Camera3D* current_cam = memnew(Camera3D);
                 current_cam->set_name("CurrentCamera");
                 current_cam->set_position(Vector3(0.0f, 5.0f, 10.0f));
@@ -165,13 +173,13 @@ protected:
                 add_child(current_cam);
                 current_cam->set_owner(root);
 
-                UtilityFunctions::print("[GodotLuau] RobloxWorkspace inicializado en editor.");
+                UtilityFunctions::print("[GodotLuau] RobloxWorkspace initialized in editor.");
             }
         }
     }
 
 public:
-    // ── Getters / Setters ─────────────────────────────────────────
+    // ── Getters / Setters (properties match Roblox Workspace API) ─
     void  set_gravity(float g)                     { gravity = Math::max(g, 0.0f); _apply_gravity(); }
     float get_gravity() const                      { return gravity; }
     void  set_fallen_parts_destroy_height(float h) { fallen_parts_destroy_height = h; }
@@ -188,19 +196,22 @@ public:
 
         _apply_gravity();
 
-        // ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
+        // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────
+        //// ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
         Node* starter_player = nullptr;
         if (get_parent()) {
             starter_player = get_parent()->get_node_or_null("StarterPlayer");
         }
 
-        // ── 2. Crear el personaje del jugador ────────────────────────────────────
+        // ── 2. Create the player character ──────────────────────────────────────
+        //// ── 2. Crear el personaje del jugador ────────────────────────────────────
         RobloxPlayer* p = memnew(RobloxPlayer);
         p->set_name("LocalPlayer");
         p->set_position(Vector3(0, 5, 0));
         add_child(p);
 
-        // ── 3. Personaje cápsula predeterminado (igual que Roblox) ──────────────────
+        // ── 3. Default capsule character (same as Roblox) ──────────────────────
+        //// ── 3. Personaje cápsula predeterminado (igual que Roblox) ──────────────────
         {
             MeshInstance3D* m = memnew(MeshInstance3D);
             m->set_name("Mesh");
@@ -214,14 +225,16 @@ public:
             p->add_child(c);
         }
 
-        // ── 4. Siempre garantizar Humanoid (movimiento) ──────────────────────────
+        // ── 4. Always ensure a Humanoid exists (movement) ───────────────────────
+        //// ── 4. Siempre garantizar Humanoid (movimiento) ──────────────────────────
         if (!p->get_node_or_null("Humanoid")) {
             Humanoid* hum = memnew(Humanoid);
             hum->set_name("Humanoid");
             p->add_child(hum);
         }
 
-        // ── 5. Clonar StarterCharacterScripts al personaje ───────────────────────
+        // ── 5. Clone StarterCharacterScripts onto the character ─────────────────
+        //// ── 5. Clonar StarterCharacterScripts al personaje ───────────────────────
         if (starter_player) {
             Node* char_scripts = starter_player->get_node_or_null("StarterCharacterScripts");
             if (char_scripts) {
@@ -234,7 +247,8 @@ public:
                 }
             }
 
-            // ── 7. Clonar StarterPlayerScripts al jugador ────────────────────────
+            // ── 7. Clone StarterPlayerScripts onto the player ───────────────────
+            //// ── 7. Clonar StarterPlayerScripts al jugador ────────────────────────
             Node* player_scripts = starter_player->get_node_or_null("StarterPlayerScripts");
             if (player_scripts) {
                 TypedArray<Node> hijos = player_scripts->get_children();
@@ -246,7 +260,7 @@ public:
                 }
             }
 
-            UtilityFunctions::print("[GodotLuau] Scripts del jugador cargados desde StarterPlayer.");
+            UtilityFunctions::print("[GodotLuau] Player scripts loaded from StarterPlayer.");
         }
     }
 };
