@@ -476,6 +476,7 @@ print("Hello World Module Script")
 #include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/json.hpp>
@@ -1118,6 +1119,8 @@ public:
 
         // ── print / warn / error ──────────────────────────────────────────────
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            if (!ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode"))
+                return 0;
             int n = lua_gettop(L);
             String msg;
             for (int i = 1; i <= n; i++) {
@@ -1130,6 +1133,8 @@ public:
         lua_setglobal(L_main, "print");
 
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            if (!ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode"))
+                return 0;
             int n = lua_gettop(L);
             String msg;
             for (int i = 1; i <= n; i++) {

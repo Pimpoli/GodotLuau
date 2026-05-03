@@ -217,12 +217,19 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
                 + line2 + "\n"
                 + "[GodotLuau] ══════════════════════════════════════════"
             );
+
+            Engine::get_singleton()->set_meta(
+                "_godotluau_wm",
+                String("GodotLuau ") + version + String(" by PimpoliDev | github.com/Pimpoli/GodotLuau")
+            );
         }
     }
 }
 
 void uninitialize_luau_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        if (Engine::get_singleton()->has_meta("_godotluau_wm"))
+            Engine::get_singleton()->remove_meta("_godotluau_wm");
         if (luau_loader.is_valid())
             ResourceLoader::get_singleton()->remove_resource_format_loader(luau_loader);
         if (luau_saver.is_valid())
