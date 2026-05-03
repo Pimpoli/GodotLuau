@@ -3,7 +3,7 @@ extends EditorPlugin
 
 const VERSION_URL    := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/Version"
 const ZIP_URL        := "https://github.com/Pimpoli/GodotLuau/raw/main/GodotLuau.zip"
-const VERSION_FILE   := "res://addons/GodotLuauUpdater/installed_version.txt"
+const VERSION_FILE   := "res://Version"
 const DATA_FILE      := "user://godotluau_usage.json"
 const CUSTOM_AC_FILE := "user://godotluau_custom_autocomplete.json"
 const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
@@ -11,8 +11,7 @@ const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
 # ── Translation dictionary — EN / ES / PT-BR ─────────────────────────────────
 const TR := {
 	"en": {
-		"panel_title":          "GodotLuau — AI & Autocomplete",
-		"installed":            "Installed: %s",
+		"panel_title":          "GodotLuau Config",
 		"ai_title":             "AI Smart Autocomplete",
 		"ai_desc":              "Suggests values based on variable names (e.g. 'speed =' → '16').\nDisabled by default — data is still collected to improve suggestions.",
 		"share_title":          "Share anonymous usage data",
@@ -41,20 +40,18 @@ const TR := {
 		"btn_refresh":          "↺ Refresh",
 		"btn_open":             "📂 Open folder",
 		"btn_clear":            "🗑 Delete data",
-		"upd_header":           "Updates",
-		"btn_check":            "🔍 Check for updates",
 		"footer":               "[color=#666666]Data: [b]user://godotluau_usage.json[/b]\nContribute: [color=#4d9de0]github.com/Pimpoli/IALuauAutoCompleted[/color][/color]",
 		"dlg_clear_title":      "Delete usage data",
 		"dlg_clear_text":       "Delete all collected usage data?\nThis does not affect plugin functionality.",
 		"lang_label":           "Language:",
-		"bar_checking":         "🔍 Checking for updates...",
-		"bar_uptodate":         "✅ GodotLuau %s — up to date.",
-		"bar_newver":           "New version: %s  (installed: %s)",
+		"bar_checking":         "🔍 Checking...",
+		"bar_uptodate":         "✅ %s — up to date.",
+		"bar_newver":           "%s  →  %s",
 		"bar_btn_update":       "⬇ Update",
-		"bar_downloading":      "⬇ Downloading GodotLuau %s...",
+		"bar_downloading":      "⬇ Downloading %s...",
 		"bar_dl_failed":        "❌ Download failed (code %d).",
 		"bar_extracting":       "📦 Extracting...",
-		"bar_ok_no_restart":    "✅ GodotLuau %s installed.",
+		"bar_ok_no_restart":    "✅ %s installed.",
 		"bar_ok_restart":       "✅ Updated — click to restart.",
 		"bar_apply_close":      "✅ Ready. Godot will close and apply the DLL.",
 		"bar_restart":          "🔄 Restart editor",
@@ -64,10 +61,10 @@ const TR := {
 		"bar_retry":            "Retry",
 		"bar_script_err":       "❌ Could not write update script.",
 		"ver_unknown":          "unknown",
+		"btn_check_ver":        "🔍",
 	},
 	"es": {
-		"panel_title":          "GodotLuau — IA y Autocompletado",
-		"installed":            "Instalado: %s",
+		"panel_title":          "GodotLuau Config",
 		"ai_title":             "Autocompletado Inteligente IA",
 		"ai_desc":              "Sugiere valores según nombres de variable (ej: 'speed =' → '16').\nDesactivado por defecto — el sistema sigue recolectando datos para mejorar.",
 		"share_title":          "Compartir datos de uso anónimos",
@@ -96,20 +93,18 @@ const TR := {
 		"btn_refresh":          "↺ Actualizar",
 		"btn_open":             "📂 Abrir carpeta",
 		"btn_clear":            "🗑 Borrar datos",
-		"upd_header":           "Actualizaciones",
-		"btn_check":            "🔍 Buscar actualizaciones",
 		"footer":               "[color=#666666]Datos en [b]user://godotluau_usage.json[/b]\nContribuye: [color=#4d9de0]github.com/Pimpoli/IALuauAutoCompleted[/color][/color]",
 		"dlg_clear_title":      "Borrar datos de uso",
 		"dlg_clear_text":       "¿Eliminar todos los datos de uso recolectados?\nEsto no afecta el funcionamiento del plugin.",
 		"lang_label":           "Idioma:",
-		"bar_checking":         "🔍 Buscando actualizaciones...",
-		"bar_uptodate":         "✅ GodotLuau %s — al día.",
-		"bar_newver":           "Nueva versión: %s  (instalada: %s)",
+		"bar_checking":         "🔍 Verificando...",
+		"bar_uptodate":         "✅ %s — al día.",
+		"bar_newver":           "%s  →  %s",
 		"bar_btn_update":       "⬇ Actualizar",
-		"bar_downloading":      "⬇ Descargando GodotLuau %s...",
+		"bar_downloading":      "⬇ Descargando %s...",
 		"bar_dl_failed":        "❌ Descarga fallida (código %d).",
 		"bar_extracting":       "📦 Extrayendo...",
-		"bar_ok_no_restart":    "✅ GodotLuau %s instalado.",
+		"bar_ok_no_restart":    "✅ %s instalado.",
 		"bar_ok_restart":       "✅ Actualizado — clic para reiniciar.",
 		"bar_apply_close":      "✅ Listo. Godot se cerrará y aplicará la DLL.",
 		"bar_restart":          "🔄 Reiniciar editor",
@@ -119,10 +114,10 @@ const TR := {
 		"bar_retry":            "Reintentar",
 		"bar_script_err":       "❌ No se pudo escribir el script de actualización.",
 		"ver_unknown":          "desconocida",
+		"btn_check_ver":        "🔍",
 	},
 	"pt": {
-		"panel_title":          "GodotLuau — IA e Autocompletar",
-		"installed":            "Instalado: %s",
+		"panel_title":          "GodotLuau Config",
 		"ai_title":             "Autocompletar Inteligente IA",
 		"ai_desc":              "Sugere valores baseados em nomes de variáveis (ex: 'speed =' → '16').\nDesativado por padrão — o sistema ainda coleta dados para melhorar.",
 		"share_title":          "Compartilhar dados de uso anônimos",
@@ -151,20 +146,18 @@ const TR := {
 		"btn_refresh":          "↺ Atualizar",
 		"btn_open":             "📂 Abrir pasta",
 		"btn_clear":            "🗑 Apagar dados",
-		"upd_header":           "Atualizações",
-		"btn_check":            "🔍 Verificar atualizações",
 		"footer":               "[color=#666666]Dados em [b]user://godotluau_usage.json[/b]\nContribua: [color=#4d9de0]github.com/Pimpoli/IALuauAutoCompleted[/color][/color]",
 		"dlg_clear_title":      "Apagar dados de uso",
 		"dlg_clear_text":       "Excluir todos os dados de uso coletados?\nIsso não afeta a funcionalidade do plugin.",
 		"lang_label":           "Idioma:",
-		"bar_checking":         "🔍 Verificando atualizações...",
-		"bar_uptodate":         "✅ GodotLuau %s — atualizado.",
-		"bar_newver":           "Nova versão: %s  (instalada: %s)",
+		"bar_checking":         "🔍 Verificando...",
+		"bar_uptodate":         "✅ %s — atualizado.",
+		"bar_newver":           "%s  →  %s",
 		"bar_btn_update":       "⬇ Atualizar",
-		"bar_downloading":      "⬇ Baixando GodotLuau %s...",
+		"bar_downloading":      "⬇ Baixando %s...",
 		"bar_dl_failed":        "❌ Download falhou (código %d).",
 		"bar_extracting":       "📦 Extraindo...",
-		"bar_ok_no_restart":    "✅ GodotLuau %s instalado.",
+		"bar_ok_no_restart":    "✅ %s instalado.",
 		"bar_ok_restart":       "✅ Atualizado — clique para reiniciar.",
 		"bar_apply_close":      "✅ Pronto. O Godot fechará e aplicará a DLL.",
 		"bar_restart":          "🔄 Reiniciar editor",
@@ -174,6 +167,7 @@ const TR := {
 		"bar_retry":            "Tentar novamente",
 		"bar_script_err":       "❌ Não foi possível escrever o script de atualização.",
 		"ver_unknown":          "desconhecida",
+		"btn_check_ver":        "🔍",
 	}
 }
 
@@ -181,9 +175,6 @@ const TR := {
 var _http_version      : HTTPRequest    = null
 var _http_download     : HTTPRequest    = null
 var _http_autocomplete : HTTPRequest    = null
-var _bar               : PanelContainer = null
-var _bar_label         : Label          = null
-var _bar_btn           : Button         = null
 var _bar_action        : String         = ""
 var _remote_version    : String         = ""
 var _downloading       : bool           = false
@@ -192,24 +183,25 @@ var _stats_label       : Label          = null
 var _cac_status        : Label          = null
 var _cac_url_field     : LineEdit       = null
 var _lang              : String         = "en"
+var _ver_label         : Label          = null
+var _ver_btn           : Button         = null
+var _notif_bar         : PanelContainer = null
+var _notif_label       : Label          = null
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 func _enter_tree() -> void:
 	_detect_editor_lang()
+	_sync_plugin_cfg()
 	_cleanup_old_dlls()
 	_register_settings()
 	_apply_autocomplete_speed()
-	_build_notification_bar()
 	_build_settings_panel()
 	_check_for_update()
 
 func _exit_tree() -> void:
 	for n in [_http_version, _http_download, _http_autocomplete]:
 		if n and is_instance_valid(n): n.queue_free()
-	if _bar and is_instance_valid(_bar):
-		remove_control_from_bottom_panel(_bar)
-		_bar.queue_free()
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
@@ -229,13 +221,43 @@ func _t(key: String) -> String:
 	var d : Dictionary = TR.get(_lang, TR["en"])
 	return d.get(key, (TR["en"] as Dictionary).get(key, key))
 
+# ── Auto-sync plugin.cfg version from res://Version ──────────────────────────
+
+func _sync_plugin_cfg() -> void:
+	# Clean up legacy version cache files from older plugin versions
+	for old in ["user://godotluau_version.txt",
+				"res://addons/GodotLuauUpdater/installed_version.txt"]:
+		if FileAccess.file_exists(old):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(old) \
+				if old.begins_with("res://") \
+				else OS.get_user_data_dir().path_join(old.get_file()))
+
+	# Keep plugin.cfg version in sync so only res://Version needs to be edited
+	var ver := _get_local_version().trim_prefix("v")
+	if ver == _t("ver_unknown"): return
+	var cfg_path := "res://addons/GodotLuauUpdater/plugin.cfg"
+	if not FileAccess.file_exists(cfg_path): return
+	var f := FileAccess.open(cfg_path, FileAccess.READ)
+	if not f: return
+	var lines := f.get_as_text().split("\n")
+	var changed := false
+	for i in lines.size():
+		if lines[i].begins_with("version="):
+			var expected := 'version="%s"' % ver
+			if lines[i] != expected:
+				lines[i] = expected
+				changed = true
+			break
+	if not changed: return
+	var wf := FileAccess.open(cfg_path, FileAccess.WRITE)
+	if wf: wf.store_string("\n".join(lines))
+
 # ── Autocomplete speed ────────────────────────────────────────────────────────
 
 func _apply_autocomplete_speed() -> void:
 	if not ProjectSettings.get_setting("godot_luau/instant_autocomplete", true):
 		return
 	var es := EditorInterface.get_editor_settings()
-	# Near-zero delay: suggestions appear on the next idle frame after typing
 	es.set("text_editor/completion/code_complete_delay", 0.05)
 	es.set("text_editor/completion/idle_parse_delay",    0.05)
 
@@ -332,12 +354,42 @@ func _build_settings_panel() -> void:
 	lang_box.add_child(lang_opt)
 	hdr_row.add_child(lang_box)
 
-	# Version label
-	var ver := Label.new()
-	ver.text = _t("installed") % _get_local_version()
-	ver.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
-	ver.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(ver)
+	# ── Version + update status row ──
+	var ver_row := HBoxContainer.new()
+	ver_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(ver_row)
+
+	_ver_label = Label.new()
+	_ver_label.text = _get_local_version()
+	_ver_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+	_ver_label.add_theme_font_size_override("font_size", 11)
+	_ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ver_row.add_child(_ver_label)
+
+	_ver_btn = Button.new()
+	_ver_btn.text = _t("btn_check_ver")
+	_ver_btn.flat = true
+	_ver_btn.tooltip_text = _t("bar_checking").replace("🔍 ", "")
+	_ver_btn.pressed.connect(_on_action_pressed)
+	_bar_action = ""
+	ver_row.add_child(_ver_btn)
+
+	# ── Notification bar (transient messages like "data deleted") ──
+	_notif_bar = PanelContainer.new()
+	_notif_bar.visible = false
+	var notif_hb := HBoxContainer.new()
+	notif_hb.add_theme_constant_override("separation", 8)
+	_notif_bar.add_child(notif_hb)
+	_notif_label = Label.new()
+	_notif_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_notif_label.add_theme_font_size_override("font_size", 11)
+	notif_hb.add_child(_notif_label)
+	var notif_x := Button.new()
+	notif_x.flat = true
+	notif_x.text = "✕"
+	notif_x.pressed.connect(func(): _notif_bar.visible = false)
+	notif_hb.add_child(notif_x)
+	vbox.add_child(_notif_bar)
 
 	vbox.add_child(HSeparator.new())
 
@@ -364,7 +416,6 @@ func _build_settings_panel() -> void:
 	vbox.add_child(_make_row(_t("cac_toggle_title"), _t("cac_toggle_desc"),
 		"godot_luau/custom_autocomplete_enabled", false))
 
-	# URL row
 	var url_lbl := Label.new()
 	url_lbl.text = _t("cac_url_label")
 	url_lbl.add_theme_font_size_override("font_size", 11)
@@ -390,7 +441,6 @@ func _build_settings_panel() -> void:
 	btn_dl.pressed.connect(_download_custom_ac)
 	url_row.add_child(btn_dl)
 
-	# Import / clear row
 	var cac_btns := HBoxContainer.new()
 	cac_btns.add_theme_constant_override("separation", 8)
 	vbox.add_child(cac_btns)
@@ -457,21 +507,6 @@ func _build_settings_panel() -> void:
 
 	vbox.add_child(HSeparator.new())
 
-	# ── Updates ──
-	var upd_hdr := Label.new()
-	upd_hdr.text = _t("upd_header")
-	upd_hdr.add_theme_font_size_override("font_size", 13)
-	vbox.add_child(upd_hdr)
-
-	var upd_row := HBoxContainer.new()
-	upd_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(upd_row)
-
-	var btn_chk := Button.new()
-	btn_chk.text = _t("btn_check")
-	btn_chk.pressed.connect(_check_for_update)
-	upd_row.add_child(btn_chk)
-
 	# ── Footer note ──
 	var note := RichTextLabel.new()
 	note.bbcode_enabled  = true
@@ -481,15 +516,19 @@ func _build_settings_panel() -> void:
 	vbox.add_child(note)
 
 	_settings_panel = scroll
-	add_control_to_bottom_panel(scroll, "GodotLuau AI")
+	add_control_to_bottom_panel(scroll, "GodotLuau Config")
 
 func _rebuild_panel() -> void:
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
-	_stats_label  = null
-	_cac_status   = null
+	_stats_label   = null
+	_cac_status    = null
 	_cac_url_field = null
+	_ver_label     = null
+	_ver_btn       = null
+	_notif_bar     = null
+	_notif_label   = null
 	_build_settings_panel()
 
 func _make_row(title: String, desc: String, key: String, default_val: bool,
@@ -631,54 +670,40 @@ func _clear_data() -> void:
 	var path := OS.get_user_data_dir() + "/godotluau_usage.json"
 	if FileAccess.file_exists(path): DirAccess.remove_absolute(path)
 	_refresh_stats()
-	_set_bar(_t("bar_data_cleared"), "", Color(0.5, 0.9, 0.5))
+	_set_notif(_t("bar_data_cleared"), Color(0.5, 0.9, 0.5))
 
-# ── Notification bar ──────────────────────────────────────────────────────────
+# ── Version status (inline in header) ────────────────────────────────────────
 
-func _build_notification_bar() -> void:
-	_bar = PanelContainer.new()
-	_bar.visible = false
-
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
-	_bar.add_child(hb)
-
-	var brand := Label.new()
-	brand.text = "GodotLuau"
-	brand.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
-	hb.add_child(brand)
-
-	_bar_label = Label.new()
-	_bar_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb.add_child(_bar_label)
-
-	_bar_btn = Button.new()
-	_bar_btn.flat = true
-	_bar_btn.pressed.connect(_on_action_pressed)
-	hb.add_child(_bar_btn)
-
-	var x_btn := Button.new()
-	x_btn.flat = true
-	x_btn.text = "✕"
-	x_btn.pressed.connect(func(): _bar.visible = false)
-	hb.add_child(x_btn)
-
-	add_control_to_bottom_panel(_bar, "GodotLuau")
-
-func _set_bar(msg: String, btn_text: String, color: Color, action: String = "") -> void:
-	if not (_bar and is_instance_valid(_bar)): return
-	_bar.visible = true
-	_bar_label.text = msg
-	_bar_label.add_theme_color_override("font_color", color)
-	_bar_btn.visible = not btn_text.is_empty()
+func _set_ver_status(msg: String, btn_text: String, color: Color, action: String = "") -> void:
+	if not (_ver_label and is_instance_valid(_ver_label)): return
+	_ver_label.text = msg
+	_ver_label.add_theme_color_override("font_color", color)
 	_bar_action = action
-	if not btn_text.is_empty(): _bar_btn.text = btn_text
+	if not (_ver_btn and is_instance_valid(_ver_btn)): return
+	if btn_text.is_empty():
+		_ver_btn.visible = false
+	else:
+		_ver_btn.text    = btn_text
+		_ver_btn.visible = true
+
+func _set_notif(msg: String, color: Color) -> void:
+	if not (_notif_bar and is_instance_valid(_notif_bar)): return
+	_notif_label.text = msg
+	_notif_label.add_theme_color_override("font_color", color)
+	_notif_bar.visible = true
+	get_tree().create_timer(4.0).timeout.connect(func():
+		if _notif_bar and is_instance_valid(_notif_bar): _notif_bar.visible = false
+	)
+
+func _reset_ver_idle() -> void:
+	_set_ver_status(_get_local_version(), _t("btn_check_ver"), Color(0.5, 0.5, 0.5))
 
 func _on_action_pressed() -> void:
 	match _bar_action:
-		"restart": _do_editor_restart()
-		"apply":   _apply_windows_update_legacy()
-		_:         if not _downloading: _start_download()
+		"restart":  _do_editor_restart()
+		"apply":    _apply_windows_update_legacy()
+		"download": if not _downloading: _start_download()
+		_:          _check_for_update()
 
 # ── Version check ─────────────────────────────────────────────────────────────
 
@@ -688,25 +713,30 @@ func _check_for_update() -> void:
 	_http_version.timeout = 10.0
 	add_child(_http_version)
 	_http_version.request_completed.connect(_on_version_received)
-	_set_bar(_t("bar_checking"), "", Color(0.5, 0.8, 1.0))
+	_set_ver_status(_t("bar_checking"), "", Color(0.5, 0.8, 1.0))
 	if _http_version.request(VERSION_URL) != OK:
 		_http_version.queue_free(); _http_version = null
-		_bar.visible = false
+		_reset_ver_idle()
 
 func _on_version_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
 	if _http_version and is_instance_valid(_http_version):
 		_http_version.queue_free(); _http_version = null
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		_bar.visible = false; return
+		_reset_ver_idle(); return
 	_remote_version = body.get_string_from_utf8().strip_edges()
 	var local := _get_local_version()
 	if _remote_version == local:
-		_set_bar(_t("bar_uptodate") % local, "", Color(0.4, 0.9, 0.5))
+		_set_ver_status(_t("bar_uptodate") % local, "", Color(0.4, 0.9, 0.5))
 		await get_tree().create_timer(4.0).timeout
-		if _bar and is_instance_valid(_bar): _bar.visible = false
+		if _ver_label and is_instance_valid(_ver_label): _reset_ver_idle()
 		return
-	_set_bar(_t("bar_newver") % [_remote_version, local],
-		_t("bar_btn_update"), Color(1.0, 0.9, 0.3), "download")
+	# Show: current → new  [⬇ Update button]
+	_set_ver_status(
+		_t("bar_newver") % [local, _remote_version],
+		_t("bar_btn_update"),
+		Color(1.0, 0.9, 0.3),
+		"download"
+	)
 
 func _get_local_version() -> String:
 	if not FileAccess.file_exists(VERSION_FILE): return _t("ver_unknown")
@@ -717,15 +747,14 @@ func _get_local_version() -> String:
 
 func _start_download() -> void:
 	_downloading = true
-	_set_bar(_t("bar_downloading") % _remote_version, "", Color(0.4, 0.8, 1.0))
-	_bar_btn.visible = false
+	_set_ver_status(_t("bar_downloading") % _remote_version, "", Color(0.4, 0.8, 1.0))
 	_http_download = HTTPRequest.new()
 	_http_download.use_threads   = true
 	_http_download.download_file = OS.get_user_data_dir() + "/godotluau_update.zip"
 	add_child(_http_download)
 	_http_download.request_completed.connect(_on_download_completed)
 	if _http_download.request(ZIP_URL) != OK:
-		_set_bar(_t("bar_dl_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		_set_ver_status(_t("bar_dl_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		_downloading = false
 		_http_download.queue_free(); _http_download = null
 
@@ -734,10 +763,9 @@ func _on_download_completed(result: int, code: int, _hdrs: PackedStringArray, _b
 		_http_download.queue_free(); _http_download = null
 	_downloading = false
 	if result != HTTPRequest.RESULT_SUCCESS or (code != 200 and code != 0):
-		_set_bar(_t("bar_dl_failed") % code, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		_set_ver_status(_t("bar_dl_failed") % code, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		return
-	_set_bar(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
-	_bar_btn.visible = false
+	_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
 	_apply_update.call_deferred()
 
 # ── Apply update ──────────────────────────────────────────────────────────────
@@ -749,7 +777,7 @@ func _apply_update() -> void:
 	var proj_path := ProjectSettings.globalize_path("res://")
 	var zip := ZIPReader.new()
 	if zip.open(zip_path) != OK:
-		_set_bar(_t("bar_dl_failed") % 0, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		_set_ver_status(_t("bar_dl_failed") % 0, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		return
 
 	var staged   : Array[Dictionary] = []
@@ -778,14 +806,14 @@ func _apply_update() -> void:
 	DirAccess.remove_absolute(zip_path)
 
 	if staged.is_empty():
-		_set_bar(_t("bar_ok_no_restart") % _remote_version, "", Color(0.3, 0.9, 0.5))
+		_set_ver_status(_t("bar_ok_no_restart") % _remote_version, "", Color(0.3, 0.9, 0.5))
 		_refresh_stats(); return
 
 	_windows_staged_dlls = staged
 	if is_win and _try_rename_and_replace():
-		_set_bar(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
+		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
 	else:
-		_set_bar(_t("bar_apply_close"), "Apply & Close", Color(1.0, 0.7, 0.2), "apply")
+		_set_ver_status(_t("bar_apply_close"), "Apply & Close", Color(1.0, 0.7, 0.2), "apply")
 
 func _try_rename_and_replace() -> bool:
 	for item in _windows_staged_dlls:
@@ -807,7 +835,7 @@ func _try_rename_and_replace() -> bool:
 	return true
 
 func _do_editor_restart() -> void:
-	_set_bar(_t("bar_restarting"), "", Color(0.4, 0.8, 1.0))
+	_set_ver_status(_t("bar_restarting"), "", Color(0.4, 0.8, 1.0))
 	await get_tree().create_timer(0.5).timeout
 	get_editor_interface().restart_editor()
 
@@ -836,7 +864,7 @@ func _apply_windows_update_legacy() -> void:
 
 	var pf := FileAccess.open(ps_path, FileAccess.WRITE)
 	if not pf:
-		_set_bar(_t("bar_script_err"), "", Color(1.0, 0.4, 0.4)); return
+		_set_ver_status(_t("bar_script_err"), "", Color(1.0, 0.4, 0.4)); return
 	pf.store_string("\r\n".join(lines)); pf.close()
 
 	OS.create_process("powershell.exe", [

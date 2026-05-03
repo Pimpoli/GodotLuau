@@ -27,6 +27,8 @@
 #include "roblox_animation.h"
 
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
@@ -199,11 +201,23 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
             }
         }
 
-        UtilityFunctions::print(
-            "[GodotLuau] ══════════════════════════════════════════\n"
-            "[GodotLuau]   GodotLuau — by PimpoliDev\n"
-            "[GodotLuau]   Sistema Luau para Godot [Activado]\n"
-            "[GodotLuau] ══════════════════════════════════════════");
+        {
+            // Read version from the single source of truth: res://Version
+            String version = "?";
+            Ref<FileAccess> ver_f = FileAccess::open("res://Version", FileAccess::READ);
+            if (ver_f.is_valid()) version = ver_f->get_line().strip_edges();
+
+            String locale = OS::get_singleton()->get_locale().left(2);
+            String line2 = String("[GodotLuau]   Luau System for Godot [Active]");
+            if (locale == "es") line2 = String("[GodotLuau]   Sistema Luau para Godot [Activado]");
+            else if (locale == "pt") line2 = String("[GodotLuau]   Sistema Luau para Godot [Ativado]");
+            UtilityFunctions::print(
+                String("[GodotLuau] ══════════════════════════════════════════\n")
+                + "[GodotLuau]   GodotLuau " + version + " — by PimpoliDev\n"
+                + line2 + "\n"
+                + "[GodotLuau] ══════════════════════════════════════════"
+            );
+        }
     }
 }
 

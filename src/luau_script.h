@@ -579,6 +579,7 @@ public:
     StringName _get_instance_base_type() const override { return StringName("Object"); }
     ScriptLanguage *_get_language() const override;
     void *_instance_create(Object *p_for_object) const override { return nullptr; }
+    Error _reload(bool p_keep_state) override { return OK; }
 };
 
 // ════════════════════════════════════════════════════════════════════
