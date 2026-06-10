@@ -57,7 +57,7 @@ struct TempSuggestion {
 //  personalizado en user://godotluau_ai_model.json (mismo formato).
 // ════════════════════════════════════════════════════════════════════
 static const char* LUAUGRAM_MINI_JSON = R"JSON(
-{"name":"LuauGram-Mini","bigrams":{
+{"name":"LuauIA-Nano","bigrams":{
  "local":{"player":8,"humanoid":7,"Players":6,"part":5,"speed":4,"RunService":4,"TweenService":3,"character":3,"connection":2,"RS":2},
  "game":{"GetService":10,"Workspace":4,"Players":3},
  "Players":{"LocalPlayer":9,"PlayerAdded":5,"GetPlayers":3,"PlayerRemoving":2},
@@ -1010,27 +1010,25 @@ public:
         _ai_model() = Dictionary();
 
         String path;
-        if (sel == String("custom"))    path = "user://godotluau_ai_model.json";
-        else if (sel != String("mini")) path = "user://godotluau_models/" + sel + ".json";
+        if (sel == String("custom")) path = "user://godotluau_ai_model.json";
+        else                         path = "user://godotluau_models/" + sel + ".json";
 
-        if (!path.is_empty()) {
-            Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-            if (f.is_valid()) {
-                Variant parsed = JSON::parse_string(f->get_as_text());
-                if (parsed.get_type() == Variant::DICTIONARY && ((Dictionary)parsed).has("bigrams")) {
-                    _ai_model() = parsed;
-                    return;
-                }
+        Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+        if (f.is_valid()) {
+            Variant parsed = JSON::parse_string(f->get_as_text());
+            if (parsed.get_type() == Variant::DICTIONARY && ((Dictionary)parsed).has("bigrams")) {
+                _ai_model() = parsed;
+                return;
             }
         }
-        // Respaldo: LuauGram-Mini integrado
+        // Respaldo: LuauIA-Nano integrado (si el modelo elegido aún no se descargó)
         Variant builtin = JSON::parse_string(String(LUAUGRAM_MINI_JSON));
         if (builtin.get_type() == Variant::DICTIONARY) _ai_model() = builtin;
     }
 
-    // Los dos tokens de código inmediatamente anteriores a la palabra que se
-    // escribe (t1 = anterior, t2 = anterior a t1). Limitado a la línea actual.
-    static void _prev_tokens(const String& code, int from, String& t1, String& t2) {
+    // Los tres tokens de código inmediatamente anteriores a la palabra que se
+    // escribe (t1 = anterior, t2 y t3 más atrás). Limitado a la línea actual.
+    static void _prev_tokens(const String& code, int from, String& t1, String& t2, String& t3) {
         int i = from;
         auto skip_sep = [&]() {
             while (i >= 0) {
@@ -1052,6 +1050,7 @@ public:
         };
         skip_sep(); t1 = read_word();
         skip_sep(); t2 = read_word();
+        skip_sep(); t3 = read_word();
     }
 
     static Dictionary get_suggestions(const String& p_code, const String& p_path = String(), Object* p_owner = nullptr) {
@@ -1412,9 +1411,9 @@ public:
                 _load_ai_model_once();
                 Dictionary model = _ai_model();
                 if (model.has("bigrams")) {
-                    String model_name = model.get("name", "LuauGram-Mini");
-                    String prev, prev2;
-                    _prev_tokens(code_to_cursor, last_sep, prev, prev2);
+                    String model_name = model.get("name", "LuauIA");
+                    String prev, prev2, prev3;
+                    _prev_tokens(code_to_cursor, last_sep, prev, prev2, prev3);
 
                     std::unordered_set<std::string> seen;
                     auto push_preds = [&](const Dictionary& next, int bonus, const String& ctx) {
@@ -1432,6 +1431,12 @@ public:
                         }
                     };
 
+                    // 4-gramas primero (máximo contexto), luego trigramas, luego bigramas
+                    if (!prev.is_empty() && !prev2.is_empty() && !prev3.is_empty() && model.has("fourgrams")) {
+                        Dictionary fg = model["fourgrams"];
+                        String key4 = prev3 + " " + prev2 + " " + prev;
+                        if (fg.has(key4)) push_preds(fg[key4], 80, key4);
+                    }
                     if (!prev.is_empty() && !prev2.is_empty() && model.has("trigrams")) {
                         Dictionary tg = model["trigrams"];
                         String key = prev2 + " " + prev;

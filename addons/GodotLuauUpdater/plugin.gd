@@ -14,12 +14,18 @@ const TRASH_DIR      := "res://.luau_trash"
 const SCRIPT_NODE_CLASSES := ["LocalScript", "ServerScript", "ModuleScript"]
 
 # ── Catálogo de modelos de IA para el autocompletado ─────────────────────────
-# params: nº de pesos del modelo (para que el usuario sepa calidad vs velocidad)
+# params: nº de pesos del modelo — más parámetros = mejor predicción,
+# pero puede tardar un poco más. Familia LuauIA (cada nivel ≈ x2.5).
 const AI_MODELS := [
-	{"id": "mini",   "name": "LuauGram-Mini",        "params": "80",     "builtin": true},
-	{"id": "plus",   "name": "LuauGram-Plus",        "params": "~1.700",
-	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauGram-Plus.json"},
-	{"id": "custom", "name": "Personalizado / Custom", "params": "?",    "custom": true},
+	{"id": "mini",    "name": "LuauIA-Mini",    "params": "10.000",
+	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauIA-Mini.json"},
+	{"id": "medium",  "name": "LuauIA-Medium",  "params": "25.000",
+	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauIA-Medium.json"},
+	{"id": "high",    "name": "LuauIA-High",    "params": "62.500",
+	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauIA-High.json"},
+	{"id": "highpro", "name": "LuauIA-HighPRO", "params": "~96.000",
+	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauIA-HighPRO.json"},
+	{"id": "custom",  "name": "Personalizado / Custom", "params": "?", "custom": true},
 ]
 
 # ── Translation dictionary — EN / ES / PT-BR ─────────────────────────────────
@@ -799,7 +805,19 @@ func _build_panel_contents() -> void:
 	vbox.add_child(z_ac[0]); zones.append(z_ac[0])
 	var ac_vb : VBoxContainer = z_ac[1]
 
-	# IA y Instantáneo son mutuamente excluyentes; la IA requiere
+	# ── 1º: Autocompletado Instantáneo (arriba) ──────────────────────
+	ac_vb.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
+		"godot_luau/instant_autocomplete", true,
+		func(on: bool) -> void:
+			if on:
+				ProjectSettings.set_setting("godot_luau/ai_autocomplete_enabled", false)
+				ProjectSettings.save()
+				_apply_autocomplete_speed()
+				_rebuild_panel()
+	))
+
+	# ── 2º: Autocompletado con IA (abajo, junto al modelo) ───────────
+	# IA e Instantáneo son mutuamente excluyentes; la IA requiere
 	# que el modelo seleccionado esté disponible (o descargado).
 	ac_vb.add_child(_make_row(_t("ai_title"), _t("ai_desc"),
 		"godot_luau/ai_autocomplete_enabled", false,
@@ -816,7 +834,7 @@ func _build_panel_contents() -> void:
 				_rebuild_panel()
 	))
 
-	# ── Selector de modelo (como el selector de idioma) ──────────────
+	# Selector de modelo (como el selector de idioma)
 	var sel_row := HBoxContainer.new()
 	sel_row.add_theme_constant_override("separation", 8)
 	ac_vb.add_child(sel_row)
@@ -857,17 +875,13 @@ func _build_panel_contents() -> void:
 		dl_btn.pressed.connect(_download_selected_model)
 		sel_row.add_child(dl_btn)
 
-	ac_vb.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
-		"godot_luau/instant_autocomplete", true,
-		func(on: bool) -> void:
-			if on:
-				ProjectSettings.set_setting("godot_luau/ai_autocomplete_enabled", false)
-				ProjectSettings.save()
-				_apply_autocomplete_speed()
-				_rebuild_panel()
-	))
+	_aim_status = Label.new()
+	_aim_status.add_theme_font_size_override("font_size", _fs(11))
+	ac_vb.add_child(_aim_status)
+	_refresh_aim_status()
 
-	# ── Modelo de IA personalizado ───────────────────────────────────
+	# ── Modelo de IA personalizado (misma distribución que el
+	#    autocompletado personalizado: URL+Descargar, debajo Importar/Limpiar) ──
 	var aim_hdr := Label.new()
 	aim_hdr.text = _t("aim_header")
 	aim_hdr.add_theme_font_size_override("font_size", _fs(12))
@@ -897,20 +911,19 @@ func _build_panel_contents() -> void:
 	aim_dl.text = _t("cac_btn_download")
 	aim_dl.pressed.connect(_download_ai_model)
 	aim_row.add_child(aim_dl)
+
+	var aim_btns := HBoxContainer.new()
+	aim_btns.add_theme_constant_override("separation", 8)
+	ac_vb.add_child(aim_btns)
 	var aim_imp := Button.new()
 	aim_imp.text = _t("cac_btn_import")
 	aim_imp.pressed.connect(_import_ai_model_file)
-	aim_row.add_child(aim_imp)
+	aim_btns.add_child(aim_imp)
 	var aim_clr := Button.new()
 	aim_clr.text = _t("cac_btn_clear")
 	aim_clr.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6))
 	aim_clr.pressed.connect(_clear_ai_model)
-	aim_row.add_child(aim_clr)
-
-	_aim_status = Label.new()
-	_aim_status.add_theme_font_size_override("font_size", _fs(11))
-	ac_vb.add_child(_aim_status)
-	_refresh_aim_status()
+	aim_btns.add_child(aim_clr)
 
 	var cac_hdr := Label.new()
 	cac_hdr.text = _t("cac_header")
@@ -1239,9 +1252,11 @@ func _refresh_aim_status() -> void:
 		return
 	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if parsed is Dictionary and (parsed as Dictionary).has("bigrams"):
-		var n := ((parsed as Dictionary)["bigrams"] as Dictionary).size()
-		if (parsed as Dictionary).has("trigrams"):
-			n += ((parsed as Dictionary)["trigrams"] as Dictionary).size()
+		var n : int = int((parsed as Dictionary).get("params", 0))
+		if n == 0:
+			n = ((parsed as Dictionary)["bigrams"] as Dictionary).size()
+			if (parsed as Dictionary).has("trigrams"):
+				n += ((parsed as Dictionary)["trigrams"] as Dictionary).size()
 		_aim_status.text = _t("aim_status_ok") % n
 		_aim_status.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
 	else:
