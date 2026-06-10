@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/color_rect.hpp>
 #include <godot_cpp/classes/camera2d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include "gl_debug.h"
 
 using namespace godot;
 
@@ -73,7 +74,7 @@ protected:
                 add_child(current_cam);
                 current_cam->set_owner(root);
 
-                UtilityFunctions::print("[GodotLuau] RobloxWorkspace2D initialized in editor.");
+                GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace2D initialized in editor.");
             }
         }
     }
@@ -126,10 +127,16 @@ public:
                     if (hijo) p->add_child(hijo->duplicate());
                 }
             }
-            UtilityFunctions::print("[GodotLuau] 2D player scripts loaded.");
+            GL_DEBUG_PRINT("[GodotLuau] 2D player scripts loaded.");
         }
 
-        UtilityFunctions::print("[GodotLuau] RobloxWorkspace2D ready. Player created at (200, 200).");
+        // RunService oculto: como en Roblox, existe en runtime pero no en el editor
+        if (get_parent() && !get_parent()->get_node_or_null("RunService")) {
+            Node* rs = Object::cast_to<Node>(ClassDB::instantiate(StringName("RunService")));
+            if (rs) { rs->set_name("RunService"); get_parent()->add_child(rs); }
+        }
+
+        GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace2D ready. Player created at (200, 200).");
     }
 };
 

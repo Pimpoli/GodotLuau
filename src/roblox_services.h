@@ -15,6 +15,7 @@
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/core/object.hpp>
+#include "gl_debug.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -887,7 +888,7 @@ public:
         chat_window->set_name("ChatWindow");
         add_child(chat_window);
 
-        UtilityFunctions::print("[GodotLuau] TextChatService ready. Press '/' or 'Enter' to open the chat.");
+        GL_DEBUG_PRINT("[GodotLuau] TextChatService ready. Press '/' or 'Enter' to open the chat.");
     }
 
     // Send a message (callable from Luau)

@@ -9,6 +9,11 @@
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/label3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/static_body3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/box_mesh.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <vector>
@@ -303,6 +308,44 @@ protected:
                                   PROPERTY_HINT_RANGE, "0,60,0.1"),    "set_duration",          "get_duration");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Neutral"),          "set_neutral",           "get_neutral");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AllowTeamChangeOnTouch"), "set_allow_team_change", "get_allow_team_change");
+    }
+
+    // Al crear el nodo en el editor se construye la placa de spawn
+    // completa (visual + colisión), como el SpawnLocation de Roblox.
+    void _notification(int p_what) {
+        if (p_what != NOTIFICATION_ENTER_TREE) return;
+        if (!Engine::get_singleton()->is_editor_hint()) return;
+        if (get_child_count() > 0) return;
+        Node* root = get_tree()->get_edited_scene_root();
+        if (!root) return;
+
+        StaticBody3D* body = memnew(StaticBody3D);
+        body->set_name("Plate");
+        add_child(body);
+        body->set_owner(root);
+
+        MeshInstance3D* mesh = memnew(MeshInstance3D);
+        mesh->set_name("Visual");
+        Ref<BoxMesh> bm; bm.instantiate();
+        bm->set_size(Vector3(12, 1, 12));
+        Ref<StandardMaterial3D> mat; mat.instantiate();
+        mat->set_albedo(Color(0.64f, 0.64f, 0.64f));  // Medium stone grey
+        mesh->set_mesh(bm);
+        mesh->set_material_override(mat);
+        body->add_child(mesh);
+        mesh->set_owner(root);
+
+        CollisionShape3D* col = memnew(CollisionShape3D);
+        col->set_name("Collision");
+        Ref<BoxShape3D> bs; bs.instantiate();
+        bs->set_size(Vector3(12, 1, 12));
+        col->set_shape(bs);
+        body->add_child(col);
+        col->set_owner(root);
+
+        // Colocarla justo sobre el suelo si quedó en el origen
+        if (Math::abs(get_position().y) < 0.01f)
+            set_position(Vector3(get_position().x, 1.0f, get_position().z));
     }
 
 public:

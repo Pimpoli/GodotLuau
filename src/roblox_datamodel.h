@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include "gl_debug.h"
 
 using namespace godot;
 
@@ -75,15 +76,18 @@ public:
         Node* workspace = nullptr;
         if (tipo == 1) {
             workspace = create_service("RobloxWorkspace", "Workspace");
-            create_service("RobloxPart", "Baseplate", workspace);
+            // Como en Roblox: el mundo arranca con un SpawnLocation
+            // (la placa visual se auto-construye al entrar al arbol)
+            create_service("SpawnLocation", "SpawnLocation", workspace);
         } else {
             workspace = create_service("RobloxWorkspace2D", "Workspace");
             create_service("RobloxPart2D", "Baseplate", workspace);
         }
 
         // 2. SERVICES / SERVICIOS
+        // NOTA: RunService NO se crea aqui — como en Roblox no aparece en el
+        // explorer; el Workspace lo crea oculto en runtime.
         create_service("Players",    "Players");
-        create_service("RunService", "RunService");
         create_service("Lighting",   "Lighting");
         create_service("MaterialService", "MaterialService");
         create_service("ReplicatedFirst", "ReplicatedFirst");
@@ -122,9 +126,8 @@ public:
         create_service("Teams", "Teams");
         create_service("SoundService", "SoundService");
         create_service("TextChatService", "TextChatService");
-        create_service("Folder", "Folder");
 
-        UtilityFunctions::print("[GodotLuau] 'Game' environment generated successfully.");
+        GL_DEBUG_PRINT("[GodotLuau] 'Game' environment generated successfully.");
     }
 };
 

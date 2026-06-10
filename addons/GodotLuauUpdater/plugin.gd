@@ -23,12 +23,20 @@ const TR := {
 		"sec_updates":           "🔄  Updates",
 		"sec_appearance":        "🎨  Appearance",
 		"font_size_label":       "Panel text size",
-		"ai_title":              "AI Smart Autocomplete",
-		"ai_desc":               "Suggests values based on variable names (e.g. 'speed =' → '16').\nExperimental — not yet active in this version.",
+		"ai_title":              "AI Autocomplete",
+		"ai_desc":               "Predicts your next code using a lightweight AI model.\nModel: \"LuauGram-Mini\" — adapted for Luau code writing.\nMay be a bit slower than Instant Autocomplete (only one of the two can be active).",
+		"aim_header":            "Custom AI model",
+		"aim_note":              "Load your own model (JSON with \"bigrams\") from a file or URL.",
+		"aim_status_none":       "Using built-in model \"LuauGram-Mini\".",
+		"aim_status_ok":         "✅ Custom model loaded (%d entries).",
+		"aim_status_err":        "❌ Download failed — check the URL.",
+		"aim_status_bad":        "❌ Invalid model (expected JSON with \"bigrams\").",
 		"share_title":           "Share anonymous usage data",
-		"share_desc":            "Reserved for future versions to improve autocomplete suggestions.\nNo data is collected or sent in this version.",
+		"share_desc":            "Collects anonymous LOCAL statistics about which APIs you use most\nto improve suggestion ranking. Your code is never stored or shared.\nEnabled by default — you can turn it off anytime.",
 		"debug_title":           "Script output (print / warn)",
-		"debug_desc":            "Shows print() and warn() messages from Luau scripts in the Output panel.\nEnabled by default — turn OFF for a clean Output.",
+		"debug_desc":            "Shows print() and warn() messages from YOUR Luau scripts in the Output panel.\nEnabled by default — turn OFF for a clean Output.",
+		"dbg_title":             "Debug Mode (system scripts)",
+		"dbg_desc":              "Shows internal output from built-in scripts (PlayerModule, Health, Chat...)\nand engine messages. Only the GodotLuau banner is shown when OFF.",
 		"notif_outdated_title":  "Notify outdated version in Output",
 		"notif_outdated_desc":   "Prints a warning in the Output panel when running an outdated GodotLuau version.",
 		"speed_title":           "Instant Autocomplete",
@@ -89,12 +97,20 @@ const TR := {
 		"sec_updates":           "🔄  Actualizaciones",
 		"sec_appearance":        "🎨  Apariencia",
 		"font_size_label":       "Tamaño del texto del panel",
-		"ai_title":              "Autocompletado Inteligente IA",
-		"ai_desc":               "Sugiere valores según nombres de variable (ej: 'speed =' → '16').\nExperimental — aún no activo en esta versión.",
+		"ai_title":              "Autocompletado con IA",
+		"ai_desc":               "Predice tu siguiente código usando un modelo de IA ligero.\nModelo: \"LuauGram-Mini\" — adaptado para escribir código Luau.\nPuede tardar un poco más que el Autocompletado Instantáneo (solo uno de los dos puede estar activo).",
+		"aim_header":            "Modelo de IA personalizado",
+		"aim_note":              "Carga tu propio modelo (JSON con \"bigrams\") desde archivo o URL.",
+		"aim_status_none":       "Usando el modelo integrado \"LuauGram-Mini\".",
+		"aim_status_ok":         "✅ Modelo personalizado cargado (%d entradas).",
+		"aim_status_err":        "❌ Descarga fallida — verifica la URL.",
+		"aim_status_bad":        "❌ Modelo inválido (se esperaba JSON con \"bigrams\").",
 		"share_title":           "Compartir datos de uso anónimos",
-		"share_desc":            "Reservado para futuras versiones, para mejorar el autocompletado.\nEn esta versión no se recolecta ni se envía ningún dato.",
+		"share_desc":            "Recolecta estadísticas anónimas LOCALES de qué APIs usas más\npara mejorar el orden de las sugerencias. Tu código nunca se guarda ni se comparte.\nActivado por defecto — puedes desactivarlo cuando quieras.",
 		"debug_title":           "Salida de scripts (print / warn)",
-		"debug_desc":            "Muestra los mensajes print() y warn() de los scripts Luau en el panel Output.\nActivado por defecto — desactívalo para mantener el Output limpio.",
+		"debug_desc":            "Muestra los print() y warn() de TUS scripts Luau en el panel Output.\nActivado por defecto — desactívalo para mantener el Output limpio.",
+		"dbg_title":             "Modo Debug (scripts del sistema)",
+		"dbg_desc":              "Muestra la salida interna de los scripts integrados (PlayerModule, Health, Chat...)\ny mensajes del motor. Desactivado solo se ve el banner de GodotLuau.",
 		"notif_outdated_title":  "Notificar versión desactualizada en Output",
 		"notif_outdated_desc":   "Imprime una advertencia en el panel Output cuando se ejecuta una versión desactualizada de GodotLuau.",
 		"speed_title":           "Autocompletado Instantáneo",
@@ -155,12 +171,20 @@ const TR := {
 		"sec_updates":           "🔄  Atualizações",
 		"sec_appearance":        "🎨  Aparência",
 		"font_size_label":       "Tamanho do texto do painel",
-		"ai_title":              "Autocompletar Inteligente IA",
-		"ai_desc":               "Sugere valores baseados em nomes de variáveis (ex: 'speed =' → '16').\nExperimental — ainda não ativo nesta versão.",
+		"ai_title":              "Autocompletar com IA",
+		"ai_desc":               "Prevê seu próximo código usando um modelo de IA leve.\nModelo: \"LuauGram-Mini\" — adaptado para escrever código Luau.\nPode demorar um pouco mais que o Autocompletar Instantâneo (apenas um dos dois pode estar ativo).",
+		"aim_header":            "Modelo de IA personalizado",
+		"aim_note":              "Carregue seu próprio modelo (JSON com \"bigrams\") de um arquivo ou URL.",
+		"aim_status_none":       "Usando o modelo integrado \"LuauGram-Mini\".",
+		"aim_status_ok":         "✅ Modelo personalizado carregado (%d entradas).",
+		"aim_status_err":        "❌ Download falhou — verifique a URL.",
+		"aim_status_bad":        "❌ Modelo inválido (era esperado JSON com \"bigrams\").",
 		"share_title":           "Compartilhar dados de uso anônimos",
-		"share_desc":            "Reservado para versões futuras, para melhorar o autocompletar.\nNesta versão nenhum dado é coletado ou enviado.",
+		"share_desc":            "Coleta estatísticas anônimas LOCAIS de quais APIs você mais usa\npara melhorar a ordem das sugestões. Seu código nunca é salvo ou compartilhado.\nAtivado por padrão — você pode desativar quando quiser.",
 		"debug_title":           "Saída de scripts (print / warn)",
-		"debug_desc":            "Exibe as mensagens print() e warn() dos scripts Luau no painel Output.\nAtivado por padrão — desative para manter o Output limpo.",
+		"debug_desc":            "Exibe os print() e warn() dos SEUS scripts Luau no painel Output.\nAtivado por padrão — desative para manter o Output limpo.",
+		"dbg_title":             "Modo Debug (scripts do sistema)",
+		"dbg_desc":              "Exibe a saída interna dos scripts integrados (PlayerModule, Health, Chat...)\ne mensagens do motor. Desativado, apenas o banner do GodotLuau aparece.",
 		"notif_outdated_title":  "Notificar versão desatualizada no Output",
 		"notif_outdated_desc":   "Exibe um aviso no painel Output quando uma versão desatualizada do GodotLuau está em uso.",
 		"speed_title":           "Autocompletar Instantâneo",
@@ -220,6 +244,7 @@ var _http_version      : HTTPRequest    = null
 var _http_download     : HTTPRequest    = null
 var _http_autocomplete : HTTPRequest    = null
 var _http_hash         : HTTPRequest    = null
+var _http_aimodel      : HTTPRequest    = null
 var _bar_action        : String         = ""
 var _remote_version    : String         = ""
 var _downloading       : bool           = false
@@ -227,6 +252,8 @@ var _settings_panel    : Control        = null
 var _stats_label       : Label          = null
 var _cac_status        : Label          = null
 var _cac_url_field     : LineEdit       = null
+var _aim_status        : Label          = null
+var _aim_url_field     : LineEdit       = null
 var _lang              : String         = "en"
 var _font_scale        : float          = 1.0
 var _font_pct          : int            = 50
@@ -239,10 +266,18 @@ var _notif_label       : Label          = null
 var _outdated_timer    : Timer          = null
 var _suppress_trash_frame : int         = 0
 
+# Colores adaptados al tema del editor (contraste correcto en claro y oscuro)
+var _col_text  := Color(0.95, 0.95, 0.95)
+var _col_dim   := Color(0.74, 0.74, 0.76)
+var _col_faint := Color(0.55, 0.55, 0.58)
+var _col_card  := Color(0.12, 0.14, 0.18, 0.9)
+var _is_dark_theme := true
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 func _enter_tree() -> void:
 	_detect_editor_lang()
+	_compute_theme_colors()
 	_load_font_pref()
 	_sync_plugin_cfg()
 	_cleanup_old_dlls()
@@ -256,7 +291,7 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	_disconnect_script_lifecycle()
-	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _outdated_timer]:
+	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _http_aimodel, _outdated_timer]:
 		if n and is_instance_valid(n): n.queue_free()
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
@@ -374,6 +409,30 @@ func _t(key: String) -> String:
 	var d : Dictionary = TR.get(_lang, TR["en"])
 	return d.get(key, (TR["en"] as Dictionary).get(key, key))
 
+# ── Colores según el tema del editor ─────────────────────────────────────────
+# El texto usa el color contrario al fondo del motor para máxima legibilidad.
+
+func _compute_theme_colors() -> void:
+	var base : Color = Color(0.21, 0.24, 0.29)
+	var es := EditorInterface.get_editor_settings()
+	if es.has_setting("interface/theme/base_color"):
+		base = es.get_setting("interface/theme/base_color")
+	_is_dark_theme = base.get_luminance() < 0.5
+	if _is_dark_theme:
+		_col_text  = Color(0.96, 0.96, 0.97)
+		_col_dim   = Color(0.76, 0.76, 0.79)
+		_col_faint = Color(0.56, 0.56, 0.60)
+		_col_card  = Color(0.10, 0.12, 0.16, 0.92)
+	else:
+		_col_text  = Color(0.09, 0.09, 0.11)
+		_col_dim   = Color(0.27, 0.27, 0.31)
+		_col_faint = Color(0.42, 0.42, 0.46)
+		_col_card  = Color(0.93, 0.94, 0.96, 0.92)
+
+# Acentos: en tema claro se oscurecen para que sigan leyéndose bien
+func _accent(c: Color) -> Color:
+	return c if _is_dark_theme else c.darkened(0.35)
+
 # ── Font preference (per-user, stored in EditorSettings) ─────────────────────
 # Escala 0-100 estilo barra de volumen; 50 = tamaño normal.
 
@@ -481,13 +540,13 @@ func _cleanup_old_dlls() -> void:
 
 func _register_settings() -> void:
 	_add_bool("godot_luau/ai_autocomplete_enabled",    false,
-		"Enable AI Smart Autocomplete — suggests values based on variable names. (Experimental)")
-	_add_bool("godot_luau/share_data_enabled",         false,
-		"Reserved for future versions. No data is collected in this version.")
+		"AI Autocomplete — predicts code with the lightweight LuauGram-Mini model.")
+	_add_bool("godot_luau/share_data_enabled",         true,
+		"Collect anonymous local usage statistics to improve suggestion ranking.")
 	_add_bool("godot_luau/script_output",              true,
-		"Show print() and warn() output from Luau scripts in the Output panel.")
-	_add_bool("godot_luau/debug_mode",                 true,
-		"Legacy setting kept for older GodotLuau DLLs — mirrors 'script_output'.")
+		"Show print() and warn() output from your Luau scripts in the Output panel.")
+	_add_bool("godot_luau/debug_mode",                 false,
+		"Debug Mode — show internal output from built-in system scripts and engine messages.")
 	_add_bool("godot_luau/notify_outdated_version",    true,
 		"Print a warning in Output when running an outdated GodotLuau version.")
 	_add_bool("godot_luau/instant_autocomplete",       true,
@@ -496,6 +555,8 @@ func _register_settings() -> void:
 		"Use a custom JSON autocomplete list.")
 	_add_str("godot_luau/custom_autocomplete_url",     "",
 		"URL to download a custom autocomplete JSON from.")
+	_add_str("godot_luau/ai_model_url",                "",
+		"URL to download a custom AI model JSON from.")
 
 func _add_bool(key: String, val: bool, hint: String) -> void:
 	if not ProjectSettings.has_setting(key): ProjectSettings.set_setting(key, val)
@@ -514,11 +575,11 @@ func _add_str(key: String, val: String, hint: String) -> void:
 func _make_zone(title: String, accent: Color) -> Array:
 	var card := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.12, 0.14, 0.18, 0.9)
+	sb.bg_color = _col_card
 	sb.set_corner_radius_all(8)
 	sb.set_content_margin_all(12)
 	sb.border_width_left = 3
-	sb.border_color = accent
+	sb.border_color = _accent(accent)
 	card.add_theme_stylebox_override("panel", sb)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 6)
@@ -526,7 +587,7 @@ func _make_zone(title: String, accent: Color) -> Array:
 	var lbl := Label.new()
 	lbl.text = title
 	lbl.add_theme_font_size_override("font_size", _fs(14))
-	lbl.add_theme_color_override("font_color", accent)
+	lbl.add_theme_color_override("font_color", _accent(accent))
 	vb.add_child(lbl)
 	return [card, vb]
 
@@ -556,14 +617,14 @@ func _make_row(title: String, desc: String, key: String, default_val: bool,
 	var lbl := Label.new()
 	lbl.text = title
 	lbl.add_theme_font_size_override("font_size", _fs(13))
-	lbl.add_theme_color_override("font_color", Color(0.92, 0.92, 0.92))
+	lbl.add_theme_color_override("font_color", _col_text)
 	hb.add_child(lbl)
 	vb.add_child(hb)
 	if not desc.is_empty():
 		var dlbl := Label.new()
 		dlbl.text = desc
 		dlbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		dlbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+		dlbl.add_theme_color_override("font_color", _col_dim)
 		dlbl.add_theme_font_size_override("font_size", _fs(11))
 		vb.add_child(dlbl)
 	return vb
@@ -600,7 +661,7 @@ func _build_panel_contents() -> void:
 
 	var hdr := Label.new()
 	hdr.text = _t("panel_title")
-	hdr.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
+	hdr.add_theme_color_override("font_color", _accent(Color(0.4, 0.8, 1.0)))
 	hdr.add_theme_font_size_override("font_size", _fs(17))
 	hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(hdr)
@@ -660,7 +721,7 @@ func _build_panel_contents() -> void:
 
 	_ver_label = Label.new()
 	_ver_label.text = _get_local_version()
-	_ver_label.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
+	_ver_label.add_theme_color_override("font_color", _col_text)
 	_ver_label.add_theme_font_size_override("font_size", _fs(13))
 	_ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ver_row.add_child(_ver_label)
@@ -687,12 +748,12 @@ func _build_panel_contents() -> void:
 	var gh_lbl := Label.new()
 	gh_lbl.text = _t("github_label")
 	gh_lbl.add_theme_font_size_override("font_size", _fs(11))
-	gh_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	gh_lbl.add_theme_color_override("font_color", _col_faint)
 	gh_row.add_child(gh_lbl)
 	var gh_link := Label.new()
 	gh_link.text = "github.com/Pimpoli/GodotLuau"
 	gh_link.add_theme_font_size_override("font_size", _fs(11))
-	gh_link.add_theme_color_override("font_color", Color(0.35, 0.65, 1.0))
+	gh_link.add_theme_color_override("font_color", _accent(Color(0.35, 0.65, 1.0)))
 	gh_link.mouse_filter = Control.MOUSE_FILTER_STOP
 	gh_link.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	gh_link.gui_input.connect(func(e: InputEvent) -> void:
@@ -706,19 +767,75 @@ func _build_panel_contents() -> void:
 	vbox.add_child(z_ac[0]); zones.append(z_ac[0])
 	var ac_vb : VBoxContainer = z_ac[1]
 
+	# IA y Instantáneo son mutuamente excluyentes: activar uno apaga el otro
 	ac_vb.add_child(_make_row(_t("ai_title"), _t("ai_desc"),
-		"godot_luau/ai_autocomplete_enabled", false))
+		"godot_luau/ai_autocomplete_enabled", false,
+		func(on: bool) -> void:
+			if on:
+				ProjectSettings.set_setting("godot_luau/instant_autocomplete", false)
+				ProjectSettings.save()
+				_rebuild_panel()
+	))
 
 	ac_vb.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
 		"godot_luau/instant_autocomplete", true,
 		func(on: bool) -> void:
-			if on: _apply_autocomplete_speed()
+			if on:
+				ProjectSettings.set_setting("godot_luau/ai_autocomplete_enabled", false)
+				ProjectSettings.save()
+				_apply_autocomplete_speed()
+				_rebuild_panel()
 	))
+
+	# ── Modelo de IA personalizado ───────────────────────────────────
+	var aim_hdr := Label.new()
+	aim_hdr.text = _t("aim_header")
+	aim_hdr.add_theme_font_size_override("font_size", _fs(12))
+	aim_hdr.add_theme_color_override("font_color", _accent(Color(0.95, 0.8, 0.4)))
+	ac_vb.add_child(aim_hdr)
+
+	var aim_note := Label.new()
+	aim_note.text = _t("aim_note")
+	aim_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	aim_note.add_theme_font_size_override("font_size", _fs(11))
+	aim_note.add_theme_color_override("font_color", _col_dim)
+	ac_vb.add_child(aim_note)
+
+	var aim_row := HBoxContainer.new()
+	aim_row.add_theme_constant_override("separation", 6)
+	ac_vb.add_child(aim_row)
+	_aim_url_field = LineEdit.new()
+	_aim_url_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_aim_url_field.placeholder_text = _t("cac_url_hint")
+	_aim_url_field.text = str(ProjectSettings.get_setting("godot_luau/ai_model_url", ""))
+	_aim_url_field.text_changed.connect(func(txt: String) -> void:
+		ProjectSettings.set_setting("godot_luau/ai_model_url", txt)
+		ProjectSettings.save()
+	)
+	aim_row.add_child(_aim_url_field)
+	var aim_dl := Button.new()
+	aim_dl.text = _t("cac_btn_download")
+	aim_dl.pressed.connect(_download_ai_model)
+	aim_row.add_child(aim_dl)
+	var aim_imp := Button.new()
+	aim_imp.text = _t("cac_btn_import")
+	aim_imp.pressed.connect(_import_ai_model_file)
+	aim_row.add_child(aim_imp)
+	var aim_clr := Button.new()
+	aim_clr.text = _t("cac_btn_clear")
+	aim_clr.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6))
+	aim_clr.pressed.connect(_clear_ai_model)
+	aim_row.add_child(aim_clr)
+
+	_aim_status = Label.new()
+	_aim_status.add_theme_font_size_override("font_size", _fs(11))
+	ac_vb.add_child(_aim_status)
+	_refresh_aim_status()
 
 	var cac_hdr := Label.new()
 	cac_hdr.text = _t("cac_header")
 	cac_hdr.add_theme_font_size_override("font_size", _fs(12))
-	cac_hdr.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
+	cac_hdr.add_theme_color_override("font_color", _accent(Color(0.6, 0.9, 0.6)))
 	ac_vb.add_child(cac_hdr)
 
 	ac_vb.add_child(_make_row(_t("cac_toggle_title"), _t("cac_toggle_desc"),
@@ -727,7 +844,7 @@ func _build_panel_contents() -> void:
 	var url_lbl := Label.new()
 	url_lbl.text = _t("cac_url_label")
 	url_lbl.add_theme_font_size_override("font_size", _fs(11))
-	url_lbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	url_lbl.add_theme_color_override("font_color", _col_dim)
 	ac_vb.add_child(url_lbl)
 
 	var url_row := HBoxContainer.new()
@@ -776,11 +893,11 @@ func _build_panel_contents() -> void:
 	var stats_sub := Label.new()
 	stats_sub.text = _t("stats_header")
 	stats_sub.add_theme_font_size_override("font_size", _fs(11))
-	stats_sub.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	stats_sub.add_theme_color_override("font_color", _col_dim)
 	data_vb.add_child(stats_sub)
 
 	_stats_label = Label.new()
-	_stats_label.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	_stats_label.add_theme_color_override("font_color", _col_dim)
 	_stats_label.add_theme_font_size_override("font_size", _fs(11))
 	data_vb.add_child(_stats_label)
 	_refresh_stats()
@@ -808,12 +925,10 @@ func _build_panel_contents() -> void:
 	var dbg_vb : VBoxContainer = z_dbg[1]
 
 	dbg_vb.add_child(_make_row(_t("debug_title"), _t("debug_desc"),
-		"godot_luau/script_output", true,
-		func(on: bool) -> void:
-			# Espejo para DLLs antiguas que leen debug_mode
-			ProjectSettings.set_setting("godot_luau/debug_mode", on)
-			ProjectSettings.save()
-	))
+		"godot_luau/script_output", true))
+
+	dbg_vb.add_child(_make_row(_t("dbg_title"), _t("dbg_desc"),
+		"godot_luau/debug_mode", false))
 
 	dbg_vb.add_child(_make_row(_t("notif_outdated_title"), _t("notif_outdated_desc"),
 		"godot_luau/notify_outdated_version", true))
@@ -826,7 +941,7 @@ func _build_panel_contents() -> void:
 	var size_lbl := Label.new()
 	size_lbl.text = _t("font_size_label")
 	size_lbl.add_theme_font_size_override("font_size", _fs(12))
-	size_lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	size_lbl.add_theme_color_override("font_color", _col_text)
 	app_vb.add_child(size_lbl)
 
 	var size_row := HBoxContainer.new()
@@ -847,7 +962,7 @@ func _build_panel_contents() -> void:
 	pct_lbl.text = "%d%%" % _font_pct
 	pct_lbl.custom_minimum_size = Vector2(46, 0)
 	pct_lbl.add_theme_font_size_override("font_size", _fs(12))
-	pct_lbl.add_theme_color_override("font_color", Color(0.85, 0.6, 1.0))
+	pct_lbl.add_theme_color_override("font_color", _accent(Color(0.85, 0.6, 1.0)))
 	size_row.add_child(pct_lbl)
 
 	slider.value_changed.connect(func(v: float) -> void:
@@ -863,7 +978,7 @@ func _build_panel_contents() -> void:
 	# ── Footer ──────────────────────────────────────────────────────────
 	var data_lbl := Label.new()
 	data_lbl.text = _t("footer_data")
-	data_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
+	data_lbl.add_theme_color_override("font_color", _col_faint)
 	data_lbl.add_theme_font_size_override("font_size", _fs(10))
 	vbox.add_child(data_lbl)
 
@@ -873,12 +988,15 @@ func _rebuild_panel() -> void:
 	# Reconstruye solo el contenido, sin quitar el panel inferior (evita el parpadeo)
 	if not (_settings_panel and is_instance_valid(_settings_panel)):
 		return
+	_compute_theme_colors()
 	for c in _settings_panel.get_children():
 		_settings_panel.remove_child(c)
 		c.queue_free()
 	_stats_label   = null
 	_cac_status    = null
 	_cac_url_field = null
+	_aim_status    = null
+	_aim_url_field = null
 	_ver_label     = null
 	_ver_btn       = null
 	_reinstall_btn = null
@@ -965,6 +1083,83 @@ func _clear_custom_ac() -> void:
 	if FileAccess.file_exists(path): DirAccess.remove_absolute(path)
 	_refresh_cac_status()
 
+# ── Modelo de IA personalizado (mismo flujo que el autocompletado custom) ────
+
+func _ai_model_path() -> String:
+	return OS.get_user_data_dir() + "/godotluau_ai_model.json"
+
+func _refresh_aim_status() -> void:
+	if not (_aim_status and is_instance_valid(_aim_status)): return
+	if not FileAccess.file_exists(_ai_model_path()):
+		_aim_status.text = _t("aim_status_none")
+		_aim_status.add_theme_color_override("font_color", _col_faint)
+		return
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(_ai_model_path()))
+	if parsed is Dictionary and (parsed as Dictionary).has("bigrams"):
+		var n := ((parsed as Dictionary)["bigrams"] as Dictionary).size()
+		_aim_status.text = _t("aim_status_ok") % n
+		_aim_status.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+	else:
+		_aim_status.text = _t("aim_status_bad")
+		_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+
+func _save_ai_model(json_text: String) -> void:
+	var parsed = JSON.parse_string(json_text)
+	if not (parsed is Dictionary and (parsed as Dictionary).has("bigrams")):
+		if _aim_status and is_instance_valid(_aim_status):
+			_aim_status.text = _t("aim_status_bad")
+			_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+		return
+	var f := FileAccess.open(_ai_model_path(), FileAccess.WRITE)
+	if f: f.store_string(json_text)
+	_refresh_aim_status()
+
+func _download_ai_model() -> void:
+	if _http_aimodel and is_instance_valid(_http_aimodel): return
+	var url := str(ProjectSettings.get_setting("godot_luau/ai_model_url", ""))
+	if url.is_empty(): return
+	if _aim_status and is_instance_valid(_aim_status):
+		_aim_status.text = _t("cac_status_dl")
+		_aim_status.add_theme_color_override("font_color", Color(0.9, 0.85, 0.3))
+	_http_aimodel = HTTPRequest.new()
+	_http_aimodel.timeout = 30.0
+	add_child(_http_aimodel)
+	_http_aimodel.request_completed.connect(func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+		if _http_aimodel and is_instance_valid(_http_aimodel):
+			_http_aimodel.queue_free(); _http_aimodel = null
+		if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+			if _aim_status and is_instance_valid(_aim_status):
+				_aim_status.text = _t("aim_status_err")
+				_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+			return
+		_save_ai_model(body.get_string_from_utf8())
+	)
+	if _http_aimodel.request(url) != OK:
+		_http_aimodel.queue_free(); _http_aimodel = null
+		if _aim_status and is_instance_valid(_aim_status):
+			_aim_status.text = _t("aim_status_err")
+			_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+
+func _import_ai_model_file() -> void:
+	var dlg := FileDialog.new()
+	dlg.title     = _t("cac_btn_import")
+	dlg.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dlg.access    = FileDialog.ACCESS_FILESYSTEM
+	dlg.filters   = ["*.json ; JSON files"]
+	dlg.file_selected.connect(func(p: String) -> void:
+		var text := FileAccess.get_file_as_string(p)
+		if not text.is_empty(): _save_ai_model(text)
+		dlg.queue_free()
+	)
+	dlg.canceled.connect(func(): dlg.queue_free())
+	get_editor_interface().get_base_control().add_child(dlg)
+	dlg.popup_centered_ratio(0.6)
+
+func _clear_ai_model() -> void:
+	if FileAccess.file_exists(_ai_model_path()):
+		DirAccess.remove_absolute(_ai_model_path())
+	_refresh_aim_status()
+
 # ── Usage stats ───────────────────────────────────────────────────────────────
 
 func _refresh_stats() -> void:
@@ -1021,7 +1216,7 @@ func _set_notif(msg: String, color: Color) -> void:
 	)
 
 func _reset_ver_idle() -> void:
-	_set_ver_status(_get_local_version(), _t("btn_check_ver"), Color(0.72, 0.72, 0.72))
+	_set_ver_status(_get_local_version(), _t("btn_check_ver"), _col_dim)
 	if _reinstall_btn and is_instance_valid(_reinstall_btn):
 		_reinstall_btn.disabled = false
 

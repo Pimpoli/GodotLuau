@@ -16,6 +16,8 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
 #include <unordered_set>
 #include <unordered_map>
 #include <string>
@@ -47,6 +49,48 @@ struct TempSuggestion {
         return fuzzy_score > o.fuzzy_score;
     }
 };
+
+// ════════════════════════════════════════════════════════════════════
+//  LuauGram-Mini — modelo n-gram integrado para el Autocompletado con IA
+//  Bigramas comunes de código Luau/Roblox: dado el token anterior,
+//  predice los siguientes más probables. Sustituible por un modelo
+//  personalizado en user://godotluau_ai_model.json (mismo formato).
+// ════════════════════════════════════════════════════════════════════
+static const char* LUAUGRAM_MINI_JSON = R"JSON(
+{"name":"LuauGram-Mini","bigrams":{
+ "local":{"player":8,"humanoid":7,"Players":6,"part":5,"speed":4,"RunService":4,"TweenService":3,"character":3,"connection":2,"RS":2},
+ "game":{"GetService":10,"Workspace":4,"Players":3},
+ "Players":{"LocalPlayer":9,"PlayerAdded":5,"GetPlayers":3,"PlayerRemoving":2},
+ "player":{"Character":6,"Name":5,"Position":3},
+ "humanoid":{"WalkSpeed":6,"Health":6,"JumpPower":4,"Died":3,"MaxHealth":3,"MoveDirection":2},
+ "task":{"wait":8,"spawn":6,"delay":3},
+ "Instance":{"new":10},
+ "Vector3":{"new":10},
+ "Vector2":{"new":10},
+ "Color3":{"fromRGB":7,"new":4},
+ "CFrame":{"new":8},
+ "UDim2":{"new":8},
+ "math":{"random":6,"floor":4,"clamp":4,"min":3,"max":3,"abs":2,"huge":2},
+ "string":{"format":5,"sub":3,"find":3,"upper":2,"lower":2},
+ "table":{"insert":7,"remove":4,"find":3},
+ "RunService":{"Heartbeat":8,"RenderStepped":3,"Stepped":2},
+ "Heartbeat":{"Connect":10},
+ "PlayerAdded":{"Connect":10},
+ "Died":{"Connect":10},
+ "Touched":{"Connect":10},
+ "MouseClick":{"Connect":10},
+ "script":{"Parent":10},
+ "workspace":{"FindFirstChild":4,"CurrentCamera":3},
+ "if":{"not":6,"player":3,"humanoid":3},
+ "for":{"i":8},
+ "function":{"onTouched":3,"update":3,"init":2},
+ "return":{"self":4,"nil":3,"true":3,"false":2},
+ "then":{"return":5},
+ "FindFirstChild":{"Humanoid":5},
+ "WaitForChild":{"Humanoid":4},
+ "GetService":{"Players":6,"RunService":5,"TweenService":4,"ReplicatedStorage":4,"UserInputService":3}
+}}
+)JSON";
 
 enum StringContextType {
     STR_CTX_NONE = 0,
@@ -899,6 +943,94 @@ public:
         return code_to_cursor.substr(s + 1, call_pos - (s + 1)).strip_edges();
     }
 
+    // ════════════════════════════════════════════════════════════════
+    //  Datos de uso (recolección local anónima) — mejora el ranking
+    //  con lo que el usuario más usa en TODOS sus scripts/proyectos.
+    // ════════════════════════════════════════════════════════════════
+
+    static Dictionary& _global_usage_cache() { static Dictionary c; return c; }
+    static bool& _global_usage_loaded()      { static bool b = false; return b; }
+
+    static void _load_global_usage() {
+        if (_global_usage_loaded()) return;
+        _global_usage_loaded() = true;
+        Ref<FileAccess> f = FileAccess::open("user://godotluau_usage.json", FileAccess::READ);
+        if (!f.is_valid()) return;
+        Variant parsed = JSON::parse_string(f->get_as_text());
+        if (parsed.get_type() == Variant::DICTIONARY) _global_usage_cache() = parsed;
+    }
+
+    static int global_usage_of(const std::string& k) {
+        _load_global_usage();
+        return (int)(int64_t)_global_usage_cache().get(String(k.c_str()), 0);
+    }
+
+    // Llamado al guardar un script (.lua): acumula qué APIs usa el usuario.
+    // Solo nombres de identificadores — NUNCA el contenido del código.
+    static void record_usage(const String& source) {
+        if (!(bool)ProjectSettings::get_singleton()->get_setting("godot_luau/share_data_enabled", true))
+            return;
+        _load_global_usage();
+        Dictionary& d = _global_usage_cache();
+        auto freq = analyze_usage(source);
+        for (auto& kv : freq) {
+            if (kv.first.size() < 3) continue;
+            String k = String(kv.first.c_str());
+            if (is_lua_keyword(k)) continue;
+            d[k] = (int64_t)d.get(k, 0) + 1;
+        }
+        // Limitar el tamaño del archivo: si crece mucho, purgar entradas raras
+        if (d.size() > 3000) {
+            Array keys = d.keys();
+            for (int i = 0; i < keys.size(); i++)
+                if ((int64_t)d[keys[i]] <= 1) d.erase(keys[i]);
+        }
+        Ref<FileAccess> w = FileAccess::open("user://godotluau_usage.json", FileAccess::WRITE);
+        if (w.is_valid()) w->store_string(JSON::stringify(d));
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  Autocompletado con IA — modelo n-gram ligero
+    // ════════════════════════════════════════════════════════════════
+
+    static Dictionary& _ai_model() { static Dictionary m; return m; }
+    static bool& _ai_model_loaded() { static bool b = false; return b; }
+
+    static void _load_ai_model_once() {
+        if (_ai_model_loaded()) return;
+        _ai_model_loaded() = true;
+        // 1º: modelo personalizado del usuario; 2º: LuauGram-Mini integrado
+        Ref<FileAccess> f = FileAccess::open("user://godotluau_ai_model.json", FileAccess::READ);
+        if (f.is_valid()) {
+            Variant parsed = JSON::parse_string(f->get_as_text());
+            if (parsed.get_type() == Variant::DICTIONARY && ((Dictionary)parsed).has("bigrams")) {
+                _ai_model() = parsed;
+                return;
+            }
+        }
+        Variant builtin = JSON::parse_string(String(LUAUGRAM_MINI_JSON));
+        if (builtin.get_type() == Variant::DICTIONARY) _ai_model() = builtin;
+    }
+
+    // Token de código inmediatamente anterior a la palabra que se escribe
+    static String _prev_token(const String& code_to_cursor, int word_start) {
+        int i = word_start;
+        while (i >= 0) {
+            char32_t c = code_to_cursor[i];
+            if (c==' '||c=='\t'||c=='('||c==')'||c=='='||c==','||c==':'||c=='.') i--;
+            else break;
+        }
+        int end = i;
+        while (i >= 0) {
+            char32_t c = code_to_cursor[i];
+            bool w = (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_';
+            if (!w) break;
+            i--;
+        }
+        if (end <= i) return String();
+        return code_to_cursor.substr(i + 1, end - i);
+    }
+
     static Dictionary get_suggestions(const String& p_code, const String& p_path = String(), Object* p_owner = nullptr) {
         Dictionary res;
         Array out;
@@ -1197,6 +1329,7 @@ public:
                 int sc=fuzzy_match_score(filter_str,filter_lower,mname); if(sc<=0) continue;
                 int layer=mname.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                 std::string k=mname.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
+                u += global_usage_of(k);  // boost por uso histórico del usuario
                 Color c(0.6f,0.8f,1.0f,1.0f);
                 if(m.kind==1) c=Color(0.87f,0.87f,0.67f,1.0f);
                 else if(m.kind==2) c=Color(0.9f,0.5f,0.8f,1.0f);
@@ -1236,6 +1369,7 @@ public:
             int sc=fuzzy_match_score(filter_str,filter_lower,iname); if(sc<=0) continue;
             int layer=iname.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
             std::string k=iname.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
+            u += global_usage_of(k);  // boost por uso histórico del usuario
             Color c(0.6f,0.8f,1.0f,1.0f);
             if(api[i].kind==1) c=Color(0.87f,0.87f,0.67f,1.0f);
             else if(api[i].kind==2) c=Color(0.9f,0.5f,0.5f,1.0f);
@@ -1248,6 +1382,30 @@ public:
         }
 
         if(target_prefix.is_empty()) {
+            // ── Predicción con IA (modelo n-gram) ─────────────────────────
+            // Dado el token anterior, sugiere los siguientes más probables.
+            if (ai_enabled && !in_string) {
+                _load_ai_model_once();
+                Dictionary model = _ai_model();
+                if (model.has("bigrams")) {
+                    Dictionary bigrams = model["bigrams"];
+                    String model_name = model.get("name", "LuauGram-Mini");
+                    String prev = _prev_token(code_to_cursor, last_sep);
+                    if (!prev.is_empty() && bigrams.has(prev)) {
+                        Dictionary next = bigrams[prev];
+                        Array nk = next.keys();
+                        for (int ni = 0; ni < nk.size(); ni++) {
+                            String cand = nk[ni];
+                            int sc = fuzzy_match_score(filter_str, filter_lower, cand); if (sc <= 0) continue;
+                            int weight = (int)(int64_t)next[nk[ni]];
+                            sorter.push_back({0, 100 + weight, sc, cand + String("  ✨"), cand,
+                                String("[AI: ") + model_name + String("] ") + prev + String(" → ") + cand,
+                                "", 6, Color(1.0f, 0.85f, 0.4f, 1.0f)});
+                        }
+                    }
+                }
+            }
+
             if(is_after_equal) {
                 // Property-aware hints (highest priority when a property is detected)
                 String assigned_prop = detect_assigned_property(code_to_cursor);

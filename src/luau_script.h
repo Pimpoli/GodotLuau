@@ -24,11 +24,11 @@ local RunService = game:GetService("RunService")
 
 local humanoid = script.Parent:FindFirstChild("Humanoid")
 if not humanoid then
-    warn("[Health] Humanoid no encontrado en el personaje")
+    dwarn("[Health] Humanoid no encontrado en el personaje")
     return
 end
 
-print("[Health] Regeneracion activa: " .. script.Parent.Name)
+dprint("[Health] Regeneracion activa: " .. script.Parent.Name)
 
 -- ── Configuración ─────────────────────────────────────────────────
 -- Igual que Roblox: la regeneracion empieza REGEN_DELAY segundos
@@ -47,7 +47,7 @@ humanoid.HealthChanged:Connect(function(newHP)
 end)
 
 humanoid.Died:Connect(function()
-    print("[Health] " .. script.Parent.Name .. " ha muerto.")
+    dprint("[Health] " .. script.Parent.Name .. " ha muerto.")
 end)
 
 RunService.Heartbeat:Connect(function(dt)
@@ -72,11 +72,11 @@ local RunService = game:GetService("RunService")
 
 local humanoid = script.Parent:FindFirstChild("Humanoid")
 if not humanoid then
-    warn("[Animate] Humanoid no encontrado")
+    dwarn("[Animate] Humanoid no encontrado")
     return
 end
 
-print("[Animate] Sistema de animacion listo")
+dprint("[Animate] Sistema de animacion listo")
 
 -- ══ ZONA DE ANIMACIÓN PERSONALIZADA ══════════════════════════════
 -- Descomenta para reaccionar a eventos del Humanoid:
@@ -112,7 +112,7 @@ local character = script.Parent
 local humanoid  = character:FindFirstChild("Humanoid")
 
 if not humanoid then
-    warn("[PlayerModule] Humanoid no encontrado en el jugador")
+    dwarn("[PlayerModule] Humanoid no encontrado en el jugador")
     return
 end
 
@@ -131,11 +131,11 @@ ChatModule:Initialize()
 humanoid.WalkSpeed = ControlModule.WalkSpeed
 humanoid.JumpPower = ControlModule.JumpPower
 
-print("[PlayerModule] Jugador listo! Speed=" .. ControlModule.WalkSpeed)
+dprint("[PlayerModule] Jugador listo! Speed=" .. ControlModule.WalkSpeed)
 
 -- ── Eventos del personaje ─────────────────────────────────────────
 humanoid.Died:Connect(function()
-    print("[PlayerModule] El personaje ha muerto.")
+    dprint("[PlayerModule] El personaje ha muerto.")
 end)
 
 -- ── Heartbeat: sprint suave, estamina y velocidad en tiempo real ──
@@ -201,7 +201,7 @@ function ControlModule:Initialize()
     self.WalkSpeed = active.WalkSpeed
     self.JumpPower = active.JumpPower
     if active.Initialize then active:Initialize() end
-    print("[ControlModule] Plataforma: " .. (p == "" and "Auto(PC)" or p))
+    dprint("[ControlModule] Plataforma: " .. (p == "" and "Auto(PC)" or p))
 end
 
 -- Llamado cada frame por PlayerModule (sprint suave, estamina, etc.)
@@ -274,7 +274,7 @@ local stamina       = 100
 function PCModule:Initialize()
     current_speed = self.WalkSpeed
     stamina       = self.StaminaMax
-    print("[PCModule] Modo PC activo: W/A/S/D para mover, Shift para correr")
+    dprint("[PCModule] Modo PC activo: W/A/S/D para mover, Shift para correr")
 end
 
 -- Llamado cada frame por ControlModule:Update(dt)
@@ -339,7 +339,7 @@ MobileModule.JumpPower = 20
 MobileModule.TouchMode = "Joystick"
 
 function MobileModule:Initialize()
-    print("[MobileModule] Modo Movil activo: " .. self.TouchMode)
+    dprint("[MobileModule] Modo Movil activo: " .. self.TouchMode)
     -- Aqui puedes crear el joystick virtual con ScreenGui / ImageButton
 end
 
@@ -373,7 +373,7 @@ ConsoleModule.JumpPower = 20
 ConsoleModule.Deadzone  = 0.2  -- Ignorar movimientos menores a este valor
 
 function ConsoleModule:Initialize()
-    print("[ConsoleModule] Modo Consola activo — Joystick izquierdo para mover")
+    dprint("[ConsoleModule] Modo Consola activo — Joystick izquierdo para mover")
 end
 
 function ConsoleModule:GetCurrentSpeed()
@@ -419,7 +419,7 @@ function ChatModule:Initialize()
         end)
     end
 
-    print("[ChatModule] Chat listo. / o Enter para abrir.")
+    dprint("[ChatModule] Chat listo. / o Enter para abrir.")
 end
 
 function ChatModule:_addMessage(text)
@@ -428,7 +428,7 @@ function ChatModule:_addMessage(text)
         table.remove(messages, 1)
     end
     table.insert(messages, { text = text, time = 0.0 })
-    print("[Chat] " .. text)
+    dprint("[Chat] " .. text)
 end
 
 function ChatModule:SendMessage(text)
@@ -505,15 +505,15 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS         = game:GetService("ReplicatedStorage")
 
-print("[Server] GameManager iniciado!")
+dprint("[Server] GameManager iniciado!")
 
 -- ── Jugadores: entrada y salida ───────────────────────────────────
 Players.PlayerAdded:Connect(function(player)
-    print("[Server] + " .. player.Name .. " entro a la partida")
+    dprint("[Server] + " .. player.Name .. " entro a la partida")
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-    print("[Server] - " .. player.Name .. " salio de la partida")
+    dprint("[Server] - " .. player.Name .. " salio de la partida")
 end)
 
 -- ── RemoteEvents compartidos en ReplicatedStorage ─────────────────
@@ -530,7 +530,7 @@ DamageEvent.OnServerEvent:Connect(function(player, targetName, amount)
     if type(targetName) ~= "string" or type(amount) ~= "number" then return end
     amount = math.clamp(amount, 0, MAX_DAMAGE)
 
-    print("[Server]", player.Name, "-> daño a", targetName, "(" .. amount .. ")")
+    dprint("[Server]", player.Name, "-> daño a", targetName, "(" .. amount .. ")")
     -- Aqui aplicarias el daño al objetivo, por ejemplo:
     -- local target = workspace:FindFirstChild(targetName)
     -- local hum = target and target:FindFirstChild("Humanoid")
@@ -542,14 +542,14 @@ local ROUND_TIME = 120  -- segundos por ronda
 
 task.spawn(function()
     while true do
-        print("[Server] Ronda nueva! (" .. ROUND_TIME .. "s)")
+        dprint("[Server] Ronda nueva! (" .. ROUND_TIME .. "s)")
         task.wait(ROUND_TIME)
-        print("[Server] Fin de la ronda.")
+        dprint("[Server] Fin de la ronda.")
         task.wait(5)  -- intermedio entre rondas
     end
 end)
 
-print("[Server] Juego listo!")
+dprint("[Server] Juego listo!")
 )LUAU";
 
 // Default LocalScript template
@@ -631,6 +631,8 @@ return MiModulo
 #include "Luau/Compiler.h"
 
 #include <godot_cpp/classes/os.hpp>
+
+#include "gl_debug.h"
 
 #include <vector>
 #include <string>
@@ -861,23 +863,75 @@ protected:
                      "set_script_id", "get_script_id");
     }
 
+    // Contador secuencial por tipo en res://.luau_ids.cfg
+    // (NO se usa project.godot: guardarlo hace que el editor recargue los plugins)
+    static int64_t _next_script_counter(const String& cls_lower) {
+        const String path = "res://.luau_ids.cfg";
+        Dictionary counters;
+        Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+        if (f.is_valid()) {
+            while (!f->eof_reached()) {
+                String line = f->get_line().strip_edges();
+                int eq = line.find("=");
+                if (eq > 0) counters[line.substr(0, eq)] = line.substr(eq + 1).to_int();
+            }
+        }
+        // Migración: contadores antiguos guardados en project.godot
+        if (!counters.has(cls_lower)) {
+            String legacy_key = "godot_luau/script_id_counter_" + cls_lower;
+            if (ProjectSettings::get_singleton()->has_setting(legacy_key))
+                counters[cls_lower] = (int64_t)ProjectSettings::get_singleton()->get_setting(legacy_key, 0);
+        }
+        int64_t next = (int64_t)counters.get(cls_lower, 0) + 1;
+        counters[cls_lower] = next;
+        Ref<FileAccess> w = FileAccess::open(path, FileAccess::WRITE);
+        if (w.is_valid()) {
+            Array keys = counters.keys();
+            for (int i = 0; i < keys.size(); i++)
+                w->store_line(String(keys[i]) + "=" + String::num_int64((int64_t)counters[keys[i]]));
+        }
+        return next;
+    }
+
     void _notification(int p_what) {
         if (Engine::get_singleton()->is_editor_hint()) {
             if (p_what == NOTIFICATION_ENTER_TREE) {
                 // ── Asignar ID persistente la primera vez ──────────────────
-                // Contador secuencial por tipo guardado en project.godot
                 if (script_id.is_empty()) {
                     String cls_id = get_class();
-                    String counter_key = "godot_luau/script_id_counter_" + cls_id.to_lower();
-                    int64_t next_id = (int64_t)ProjectSettings::get_singleton()->get_setting(counter_key, 0) + 1;
-                    ProjectSettings::get_singleton()->set_setting(counter_key, next_id);
-                    ProjectSettings::get_singleton()->save();
-                    script_id = cls_id + "_ID_" + String::num_int64(next_id);
+                    script_id = cls_id + "_ID_" + String::num_int64(_next_script_counter(cls_id.to_lower()));
                 }
 
                 bool necesita_archivo = codigo_luau.is_null() ||
                     (!codigo_luau->get_path().is_empty() &&
                      !FileAccess::file_exists(codigo_luau->get_path()));
+
+                // ── Restauración (Ctrl+Z): papelera o memoria, sin crear recursos
+                //    duplicados (evita "Another resource is loaded from path") ──
+                if (necesita_archivo && codigo_luau.is_valid() && !codigo_luau->get_path().is_empty()) {
+                    String path  = codigo_luau->get_path();
+                    String trash = "res://.luau_trash/" + script_id + ".lua";
+                    Ref<DirAccess> root_dir = DirAccess::open("res://");
+                    if (root_dir.is_valid() && !root_dir->dir_exists(path.get_base_dir()))
+                        root_dir->make_dir_recursive(path.get_base_dir());
+                    if (FileAccess::file_exists(trash)) {
+                        // El archivo está en la papelera (nodo borrado + Ctrl+Z) → moverlo de vuelta
+                        if (DirAccess::rename_absolute(
+                                ProjectSettings::get_singleton()->globalize_path(trash),
+                                ProjectSettings::get_singleton()->globalize_path(path)) == OK) {
+                            GL_DEBUG_PRINT("[GodotLuau] Script restaurado de la papelera: ", path);
+                            necesita_archivo = false;
+                        }
+                    } else if (!codigo_luau->_get_source_code().is_empty()) {
+                        // El recurso aún conserva el código en memoria → reescribirlo a disco
+                        Ref<FileAccess> wf = FileAccess::open(path, FileAccess::WRITE);
+                        if (wf.is_valid()) {
+                            wf->store_string(codigo_luau->_get_source_code());
+                            GL_DEBUG_PRINT("[GodotLuau] Script reescrito desde memoria: ", path);
+                            necesita_archivo = false;
+                        }
+                    }
+                }
 
                 if (necesita_archivo) {
                     String cls = get_class();
@@ -932,10 +986,12 @@ protected:
 
                     // Cabecera con el ID para poder localizar el archivo aunque lo renombren
                     new_script->_set_source_code("-- @ID: " + script_id + "\n" + template_code);
-                    new_script->set_path(file_path);
+                    // take_over_path reclama la ruta aunque haya un recurso viejo cacheado
+                    // (evita "Another resource is loaded from path")
+                    new_script->take_over_path(file_path);
                     ResourceSaver::get_singleton()->save(new_script, file_path);
                     set_codigo_luau(new_script);
-                    UtilityFunctions::print("[GodotLuau] Script creado: ", file_path);
+                    GL_DEBUG_PRINT("[GodotLuau] Script creado: ", file_path);
                 }
             }
             // NOTA: el borrado/restauración del archivo al borrar el nodo (con soporte
@@ -1317,6 +1373,38 @@ public:
             return 0;
         }, "warn");
         lua_setglobal(L_main, "warn");
+
+        // ── dprint / dwarn: salida de los scripts internos del sistema ────────
+        // Solo imprimen si godot_luau/debug_mode esta activo (Modo Debug).
+        // Los templates del sistema (PlayerModule, Health, Chat...) los usan
+        // para no ensuciar la consola del usuario.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            if (!(bool)ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode", false))
+                return 0;
+            int n = lua_gettop(L);
+            String msg;
+            for (int i = 1; i <= n; i++) {
+                msg += String(luaL_tolstring(L, i, nullptr));
+                if (i < n) msg += "\t";
+            }
+            UtilityFunctions::print("[Luau Debug] ", msg);
+            return 0;
+        }, "dprint");
+        lua_setglobal(L_main, "dprint");
+
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            if (!(bool)ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode", false))
+                return 0;
+            int n = lua_gettop(L);
+            String msg;
+            for (int i = 1; i <= n; i++) {
+                msg += String(luaL_tolstring(L, i, nullptr));
+                if (i < n) msg += "\t";
+            }
+            UtilityFunctions::print("[Luau Debug WARN] ", msg);
+            return 0;
+        }, "dwarn");
+        lua_setglobal(L_main, "dwarn");
 
         // error(message, level) — como en Lua/Roblox: level 0 omite la posición
         lua_pushcfunction(L_main, [](lua_State* L) -> int {

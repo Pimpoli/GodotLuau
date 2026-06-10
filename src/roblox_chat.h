@@ -3,6 +3,7 @@
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/canvas_layer.hpp>
+#include "gl_debug.h"
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/panel.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
@@ -210,7 +211,7 @@ public:
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         build_ui();
-        UtilityFunctions::print("[GodotLuau] Chat system initialized. Press / to open.");
+        GL_DEBUG_PRINT("[GodotLuau] Chat system initialized. Press / to open.");
     }
 
     void _input(const Ref<InputEvent>& p_event) override {

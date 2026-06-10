@@ -180,7 +180,10 @@ public:
         if (s.is_null()) return ERR_INVALID_PARAMETER;
         Ref<FileAccess> file = FileAccess::open(p, FileAccess::WRITE);
         if (file.is_null()) return ERR_CANT_OPEN;
-        file->store_string(s->_get_source_code()); file->close(); return OK;
+        file->store_string(s->_get_source_code()); file->close();
+        // Recolección local anónima: qué APIs se usan más (mejora el ranking)
+        LuauAutocomplete::record_usage(s->_get_source_code());
+        return OK;
     }
     bool _recognize(const Ref<Resource>& r) const override { return Object::cast_to<LuauScript>(r.ptr()) != nullptr; }
     PackedStringArray _get_recognized_extensions(const Ref<Resource>& r) const override { PackedStringArray a; a.append("lua"); return a; }

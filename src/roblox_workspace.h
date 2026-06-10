@@ -26,6 +26,7 @@
 #include "roblox_player.h"
 #include "humanoid.h"
 #include "roblox_services.h"
+#include "roblox_interactive.h"
 
 using namespace godot;
 
@@ -173,7 +174,7 @@ protected:
                 add_child(current_cam);
                 current_cam->set_owner(root);
 
-                UtilityFunctions::print("[GodotLuau] RobloxWorkspace initialized in editor.");
+                GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace initialized in editor.");
             }
         }
     }
@@ -191,10 +192,24 @@ public:
     void  set_touches_use_collision_groups(bool b) { touches_use_collision_groups = b; }
     bool  get_touches_use_collision_groups() const { return touches_use_collision_groups; }
 
+    SpawnLocation* _find_spawn_r(Node* n) {
+        if (!n) return nullptr;
+        if (SpawnLocation* s = Object::cast_to<SpawnLocation>(n)) return s;
+        for (int i = 0; i < n->get_child_count(); i++)
+            if (SpawnLocation* f = _find_spawn_r(n->get_child(i))) return f;
+        return nullptr;
+    }
+
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
 
         _apply_gravity();
+
+        // ── RunService oculto: como en Roblox, existe pero no se ve en el editor ──
+        if (get_parent() && !get_parent()->get_node_or_null("RunService")) {
+            Node* rs = Object::cast_to<Node>(ClassDB::instantiate(StringName("RunService")));
+            if (rs) { rs->set_name("RunService"); get_parent()->add_child(rs); }
+        }
 
         // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────
         //// ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
@@ -207,7 +222,10 @@ public:
         //// ── 2. Crear el personaje del jugador ────────────────────────────────────
         RobloxPlayer* p = memnew(RobloxPlayer);
         p->set_name("LocalPlayer");
-        p->set_position(Vector3(0, 5, 0));
+        // Spawnear sobre el primer SpawnLocation del Workspace (como Roblox)
+        Vector3 spawn_pos(0, 5, 0);
+        if (SpawnLocation* sl = _find_spawn_r(this)) spawn_pos = sl->get_spawn_position();
+        p->set_position(spawn_pos);
         add_child(p);
 
         // ── 3. Default capsule character (same as Roblox) ──────────────────────
@@ -260,7 +278,7 @@ public:
                 }
             }
 
-            UtilityFunctions::print("[GodotLuau] Player scripts loaded from StarterPlayer.");
+            GL_DEBUG_PRINT("[GodotLuau] Player scripts loaded from StarterPlayer.");
         }
     }
 };

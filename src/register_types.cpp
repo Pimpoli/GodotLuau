@@ -1,4 +1,5 @@
 #include "register_types.h"
+#include "gl_debug.h"
 #include "luau_script.h"
 #include "luau_language.h"
 #include "roblox_workspace.h"
@@ -197,7 +198,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
             Ref<DirAccess> dir = DirAccess::open("res://");
             if (dir.is_valid() && !dir->dir_exists("icons")) {
                 dir->make_dir("icons");
-                UtilityFunctions::print("[GodotLuau] Carpeta 'res://icons/' creada.");
+                GL_DEBUG_PRINT("[GodotLuau] Carpeta 'res://icons/' creada.");
             }
         }
 
@@ -211,11 +212,12 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
             String line2 = String("[GodotLuau]   Luau System for Godot [Active]");
             if (locale == "es") line2 = String("[GodotLuau]   Sistema Luau para Godot [Activado]");
             else if (locale == "pt") line2 = String("[GodotLuau]   Sistema Luau para Godot [Ativado]");
+            // ASCII puro: las consolas con otra codificación no lo deforman
             UtilityFunctions::print(
-                String("[GodotLuau] ══════════════════════════════════════════\n")
-                + "[GodotLuau]   GodotLuau " + version + " — by PimpoliDev\n"
+                String("[GodotLuau] ////////////////////////////////////////////////////\n")
+                + "[GodotLuau]   GodotLuau " + version + " - by PimpoliDev\n"
                 + line2 + "\n"
-                + "[GodotLuau] ══════════════════════════════════════════"
+                + "[GodotLuau] ////////////////////////////////////////////////////"
             );
 
             Engine::get_singleton()->set_meta(
