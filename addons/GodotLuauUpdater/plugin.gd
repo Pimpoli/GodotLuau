@@ -412,6 +412,10 @@ func _sync_plugin_cfg() -> void:
 	if not f: return
 	var lines := f.get_as_text().split("\n")
 	var changed := false
+	# Quitar BOM UTF-8 si alguna herramienta externa lo metio (rompe el plugin)
+	if lines.size() > 0 and lines[0].begins_with(char(0xFEFF)):
+		lines[0] = lines[0].trim_prefix(char(0xFEFF))
+		changed = true
 	for i in lines.size():
 		if lines[i].begins_with("version="):
 			var expected := 'version="%s"' % ver

@@ -26,6 +26,24 @@ CARPETAS = [
     "icons",
 ]
 EXTENSIONES_BIN = (".dll", ".so", ".dylib", ".lib", ".exp")
+EXTENSIONES_TEXTO = (".cfg", ".gd", ".gdextension", ".txt", ".md", ".json", ".lua", ".uid")
+
+
+def agregar_archivo(zf, ruta, arcname):
+    """Agrega un archivo al zip quitando el BOM UTF-8 de los archivos de texto.
+    Godot no tolera BOM en .cfg/.gdextension (el plugin deja de cargar)."""
+    if ruta.lower().endswith(EXTENSIONES_TEXTO):
+        with open(ruta, "rb") as f:
+            data = f.read()
+        if data.startswith(b"\xef\xbb\xbf"):
+            data = data[3:]
+            # tambien arreglar el archivo original en disco
+            with open(ruta, "wb") as f:
+                f.write(data)
+            print(f"⚠  BOM eliminado: {arcname}")
+        zf.writestr(arcname, data)
+    else:
+        zf.write(ruta, arcname=arcname)
 
 
 def empaquetar():
@@ -36,7 +54,7 @@ def empaquetar():
     with zipfile.ZipFile(NOMBRE_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
         for archivo in ARCHIVOS_SUELTOS:
             if os.path.exists(archivo):
-                zf.write(archivo, arcname=archivo)
+                agregar_archivo(zf, archivo, archivo)
                 print(f"✓  {archivo}")
 
         for carpeta in CARPETAS:
@@ -48,7 +66,7 @@ def empaquetar():
                     if carpeta == "bin" and not archivo.endswith(EXTENSIONES_BIN):
                         continue
                     ruta = os.path.join(raiz, archivo)
-                    zf.write(ruta, arcname=ruta.replace("\\", "/"))
+                    agregar_archivo(zf, ruta, ruta.replace("\\", "/"))
             print(f"✓  {carpeta}/")
 
     sha = hashlib.sha256(open(NOMBRE_ZIP, "rb").read()).hexdigest()
