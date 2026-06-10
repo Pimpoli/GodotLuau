@@ -486,8 +486,18 @@ print("Hello World Module Script")
 #include "lualib.h"
 #include "Luau/Compiler.h"
 
+#include <godot_cpp/classes/os.hpp>
+
 #include <vector>
 #include <string>
+
+// Mensaje de runtime en el idioma del sistema (EN/ES/PT)
+static inline godot::String gl_tr3(const char* en, const char* es, const char* pt) {
+    godot::String loc = godot::OS::get_singleton()->get_locale().left(2);
+    if (loc == godot::String("es")) return godot::String::utf8(es);
+    if (loc == godot::String("pt")) return godot::String::utf8(pt);
+    return godot::String::utf8(en);
+}
 
 using namespace godot;
 
@@ -661,7 +671,7 @@ public:
                 is_waiting      = false;
                 is_external_wait = false;
                 if (status != LUA_OK)
-                    UtilityFunctions::print("[GodotLuau] ", get_name(), ": ", lua_tostring(th, -1));
+                    UtilityFunctions::push_error("[GodotLuau] ", get_name(), ": ", lua_tostring(th, -1));
                 script_finished = true;
             }
         } else {
@@ -678,7 +688,7 @@ public:
                     }
                 } else {
                     if (status != LUA_OK)
-                        UtilityFunctions::print("[task Thread] ", get_name(), ": ", lua_tostring(th, -1));
+                        UtilityFunctions::push_error("[GodotLuau task] ", get_name(), ": ", lua_tostring(th, -1));
                     if (L_main) lua_unref(L_main, st.ref);
                     spawned_threads.erase(spawned_threads.begin() + i);
                 }
@@ -835,7 +845,10 @@ public:
         if (get_class() == "ModuleScript") return;
 
         if (codigo_luau.is_null()) {
-            UtilityFunctions::print("[GodotLuau Error] El nodo '", get_name(), "' no tiene un archivo Luau asignado.");
+            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3("Node '", "El nodo '", "O nó '"), get_name(), gl_tr3(
+                "' has no Luau script assigned.",
+                "' no tiene un archivo Luau asignado.",
+                "' não tem um script Luau atribuído."));
             return;
         }
 
@@ -1065,7 +1078,7 @@ public:
                 self->spawned_threads.push_back(st);
             } else {
                 if (status != LUA_OK) {
-                    UtilityFunctions::print("[task.spawn Error] ", lua_tostring(NL, -1));
+                    UtilityFunctions::push_error("[GodotLuau task.spawn] ", lua_tostring(NL, -1));
                 }
                 lua_pop(L, 1); 
             }
@@ -1118,8 +1131,9 @@ public:
         lua_setglobal(L_main, "task");
 
         // ── print / warn / error ──────────────────────────────────────────────
+        // Visible por defecto; se desactiva con godot_luau/script_output = false
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            if (!ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode"))
+            if (!(bool)ProjectSettings::get_singleton()->get_setting("godot_luau/script_output", true))
                 return 0;
             int n = lua_gettop(L);
             String msg;
@@ -1133,7 +1147,7 @@ public:
         lua_setglobal(L_main, "print");
 
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            if (!ProjectSettings::get_singleton()->get_setting("godot_luau/debug_mode"))
+            if (!(bool)ProjectSettings::get_singleton()->get_setting("godot_luau/script_output", true))
                 return 0;
             int n = lua_gettop(L);
             String msg;
@@ -1146,11 +1160,18 @@ public:
         }, "warn");
         lua_setglobal(L_main, "warn");
 
-        // THIS IS THE MAIN FIX FOR LUA_ERROR
-        //// AQUÍ ESTÁ EL ARREGLO PRINCIPAL DEL LUA_ERROR
+        // error(message, level) — como en Lua/Roblox: level 0 omite la posición
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            const char* msg = luaL_checkstring(L, 1);
-            luaL_error(L, "%s", msg);
+            int level = (int)luaL_optinteger(L, 2, 1);
+            lua_settop(L, 1);
+            if (lua_isstring(L, 1) && level > 0) {
+                lua_Debug ar;
+                if (lua_getinfo(L, level, "sl", &ar) && ar.currentline > 0) {
+                    lua_pushfstring(L, "%s:%d: %s", ar.short_src, ar.currentline, lua_tostring(L, 1));
+                    lua_replace(L, 1);
+                }
+            }
+            lua_error(L);
             return 0;
         }, "error");
         lua_setglobal(L_main, "error");
@@ -1424,7 +1445,8 @@ public:
         if (luau_load(L_thread, String(get_name()).utf8().get_data(), bytecode.data(), bytecode.size(), 0) == 0) {
             resume();
         } else {
-            UtilityFunctions::print("[GodotLuau Sintaxis] ", get_name(), ": ", lua_tostring(L_thread, -1));
+            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3("Syntax error in '", "Error de sintaxis en '", "Erro de sintaxe em '"),
+                get_name(), "': ", lua_tostring(L_thread, -1));
         }
     }
 
@@ -1432,13 +1454,19 @@ public:
         lua_pushcfunction(L, [](lua_State* L) -> int {
             GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
             if (!wrapper || !wrapper->node_ptr) {
-                UtilityFunctions::print("[Error] require() requiere un ModuleScript válido.");
+                UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
+                    "require() needs a valid ModuleScript.",
+                    "require() requiere un ModuleScript válido.",
+                    "require() precisa de um ModuleScript válido."));
                 return 0;
             }
 
             Node* mod_node = wrapper->node_ptr;
             if (mod_node->get_class() != "ModuleScript") {
-                UtilityFunctions::print("[Error] require() solo acepta ModuleScripts.");
+                UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
+                    "require() only accepts ModuleScripts.",
+                    "require() solo acepta ModuleScripts.",
+                    "require() só aceita ModuleScripts."));
                 return 0;
             }
 
@@ -1452,12 +1480,18 @@ public:
 
             Ref<LuauScript> res = mod_ptr->get_codigo_luau();
             if (res.is_null()) {
-                UtilityFunctions::print("[Error] require(): ModuleScript '", mod_node->get_name(), "' sin código asignado.");
+                UtilityFunctions::push_error("[GodotLuau] require(): ModuleScript '", mod_node->get_name(), "' ", gl_tr3(
+                    "has no source code assigned.",
+                    "no tiene código asignado.",
+                    "não tem código atribuído."));
                 return 0;
             }
 
             std::string bc = Luau::compile(res->_get_source_code().utf8().get_data());
             if (luau_load(L, String(mod_node->get_name()).utf8().get_data(), bc.data(), bc.size(), 0) != 0) {
+                UtilityFunctions::push_error("[GodotLuau] require('", mod_node->get_name(), "') ", gl_tr3(
+                    "failed to compile: ", "no compiló: ", "não compilou: "), lua_tostring(L, -1));
+                lua_pop(L, 1);
                 return 0;
             }
 
@@ -1481,7 +1515,10 @@ public:
                 lua_setfield(L, LUA_REGISTRYINDEX, cache_id.utf8().get_data());
                 return 1;
             }
-            UtilityFunctions::print("[Module Error] ", lua_tostring(L, -1));
+            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
+                "Error inside required module: ",
+                "Error dentro del módulo requerido: ",
+                "Erro dentro do módulo requerido: "), lua_tostring(L, -1));
             lua_pop(L, 1);
             return 0;
         }, "require");
@@ -1507,7 +1544,8 @@ public:
             }
             is_waiting = true;
         } else if (status != LUA_OK) {
-            UtilityFunctions::print("[GodotLuau Runtime] ", get_name(), ": ", lua_tostring(L_thread, -1));
+            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3("Runtime error in '", "Error de ejecución en '", "Erro de execução em '"),
+                get_name(), "': ", lua_tostring(L_thread, -1));
             script_finished = true;
         } else {
             script_finished = true;
@@ -1547,7 +1585,7 @@ public:
                     }
                 } else {
                     if (status != LUA_OK)
-                        UtilityFunctions::print("[task.spawn Thread] ", get_name(), ": ", lua_tostring(st.L, -1));
+                        UtilityFunctions::push_error("[GodotLuau task.spawn] ", get_name(), ": ", lua_tostring(st.L, -1));
                     if (L_main) lua_unref(L_main, st.ref);
                     spawned_threads.erase(spawned_threads.begin() + i);
                 }

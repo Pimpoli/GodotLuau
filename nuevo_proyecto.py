@@ -25,10 +25,10 @@ ORIGEN = os.path.dirname(os.path.abspath(__file__))
 
 # ─── Banner ────────────────────────────────────────────────────────
 BANNER = """
-╔══════════════════════════════════════════════════════╗
-║         GodotLuau — by PimpoliDev                    ║
-║          System Roblox for Godot                     ║
-╚══════════════════════════════════════════════════════╝
+══════════════════════════════════════════════════════
+  GodotLuau — by PimpoliDev
+  Sistema Roblox para Godot
+══════════════════════════════════════════════════════
 """
 
 # ─── Generador de UID válido para Godot 4 ──────────────────────────
@@ -51,21 +51,30 @@ config/description="Proyecto creado con GodotLuau"
 run/main_scene="res://Escenas/RobloxGame.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icons/icon.svg"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/GodotLuauUpdater/plugin.cfg")
 """
 
-def gdextension(dll_path):
-    release = dll_path.replace("template_debug", "template_release")
-    return f"""[configuration]
-entry_symbol = "luau_extension_init"
-compatibility_minimum = "4.1"
-reloadable = true
-
-[libraries]
-windows.debug.x86_64   = "{dll_path}"
-windows.release.x86_64 = "{release}"
-linux.debug.x86_64     = "{dll_path.replace('.dll', '.so')}"
-linux.release.x86_64   = "{release.replace('.dll', '.so')}"
-"""
+def gdextension(libs):
+    """Genera el .gdextension solo con las librerías que realmente existen"""
+    plataformas = {".dll": "windows", ".so": "linux", ".dylib": "macos"}
+    lineas = [
+        "[configuration]",
+        'entry_symbol = "luau_extension_init"',
+        'compatibility_minimum = "4.3"',
+        "",
+        "[libraries]",
+    ]
+    for lib in libs:
+        ext = os.path.splitext(lib)[1]
+        plat = plataformas.get(ext)
+        if not plat:
+            continue
+        target = "debug" if "template_debug" in lib else "release"
+        lineas.append(f'{plat}.{target}.x86_64 = "{lib}"')
+    return "\n".join(lineas) + "\n"
 
 def scene_3d(uid):
     # RobloxGame3D crea AUTOMÁTICAMENTE toda la jerarquía al abrir en el editor
@@ -172,20 +181,19 @@ def crear_proyecto(destino, nombre, modo):
         os.makedirs(os.path.join(destino, carpeta), exist_ok=True)
         print(f"  📁 {carpeta}/")
 
-    # 2. Copiar DLL(s) compiladas
+    # 2. Copiar librería(s) compiladas
     bin_origen = os.path.join(ORIGEN, "bin")
-    dll_nombre = None
+    libs_copiadas = []
     if os.path.isdir(bin_origen):
         for f in os.listdir(bin_origen):
-            if f.endswith(".dll") or f.endswith(".so"):
+            if f.endswith((".dll", ".so", ".dylib")):
                 shutil.copy2(os.path.join(bin_origen, f),
                              os.path.join(destino, "bin", f))
                 print(f"  ✔ bin/{f}")
-                if f.endswith(".dll") and dll_nombre is None:
-                    dll_nombre = f
+                libs_copiadas.append(f"res://bin/{f}")
 
-    if not dll_nombre:
-        print("\n  ERROR: No se encontró la DLL compilada en bin/")
+    if not libs_copiadas:
+        print("\n  ERROR: No se encontró ninguna librería compilada en bin/")
         print("  Por favor compila el proyecto con: scons")
         sys.exit(1)
 
@@ -206,9 +214,20 @@ def crear_proyecto(destino, nombre, modo):
         f.write(icon_svg())
     print("  ✔ icons/icon.svg")
 
-    # 5. Generar archivos de configuración
+    # 5. Copiar el addon (panel de config + updater) y el archivo Version
+    addon_origen = os.path.join(ORIGEN, "addons", "GodotLuauUpdater")
+    if os.path.isdir(addon_origen):
+        shutil.copytree(addon_origen,
+                        os.path.join(destino, "addons", "GodotLuauUpdater"),
+                        dirs_exist_ok=True)
+        print("  ✔ addons/GodotLuauUpdater/")
+    version_origen = os.path.join(ORIGEN, "Version")
+    if os.path.exists(version_origen):
+        shutil.copy2(version_origen, os.path.join(destino, "Version"))
+        print("  ✔ Version")
+
+    # 6. Generar archivos de configuración
     uid_escena = uid_godot()
-    dll_path   = f"res://bin/{dll_nombre}"
 
     # project.godot
     with open(os.path.join(destino, "project.godot"), "w", encoding="utf-8") as f:
@@ -217,7 +236,7 @@ def crear_proyecto(destino, nombre, modo):
 
     # godot_luau.gdextension
     with open(os.path.join(destino, "godot_luau.gdextension"), "w", encoding="utf-8") as f:
-        f.write(gdextension(dll_path))
+        f.write(gdextension(libs_copiadas))
     print("  ✔ godot_luau.gdextension")
 
     # Escena principal
@@ -230,7 +249,7 @@ def crear_proyecto(destino, nombre, modo):
     # son creados AUTOMÁTICAMENTE por la extensión C++ al abrir el proyecto en Godot.
     # Solo creamos archivos de ejemplo adicionales aquí.
 
-    # 6. ModuleScript de ejemplo adicional (Utils)
+    # 7. ModuleScript de ejemplo adicional (Utils)
     module_script = """-- > GodotLuau — PimpoliDev
 local Module = {}
 
@@ -241,36 +260,35 @@ return Module
     print("  ✔ ModuleScripts/Utils.lua")
 
     # ─── Mensaje final ───────────────────────────────────────────
+    raiz = "RobloxGame2D" if is_2d else "RobloxGame3D"
     print(f"""
-╔══════════════════════════════════════════════════════╗
-║  ✅  Proyecto "{nombre}" listo!                      ║
-║                                                      ║
-║  Modo: {modo_str:<46}║
-║                                                      ║
-║  COMO ABRIRLO EN GODOT:                             ║
-║  1. Abre Godot 4                                    ║
-║  2. Clic en "Import" en el Project Manager          ║
-║  3. Navega a esta carpeta → selecciona project.godot║
-║  4. Clic en "Importar y Editar"                     ║
-║  5. Abre Escenas/RobloxGame.tscn                    ║
-║  6. ¡La estructura Roblox se crea automáticamente!  ║
-║                                                      ║
-║  ESTRUCTURA AUTO-GENERADA:                          ║
-║  • Game ({'RobloxGame3D' if not is_2d else 'RobloxGame2D':28})       ║
-║    ├── Workspace (con CurrentCamera)                ║
-║    ├── Players / Lighting / Teams...                ║
-║    ├── ServerScriptService                          ║
-║    │   └── GameManager (ServerScript) ← editable   ║
-║    └── StarterPlayer                                ║
-║        ├── StarterCharacterScripts                  ║
-║        │   ├── Health.lua  ← regen vida             ║
-║        │   └── Animate.lua ← animaciones            ║
-║        └── StarterPlayerScripts                     ║
-║            ├── PlayerModule.lua ← loader            ║
-║            └── Modules/                             ║
-║                ├── ControlModule.lua ← velocidad    ║
-║                └── CameraModule.lua ← cámara        ║
-╚══════════════════════════════════════════════════════╝
+══════════════════════════════════════════════════════
+  ✅  Proyecto "{nombre}" listo!  (modo {modo_str})
+
+  CÓMO ABRIRLO EN GODOT:
+  1. Abre Godot 4
+  2. Clic en "Import" en el Project Manager
+  3. Navega a esta carpeta → selecciona project.godot
+  4. Clic en "Importar y Editar"
+  5. Abre Escenas/RobloxGame.tscn
+  6. ¡La estructura Roblox se crea automáticamente!
+
+  ESTRUCTURA AUTO-GENERADA:
+  Game ({raiz})
+    ├── Workspace (con CurrentCamera)
+    ├── Players / Lighting / Teams...
+    ├── ServerScriptService
+    │   └── GameManager (ServerScript) ← editable
+    └── StarterPlayer
+        ├── StarterCharacterScripts
+        │   ├── Health.lua  ← regen vida
+        │   └── Animate.lua ← animaciones
+        └── StarterPlayerScripts
+            ├── PlayerModule.lua ← loader
+            └── Modules/
+                ├── ControlModule.lua ← velocidad
+                └── CameraModule.lua ← cámara
+══════════════════════════════════════════════════════
   Ruta: {destino}
 """)
 

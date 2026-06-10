@@ -3,6 +3,7 @@
 
 #include "luau_script.h"
 #include "luau_autocomplete.h"
+#include "Luau/Compiler.h"
 #include <godot_cpp/classes/script_language_extension.hpp>
 #include <godot_cpp/classes/resource_format_loader.hpp>
 #include <godot_cpp/classes/resource_format_saver.hpp>
@@ -45,10 +46,10 @@ public:
     }
 
     PackedStringArray _get_string_delimiters()  const override {
-        PackedStringArray a; a.append("\" \""); a.append("' '"); return a;
+        PackedStringArray a; a.append("\" \""); a.append("' '"); a.append("[[ ]]"); return a;
     }
     PackedStringArray _get_comment_delimiters() const override {
-        PackedStringArray a; a.append("--"); return a;
+        PackedStringArray a; a.append("--[[ ]]"); a.append("--"); return a;
     }
     PackedStringArray _get_doc_comment_delimiters() const override { return PackedStringArray(); }
 
@@ -85,13 +86,68 @@ public:
     bool _supports_builtin_mode()  const override { return false; }
     bool _can_make_function()      const override { return false; }
     bool _overrides_external_editor() override    { return false; }
-    bool _is_using_templates()     override       { return false; }
+    bool _is_using_templates()     override       { return true; }
 
-    TypedArray<Dictionary> _get_built_in_templates(const StringName& p_object) const override { return TypedArray<Dictionary>(); }
-    Ref<Script> _make_template(const String& p_template, const String& p_class, const String& p_base) const override { return Ref<Script>(); }
+    static constexpr const char* DEFAULT_TEMPLATE =
+        "-- _NAME_\n"
+        "-- GodotLuau script\n"
+        "\n"
+        "print(\"_NAME_ loaded\")\n";
 
+    TypedArray<Dictionary> _get_built_in_templates(const StringName& p_object) const override {
+        TypedArray<Dictionary> templates;
+        Dictionary t;
+        t["inherit"]     = String(p_object);
+        t["name"]        = "Default";
+        t["description"] = "Basic Luau script";
+        t["content"]     = String(DEFAULT_TEMPLATE);
+        t["id"]          = 0;
+        t["origin"]      = 0;
+        templates.push_back(t);
+        return templates;
+    }
+
+    Ref<Script> _make_template(const String& p_template, const String& p_class, const String& p_base) const override {
+        Ref<LuauScript> scr;
+        scr.instantiate();
+        String content = p_template.is_empty() ? String(DEFAULT_TEMPLATE) : p_template;
+        content = content.replace("_NAME_", p_class.is_empty() ? String("NewScript") : p_class)
+                         .replace("_BASE_", p_base);
+        scr->_set_source_code(content);
+        return scr;
+    }
+
+    // Validación real: compila con Luau y reporta línea y mensaje del error
     Dictionary _validate(const String& s, const String& p, bool pf, bool pe, bool pw, bool psl) const override {
-        Dictionary d; d["valid"] = true; return d;
+        Dictionary d;
+        std::string bc = Luau::compile(s.utf8().get_data());
+        // Bytecode de error: byte 0 seguido de ":<línea>: <mensaje>"
+        if (!bc.empty() && bc[0] == '\0') {
+            String err = String::utf8(bc.c_str() + 1, (int)bc.size() - 1);
+            int line = 1;
+            String message = err;
+            if (err.begins_with(":")) {
+                int second = err.find(":", 1);
+                if (second > 1) {
+                    line = err.substr(1, second - 1).to_int();
+                    message = err.substr(second + 1).strip_edges();
+                }
+            }
+            d["valid"] = false;
+            if (pe) {
+                Array errors;
+                Dictionary e;
+                e["line"]    = line;
+                e["column"]  = 1;
+                e["message"] = message;
+                e["path"]    = p;
+                errors.push_back(e);
+                d["errors"] = errors;
+            }
+            return d;
+        }
+        d["valid"] = true;
+        return d;
     }
 
     void _init()   override {}
@@ -121,6 +177,7 @@ protected:
 public:
     Error _save(const Ref<Resource>& r, const String& p, uint32_t f) override {
         Ref<LuauScript> s = r;
+        if (s.is_null()) return ERR_INVALID_PARAMETER;
         Ref<FileAccess> file = FileAccess::open(p, FileAccess::WRITE);
         if (file.is_null()) return ERR_CANT_OPEN;
         file->store_string(s->_get_source_code()); file->close(); return OK;

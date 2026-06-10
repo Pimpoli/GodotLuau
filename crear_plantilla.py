@@ -10,7 +10,17 @@ Uso:
 import os
 import zipfile
 import glob
+import random
+import string
 import textwrap
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  UID válido para Godot 4 (13 caracteres alfanuméricos en minúscula)
+# ─────────────────────────────────────────────────────────────────────
+def uid_godot():
+    chars = string.digits + string.ascii_lowercase
+    return "uid://" + "".join(random.choices(chars, k=13))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -18,12 +28,13 @@ import textwrap
 #  Un solo nodo RobloxDataModel — al abrirlo en Godot crea todos
 #  los servicios automáticamente.
 # ─────────────────────────────────────────────────────────────────────
-ESCENA_PRINCIPAL = textwrap.dedent("""\
-    [gd_scene format=3 uid="uid://roblox_game_template"]
+def escena_principal() -> str:
+    return textwrap.dedent(f"""\
+        [gd_scene format=3 uid="{uid_godot()}"]
 
-    [node name="RobloxGame" type="RobloxDataModel"]
-    WorkspaceMode = 0
-""")
+        [node name="RobloxGame" type="RobloxDataModel"]
+        WorkspaceMode = 0
+    """)
 
 # ─────────────────────────────────────────────────────────────────────
 #  project.godot de la plantilla
@@ -39,6 +50,10 @@ PROJECT_GODOT = textwrap.dedent("""\
     config/name="Mi Juego Roblox"
     run/main_scene="res://Escenas/RobloxGame.tscn"
     config/features=PackedStringArray("4.6")
+
+    [editor_plugins]
+
+    enabled=PackedStringArray("res://addons/GodotLuauUpdater/plugin.cfg")
 """)
 
 
@@ -46,7 +61,7 @@ def generar_gdextension(dll_path: str) -> str:
     return textwrap.dedent(f"""\
         [configuration]
         entry_symbol = "luau_extension_init"
-        compatibility_minimum = 4.1
+        compatibility_minimum = "4.3"
 
         [libraries]
         windows.debug.x86_64   = "{dll_path}"
@@ -76,13 +91,24 @@ def empaquetar_plantilla():
             # ── Archivos generados en memoria ────────────────────────
             zf.writestr("godot_luau.gdextension",         gdext_content)
             zf.writestr("project.godot",                  PROJECT_GODOT)
-            zf.writestr("Escenas/RobloxGame.tscn",        ESCENA_PRINCIPAL)
+            zf.writestr("Escenas/RobloxGame.tscn",        escena_principal())
             print("✓  Archivos de configuración incluidos")
 
             # ── DLL compilada ────────────────────────────────────────
             for dll in dlls:
                 zf.write(dll, arcname=dll)
                 print(f"✓  {dll}")
+
+            # ── Addon (panel de config + updater) y Version ──────────
+            if os.path.isdir("addons/GodotLuauUpdater"):
+                for raiz, _, archivos in os.walk("addons/GodotLuauUpdater"):
+                    for archivo in archivos:
+                        ruta = os.path.join(raiz, archivo)
+                        zf.write(ruta, arcname=ruta.replace("\\", "/"))
+                print("✓  addons/GodotLuauUpdater/")
+            if os.path.exists("Version"):
+                zf.write("Version", arcname="Version")
+                print("✓  Version")
 
             # ── Carpetas de scripts Luau (siempre vacías en la plantilla) ──
             # NO incluimos scripts del proyecto fuente, solo las carpetas

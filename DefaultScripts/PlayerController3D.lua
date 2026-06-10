@@ -29,8 +29,9 @@ local JUMP_POWER  = 20    -- Fuerza del salto (más alto = salta más)
 --  INICIO DEL SCRIPT - Obtener referencias del motor
 -- ══════════════════════════════════════════════════════════════════
 
--- Obtener el servicio de jugadores
-local Players = game:GetService("Players")
+-- Obtener servicios
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local player  = Players.LocalPlayer
 
 -- Verificar que el jugador existe
@@ -60,14 +61,12 @@ print("[GodotLuau] Modo de cámara: " .. CAMERA_MODE ..
      " (Combinada)"))
 
 -- ══════════════════════════════════════════════════════════════════
---  BUCLE PRINCIPAL DEL JUGADOR
---  Se ejecuta cada frame. Aquí puedes agregar lógica custom.
+--  LÓGICA POR FRAME (Heartbeat)
+--  Se ejecuta cada frame sin bloquear el hilo del script.
+--  Es el patrón recomendado — igual que en Roblox.
 -- ══════════════════════════════════════════════════════════════════
-while task.wait(0) do
-    -- Verificar que el jugador y humanoid siguen existiendo
-    if not player or not humanoid then
-        break
-    end
+RunService.Heartbeat:Connect(function(dt)
+    if not humanoid then return end
 
     -- Correr al mantener LeftShift
     local is_running = UserInputService:IsKeyDown("LeftShift")
@@ -79,7 +78,7 @@ while task.wait(0) do
     end
 
     -- ── ZONA DE CÓDIGO PERSONALIZADO ──────────────────────────────
-    -- Aquí puedes agregar tu propia lógica:
+    -- Aquí puedes agregar tu propia lógica (dt = segundos del frame):
     --
     -- Ejemplo: Recuperar vida con E
     -- if UserInputService:IsKeyDown("E") then
@@ -91,6 +90,4 @@ while task.wait(0) do
     --     player.Position = Vector3.new(0, 5, 0)
     -- end
     -- ─────────────────────────────────────────────────────────────
-end
-
-print("[GodotLuau] PlayerController3D finalizado.")
+end)

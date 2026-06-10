@@ -41,7 +41,8 @@ local RUN_SPEED  = 320    -- Velocidad corriendo (mantén LeftShift)
 --  INICIO DEL SCRIPT
 -- ══════════════════════════════════════════════════════════════════
 
-local Players = game:GetService("Players")
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local player  = Players.LocalPlayer
 
 if not player then
@@ -64,11 +65,11 @@ print("[GodotLuau]   Tipo de movimiento: " .. tipo_str)
 print("[GodotLuau]   Modo de cámara:     " .. CAMERA_MODE)
 
 -- ══════════════════════════════════════════════════════════════════
---  BUCLE PRINCIPAL DEL JUGADOR
+--  LÓGICA POR FRAME (Heartbeat)
+--  Se ejecuta cada frame sin bloquear el hilo del script.
+--  Es el patrón recomendado — igual que en Roblox.
 -- ══════════════════════════════════════════════════════════════════
-while task.wait(0) do
-    if not player then break end
-
+RunService.Heartbeat:Connect(function(dt)
     -- Correr con LeftShift (ajustar WalkSpeed del jugador 2D)
     local is_running = UserInputService:IsKeyDown("LeftShift")
 
@@ -91,6 +92,4 @@ while task.wait(0) do
     --     -- lógica de interacción
     -- end
     -- ─────────────────────────────────────────────────────────────
-end
-
-print("[GodotLuau] PlayerController2D finalizado.")
+end)

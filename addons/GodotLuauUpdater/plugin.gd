@@ -3,6 +3,7 @@ extends EditorPlugin
 
 const VERSION_URL    := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/Version"
 const ZIP_URL        := "https://github.com/Pimpoli/GodotLuau/raw/main/GodotLuau.zip"
+const HASH_URL       := "https://github.com/Pimpoli/GodotLuau/raw/main/GodotLuau.zip.sha256"
 const VERSION_FILE   := "res://Version"
 const GITHUB_URL     := "https://github.com/Pimpoli/GodotLuau"
 const DATA_FILE      := "user://godotluau_usage.json"
@@ -22,11 +23,11 @@ const TR := {
 		"font_normal":           "M",
 		"font_large":            "L",
 		"ai_title":              "AI Smart Autocomplete",
-		"ai_desc":               "Suggests values based on variable names (e.g. 'speed =' → '16').\nDisabled by default — data is still collected to improve suggestions.",
+		"ai_desc":               "Suggests values based on variable names (e.g. 'speed =' → '16').\nExperimental — not yet active in this version.",
 		"share_title":           "Share anonymous usage data",
-		"share_desc":            "Helps improve autocomplete suggestions.\nTracks which APIs you use most (e.g. FindFirstChild vs WaitForChild).\nCode content is never shared.",
-		"debug_title":           "Debug Mode",
-		"debug_desc":            "Shows GodotLuau runtime messages in Output.\nWhen OFF, Luau script print() and warn() calls are suppressed to keep your Output clean.",
+		"share_desc":            "Reserved for future versions to improve autocomplete suggestions.\nNo data is collected or sent in this version.",
+		"debug_title":           "Script output (print / warn)",
+		"debug_desc":            "Shows print() and warn() messages from Luau scripts in the Output panel.\nEnabled by default — turn OFF for a clean Output.",
 		"notif_outdated_title":  "Notify outdated version in Output",
 		"notif_outdated_desc":   "Prints a warning in the Output panel when running an outdated GodotLuau version.",
 		"speed_title":           "Instant Autocomplete",
@@ -69,13 +70,15 @@ const TR := {
 		"bar_dl_err":            "❌ Could not start download.",
 		"bar_retry":             "Retry",
 		"bar_script_err":        "❌ Could not write update script.",
+		"bar_verifying":         "🔒 Verifying download...",
+		"bar_hash_err":          "❌ Integrity check failed — update aborted.",
 		"ver_unknown":           "unknown",
 		"btn_check_ver":         "🔍",
 		"btn_reinstall":         "↺ Reinstall",
 		"bar_reinstalling":      "↺ Reinstalling %s...",
 		"github_label":          "Official source:",
 		"footer_data":           "Data file: user://godotluau_usage.json",
-		"warn_watermark":        "⚠ GodotLuau watermark missing — this may be a modified version. Please reinstall from: " + GITHUB_URL,
+		"warn_watermark":        "⚠ GodotLuau core not detected (DLL missing or failed to load). If you compiled it yourself, ignore this. Otherwise reinstall from: " + GITHUB_URL,
 	},
 	"es": {
 		"panel_title":           "GodotLuau Config",
@@ -87,11 +90,11 @@ const TR := {
 		"font_normal":           "M",
 		"font_large":            "L",
 		"ai_title":              "Autocompletado Inteligente IA",
-		"ai_desc":               "Sugiere valores según nombres de variable (ej: 'speed =' → '16').\nDesactivado por defecto — el sistema sigue recolectando datos para mejorar.",
+		"ai_desc":               "Sugiere valores según nombres de variable (ej: 'speed =' → '16').\nExperimental — aún no activo en esta versión.",
 		"share_title":           "Compartir datos de uso anónimos",
-		"share_desc":            "Ayuda a mejorar las sugerencias de autocompletado.\nRegistra qué APIs usas más (ej: FindFirstChild vs WaitForChild).\nNunca se comparte el contenido del código.",
-		"debug_title":           "Modo Debug",
-		"debug_desc":            "Muestra mensajes del runtime GodotLuau en el Output.\nCuando está DESACTIVADO, suprime los print() y warn() de scripts Luau para mantener el Output limpio.",
+		"share_desc":            "Reservado para futuras versiones, para mejorar el autocompletado.\nEn esta versión no se recolecta ni se envía ningún dato.",
+		"debug_title":           "Salida de scripts (print / warn)",
+		"debug_desc":            "Muestra los mensajes print() y warn() de los scripts Luau en el panel Output.\nActivado por defecto — desactívalo para mantener el Output limpio.",
 		"notif_outdated_title":  "Notificar versión desactualizada en Output",
 		"notif_outdated_desc":   "Imprime una advertencia en el panel Output cuando se ejecuta una versión desactualizada de GodotLuau.",
 		"speed_title":           "Autocompletado Instantáneo",
@@ -134,13 +137,15 @@ const TR := {
 		"bar_dl_err":            "❌ No se pudo iniciar la descarga.",
 		"bar_retry":             "Reintentar",
 		"bar_script_err":        "❌ No se pudo escribir el script de actualización.",
+		"bar_verifying":         "🔒 Verificando descarga...",
+		"bar_hash_err":          "❌ Falló la verificación de integridad — actualización cancelada.",
 		"ver_unknown":           "desconocida",
 		"btn_check_ver":         "🔍",
 		"btn_reinstall":         "↺ Reinstalar",
 		"bar_reinstalling":      "↺ Reinstalando %s...",
 		"github_label":          "Fuente oficial:",
 		"footer_data":           "Archivo de datos: user://godotluau_usage.json",
-		"warn_watermark":        "⚠ Marca de agua de GodotLuau no encontrada — puede ser una versión modificada. Reinstala desde: " + GITHUB_URL,
+		"warn_watermark":        "⚠ Núcleo de GodotLuau no detectado (DLL ausente o no cargó). Si lo compilaste tú mismo, ignora esto. Si no, reinstala desde: " + GITHUB_URL,
 	},
 	"pt": {
 		"panel_title":           "GodotLuau Config",
@@ -152,11 +157,11 @@ const TR := {
 		"font_normal":           "M",
 		"font_large":            "L",
 		"ai_title":              "Autocompletar Inteligente IA",
-		"ai_desc":               "Sugere valores baseados em nomes de variáveis (ex: 'speed =' → '16').\nDesativado por padrão — o sistema ainda coleta dados para melhorar.",
+		"ai_desc":               "Sugere valores baseados em nomes de variáveis (ex: 'speed =' → '16').\nExperimental — ainda não ativo nesta versão.",
 		"share_title":           "Compartilhar dados de uso anônimos",
-		"share_desc":            "Ajuda a melhorar as sugestões de autocompletar.\nRegistra quais APIs você usa mais (ex: FindFirstChild vs WaitForChild).\nO conteúdo do código nunca é compartilhado.",
-		"debug_title":           "Modo Debug",
-		"debug_desc":            "Exibe mensagens do runtime GodotLuau no Output.\nQuando DESATIVADO, suprime os print() e warn() dos scripts Luau para manter o Output limpo.",
+		"share_desc":            "Reservado para versões futuras, para melhorar o autocompletar.\nNesta versão nenhum dado é coletado ou enviado.",
+		"debug_title":           "Saída de scripts (print / warn)",
+		"debug_desc":            "Exibe as mensagens print() e warn() dos scripts Luau no painel Output.\nAtivado por padrão — desative para manter o Output limpo.",
 		"notif_outdated_title":  "Notificar versão desatualizada no Output",
 		"notif_outdated_desc":   "Exibe um aviso no painel Output quando uma versão desatualizada do GodotLuau está em uso.",
 		"speed_title":           "Autocompletar Instantâneo",
@@ -199,13 +204,15 @@ const TR := {
 		"bar_dl_err":            "❌ Não foi possível iniciar o download.",
 		"bar_retry":             "Tentar novamente",
 		"bar_script_err":        "❌ Não foi possível escrever o script de atualização.",
+		"bar_verifying":         "🔒 Verificando download...",
+		"bar_hash_err":          "❌ Falha na verificação de integridade — atualização cancelada.",
 		"ver_unknown":           "desconhecida",
 		"btn_check_ver":         "🔍",
 		"btn_reinstall":         "↺ Reinstalar",
 		"bar_reinstalling":      "↺ Reinstalando %s...",
 		"github_label":          "Fonte oficial:",
 		"footer_data":           "Arquivo de dados: user://godotluau_usage.json",
-		"warn_watermark":        "⚠ Marca d'água do GodotLuau não encontrada — pode ser versão modificada. Reinstale em: " + GITHUB_URL,
+		"warn_watermark":        "⚠ Núcleo do GodotLuau não detectado (DLL ausente ou não carregou). Se você mesmo compilou, ignore isto. Caso contrário, reinstale em: " + GITHUB_URL,
 	}
 }
 
@@ -213,6 +220,7 @@ const TR := {
 var _http_version      : HTTPRequest    = null
 var _http_download     : HTTPRequest    = null
 var _http_autocomplete : HTTPRequest    = null
+var _http_hash         : HTTPRequest    = null
 var _bar_action        : String         = ""
 var _remote_version    : String         = ""
 var _downloading       : bool           = false
@@ -229,7 +237,6 @@ var _reinstall_btn     : Button         = null
 var _notif_bar         : PanelContainer = null
 var _notif_label       : Label          = null
 var _outdated_timer    : Timer          = null
-var _wm_timer          : Timer          = null
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -245,7 +252,7 @@ func _enter_tree() -> void:
 	_check_for_update()
 
 func _exit_tree() -> void:
-	for n in [_http_version, _http_download, _http_autocomplete, _outdated_timer, _wm_timer]:
+	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _outdated_timer]:
 		if n and is_instance_valid(n): n.queue_free()
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
@@ -316,17 +323,9 @@ func _sync_plugin_cfg() -> void:
 # ── Watermark integrity check ─────────────────────────────────────────────────
 
 func _check_watermark() -> void:
+	# Aviso único — sin timer repetitivo (quien compila su propia DLL puede ignorarlo)
 	if Engine.has_meta(WM_META_KEY): return
 	push_warning("[GodotLuau] " + _t("warn_watermark"))
-	if _wm_timer and is_instance_valid(_wm_timer): return
-	_wm_timer = Timer.new()
-	_wm_timer.wait_time = 10.0
-	_wm_timer.autostart = true
-	add_child(_wm_timer)
-	_wm_timer.timeout.connect(func():
-		if not Engine.has_meta(WM_META_KEY):
-			push_warning("[GodotLuau] ⚠ Watermark still missing! Reinstall from: " + GITHUB_URL)
-	)
 
 # ── Outdated version console warning ─────────────────────────────────────────
 
@@ -375,11 +374,13 @@ func _cleanup_old_dlls() -> void:
 
 func _register_settings() -> void:
 	_add_bool("godot_luau/ai_autocomplete_enabled",    false,
-		"Enable AI Smart Autocomplete — suggests values based on variable names.")
-	_add_bool("godot_luau/share_data_enabled",         true,
-		"Share anonymous usage data to improve the AI model.")
-	_add_bool("godot_luau/debug_mode",                 false,
-		"Show GodotLuau runtime messages in Output. When OFF, Luau print() is suppressed.")
+		"Enable AI Smart Autocomplete — suggests values based on variable names. (Experimental)")
+	_add_bool("godot_luau/share_data_enabled",         false,
+		"Reserved for future versions. No data is collected in this version.")
+	_add_bool("godot_luau/script_output",              true,
+		"Show print() and warn() output from Luau scripts in the Output panel.")
+	_add_bool("godot_luau/debug_mode",                 true,
+		"Legacy setting kept for older GodotLuau DLLs — mirrors 'script_output'.")
 	_add_bool("godot_luau/notify_outdated_version",    true,
 		"Print a warning in Output when running an outdated GodotLuau version.")
 	_add_bool("godot_luau/instant_autocomplete",       true,
@@ -449,11 +450,18 @@ func _build_settings_panel() -> void:
 	scroll.size_flags_vertical   = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.custom_minimum_size    = Vector2(0, 300)
+	_settings_panel = scroll
+	_build_panel_contents()
+	add_control_to_bottom_panel(scroll, "GodotLuau Config")
+	if _first_build:
+		make_bottom_panel_item_visible(scroll)
+		_first_build = false
 
+func _build_panel_contents() -> void:
 	var outer := MarginContainer.new()
 	for s in ["margin_left","margin_right","margin_top","margin_bottom"]:
 		outer.add_theme_constant_override(s, 14)
-	scroll.add_child(outer)
+	_settings_panel.add_child(outer)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 8)
@@ -592,7 +600,7 @@ func _build_settings_panel() -> void:
 	vbox.add_child(_make_section(_t("sec_data"), Color(0.5, 0.9, 0.5)))
 
 	vbox.add_child(_make_row(_t("share_title"), _t("share_desc"),
-		"godot_luau/share_data_enabled", true))
+		"godot_luau/share_data_enabled", false))
 
 	var stats_sub := Label.new()
 	stats_sub.text = "  " + _t("stats_header")
@@ -627,7 +635,12 @@ func _build_settings_panel() -> void:
 	vbox.add_child(_make_section(_t("sec_debug"), Color(1.0, 0.7, 0.3)))
 
 	vbox.add_child(_make_row(_t("debug_title"), _t("debug_desc"),
-		"godot_luau/debug_mode", false))
+		"godot_luau/script_output", true,
+		func(on: bool) -> void:
+			# Espejo para DLLs antiguas que leen debug_mode
+			ProjectSettings.set_setting("godot_luau/debug_mode", on)
+			ProjectSettings.save()
+	))
 
 	vbox.add_child(_make_row(_t("notif_outdated_title"), _t("notif_outdated_desc"),
 		"godot_luau/notify_outdated_version", true))
@@ -694,16 +707,13 @@ func _build_settings_panel() -> void:
 	data_lbl.add_theme_font_size_override("font_size", _fs(10))
 	footer.add_child(data_lbl)
 
-	_settings_panel = scroll
-	add_control_to_bottom_panel(scroll, "GodotLuau Config")
-	if _first_build:
-		make_bottom_panel_item_visible(scroll)
-		_first_build = false
-
 func _rebuild_panel() -> void:
-	if _settings_panel and is_instance_valid(_settings_panel):
-		remove_control_from_bottom_panel(_settings_panel)
-		_settings_panel.queue_free()
+	# Reconstruye solo el contenido, sin quitar el panel inferior (evita el parpadeo)
+	if not (_settings_panel and is_instance_valid(_settings_panel)):
+		return
+	for c in _settings_panel.get_children():
+		_settings_panel.remove_child(c)
+		c.queue_free()
 	_stats_label   = null
 	_cac_status    = null
 	_cac_url_field = null
@@ -712,7 +722,7 @@ func _rebuild_panel() -> void:
 	_reinstall_btn = null
 	_notif_bar     = null
 	_notif_label   = null
-	_build_settings_panel()
+	_build_panel_contents()
 
 # ── Custom autocomplete ───────────────────────────────────────────────────────
 
@@ -873,7 +883,7 @@ func _on_version_received(result: int, code: int, _hdrs: PackedStringArray, body
 		_reset_ver_idle(); return
 	_remote_version = body.get_string_from_utf8().strip_edges()
 	var local := _get_local_version()
-	if _remote_version == local:
+	if _version_to_num(_remote_version) <= _version_to_num(local):
 		_stop_outdated_warning()
 		_set_ver_status(_t("bar_uptodate") % local, "", Color(0.4, 0.9, 0.5))
 		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
@@ -893,6 +903,13 @@ func _get_local_version() -> String:
 	if not FileAccess.file_exists(VERSION_FILE): return _t("ver_unknown")
 	var f := FileAccess.open(VERSION_FILE, FileAccess.READ)
 	return f.get_as_text().strip_edges() if f else _t("ver_unknown")
+
+func _version_to_num(v: String) -> int:
+	# "v1.4.4" → 1004004; solo avisa si la remota es realmente más nueva
+	var n := 0
+	for p in v.trim_prefix("v").split("."):
+		n = n * 1000 + p.to_int()
+	return n
 
 # ── Download & reinstall ──────────────────────────────────────────────────────
 
@@ -926,6 +943,41 @@ func _on_download_completed(result: int, code: int, _hdrs: PackedStringArray, _b
 		_set_ver_status(_t("bar_dl_failed") % code, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
 		return
+	_start_hash_verify()
+
+# ── Verificación de integridad (SHA-256) ─────────────────────────────────────
+
+func _start_hash_verify() -> void:
+	if _http_hash and is_instance_valid(_http_hash): return
+	_set_ver_status(_t("bar_verifying"), "", Color(0.4, 0.8, 1.0))
+	_http_hash = HTTPRequest.new()
+	_http_hash.timeout = 15.0
+	add_child(_http_hash)
+	_http_hash.request_completed.connect(_on_hash_received)
+	if _http_hash.request(HASH_URL) != OK:
+		_http_hash.queue_free(); _http_hash = null
+		push_warning("[GodotLuau] Could not fetch checksum — installing without verification.")
+		_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
+		_apply_update.call_deferred()
+
+func _on_hash_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
+	if _http_hash and is_instance_valid(_http_hash):
+		_http_hash.queue_free(); _http_hash = null
+	var zip_path := OS.get_user_data_dir() + "/godotluau_update.zip"
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		# Releases antiguas sin .sha256 — instalar igualmente, pero avisar
+		push_warning("[GodotLuau] Checksum file not available — installing without verification.")
+		_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
+		_apply_update.call_deferred()
+		return
+	var expected := body.get_string_from_utf8().strip_edges().to_lower()
+	if expected.contains(" "): expected = expected.split(" ")[0]
+	var actual := FileAccess.get_sha256(zip_path).to_lower()
+	if expected != actual:
+		DirAccess.remove_absolute(zip_path)
+		_set_ver_status(_t("bar_hash_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
+		return
 	_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
 	_apply_update.call_deferred()
 
@@ -949,8 +1001,13 @@ func _apply_update() -> void:
 
 	for rel in zip.get_files():
 		if rel.ends_with("/"): continue
+		# Anti zip-slip: rechazar rutas absolutas o con '..'
+		var rel_clean : String = rel.replace("\\", "/")
+		if rel_clean.begins_with("/") or rel_clean.contains("..") or rel_clean.contains(":"):
+			push_warning("[GodotLuau] Skipped suspicious ZIP entry: " + rel)
+			continue
 		var data    : PackedByteArray = zip.read_file(rel)
-		var dst     : String          = proj_path + rel
+		var dst     : String          = proj_path + rel_clean
 		var dst_dir : String          = dst.get_base_dir()
 		if not DirAccess.dir_exists_absolute(dst_dir):
 			DirAccess.make_dir_recursive_absolute(dst_dir)
