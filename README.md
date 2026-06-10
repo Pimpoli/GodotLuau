@@ -87,6 +87,7 @@ El auto-updater de los usuarios compara `Version`, descarga el ZIP y verifica el
 | `nuevo_proyecto.py` | Crea un proyecto de juego nuevo listo para usar (3D o 2D) |
 | `crear_plantilla.py` | Empaqueta `RobloxTemplate.zip` importable desde el Project Manager de Godot |
 | `generar_release.py` | Regenera `GodotLuau.zip` + `GodotLuau.zip.sha256` para el auto-updater |
+| `entrenar_modelo.py` | Entrena `models/LuauGram-Plus.json` (modelo n-gram del Autocompletado con IA) a partir del corpus en `corpus/` y los templates |
 
 ## Estructura del repositorio
 

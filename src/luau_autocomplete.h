@@ -995,40 +995,63 @@ public:
 
     static Dictionary& _ai_model() { static Dictionary m; return m; }
     static bool& _ai_model_loaded() { static bool b = false; return b; }
+    static String& _ai_model_sel() { static String s; return s; }
 
+    // Carga el modelo según la selección del panel (godot_luau/ai_model_selected):
+    //   "mini"   → LuauGram-Mini integrado
+    //   "custom" → user://godotluau_ai_model.json (importado/URL del usuario)
+    //   otro id  → user://godotluau_models/<id>.json (descargado del catálogo)
+    // Se recarga automáticamente si el usuario cambia la selección.
     static void _load_ai_model_once() {
-        if (_ai_model_loaded()) return;
+        String sel = (String)ProjectSettings::get_singleton()->get_setting("godot_luau/ai_model_selected", "mini");
+        if (_ai_model_loaded() && sel == _ai_model_sel()) return;
         _ai_model_loaded() = true;
-        // 1º: modelo personalizado del usuario; 2º: LuauGram-Mini integrado
-        Ref<FileAccess> f = FileAccess::open("user://godotluau_ai_model.json", FileAccess::READ);
-        if (f.is_valid()) {
-            Variant parsed = JSON::parse_string(f->get_as_text());
-            if (parsed.get_type() == Variant::DICTIONARY && ((Dictionary)parsed).has("bigrams")) {
-                _ai_model() = parsed;
-                return;
+        _ai_model_sel() = sel;
+        _ai_model() = Dictionary();
+
+        String path;
+        if (sel == String("custom"))    path = "user://godotluau_ai_model.json";
+        else if (sel != String("mini")) path = "user://godotluau_models/" + sel + ".json";
+
+        if (!path.is_empty()) {
+            Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+            if (f.is_valid()) {
+                Variant parsed = JSON::parse_string(f->get_as_text());
+                if (parsed.get_type() == Variant::DICTIONARY && ((Dictionary)parsed).has("bigrams")) {
+                    _ai_model() = parsed;
+                    return;
+                }
             }
         }
+        // Respaldo: LuauGram-Mini integrado
         Variant builtin = JSON::parse_string(String(LUAUGRAM_MINI_JSON));
         if (builtin.get_type() == Variant::DICTIONARY) _ai_model() = builtin;
     }
 
-    // Token de código inmediatamente anterior a la palabra que se escribe
-    static String _prev_token(const String& code_to_cursor, int word_start) {
-        int i = word_start;
-        while (i >= 0) {
-            char32_t c = code_to_cursor[i];
-            if (c==' '||c=='\t'||c=='('||c==')'||c=='='||c==','||c==':'||c=='.') i--;
-            else break;
-        }
-        int end = i;
-        while (i >= 0) {
-            char32_t c = code_to_cursor[i];
-            bool w = (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_';
-            if (!w) break;
-            i--;
-        }
-        if (end <= i) return String();
-        return code_to_cursor.substr(i + 1, end - i);
+    // Los dos tokens de código inmediatamente anteriores a la palabra que se
+    // escribe (t1 = anterior, t2 = anterior a t1). Limitado a la línea actual.
+    static void _prev_tokens(const String& code, int from, String& t1, String& t2) {
+        int i = from;
+        auto skip_sep = [&]() {
+            while (i >= 0) {
+                char32_t c = code[i];
+                if (c==' '||c=='\t'||c=='('||c==')'||c=='='||c==','||c==':'||c=='.') i--;
+                else break;
+            }
+        };
+        auto read_word = [&]() -> String {
+            int end = i;
+            while (i >= 0) {
+                char32_t c = code[i];
+                bool w = (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_';
+                if (!w) break;
+                i--;
+            }
+            if (end <= i) return String();
+            return code.substr(i + 1, end - i);
+        };
+        skip_sep(); t1 = read_word();
+        skip_sep(); t2 = read_word();
     }
 
     static Dictionary get_suggestions(const String& p_code, const String& p_path = String(), Object* p_owner = nullptr) {
@@ -1383,25 +1406,40 @@ public:
 
         if(target_prefix.is_empty()) {
             // ── Predicción con IA (modelo n-gram) ─────────────────────────
-            // Dado el token anterior, sugiere los siguientes más probables.
+            // Trigramas primero (2 tokens de contexto = mejor predicción),
+            // bigramas como respaldo. Sin duplicados entre ambos.
             if (ai_enabled && !in_string) {
                 _load_ai_model_once();
                 Dictionary model = _ai_model();
                 if (model.has("bigrams")) {
-                    Dictionary bigrams = model["bigrams"];
                     String model_name = model.get("name", "LuauGram-Mini");
-                    String prev = _prev_token(code_to_cursor, last_sep);
-                    if (!prev.is_empty() && bigrams.has(prev)) {
-                        Dictionary next = bigrams[prev];
+                    String prev, prev2;
+                    _prev_tokens(code_to_cursor, last_sep, prev, prev2);
+
+                    std::unordered_set<std::string> seen;
+                    auto push_preds = [&](const Dictionary& next, int bonus, const String& ctx) {
                         Array nk = next.keys();
                         for (int ni = 0; ni < nk.size(); ni++) {
                             String cand = nk[ni];
+                            std::string ck = cand.utf8().get_data();
+                            if (seen.count(ck)) continue;
                             int sc = fuzzy_match_score(filter_str, filter_lower, cand); if (sc <= 0) continue;
-                            int weight = (int)(int64_t)next[nk[ni]];
+                            seen.insert(ck);
+                            int weight = (int)(int64_t)next[nk[ni]] + bonus;
                             sorter.push_back({0, 100 + weight, sc, cand + String("  ✨"), cand,
-                                String("[AI: ") + model_name + String("] ") + prev + String(" → ") + cand,
+                                String("[AI: ") + model_name + String("] ") + ctx + String(" → ") + cand,
                                 "", 6, Color(1.0f, 0.85f, 0.4f, 1.0f)});
                         }
+                    };
+
+                    if (!prev.is_empty() && !prev2.is_empty() && model.has("trigrams")) {
+                        Dictionary tg = model["trigrams"];
+                        String key = prev2 + " " + prev;
+                        if (tg.has(key)) push_preds(tg[key], 40, key);
+                    }
+                    if (!prev.is_empty()) {
+                        Dictionary bg = model["bigrams"];
+                        if (bg.has(prev)) push_preds(bg[prev], 0, prev);
                     }
                 }
             }

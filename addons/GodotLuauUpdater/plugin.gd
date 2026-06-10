@@ -13,6 +13,15 @@ const WM_META_KEY    := "_godotluau_wm"
 const TRASH_DIR      := "res://.luau_trash"
 const SCRIPT_NODE_CLASSES := ["LocalScript", "ServerScript", "ModuleScript"]
 
+# ── Catálogo de modelos de IA para el autocompletado ─────────────────────────
+# params: nº de pesos del modelo (para que el usuario sepa calidad vs velocidad)
+const AI_MODELS := [
+	{"id": "mini",   "name": "LuauGram-Mini",        "params": "80",     "builtin": true},
+	{"id": "plus",   "name": "LuauGram-Plus",        "params": "~1.700",
+	 "url": "https://github.com/Pimpoli/GodotLuau/raw/main/models/LuauGram-Plus.json"},
+	{"id": "custom", "name": "Personalizado / Custom", "params": "?",    "custom": true},
+]
+
 # ── Translation dictionary — EN / ES / PT-BR ─────────────────────────────────
 const TR := {
 	"en": {
@@ -24,7 +33,13 @@ const TR := {
 		"sec_appearance":        "🎨  Appearance",
 		"font_size_label":       "Panel text size",
 		"ai_title":              "AI Autocomplete",
-		"ai_desc":               "Predicts your next code using a lightweight AI model.\nModel: \"LuauGram-Mini\" — adapted for Luau code writing.\nMay be a bit slower than Instant Autocomplete (only one of the two can be active).",
+		"ai_desc":               "Predicts your next code using the AI model selected below.\nBigger models predict better but may take longer.\nOnly one of AI / Instant Autocomplete can be active.",
+		"aim_select_label":      "AI model:",
+		"aim_params_suffix":     "parameters",
+		"aim_btn_dl":            "Download ⏬",
+		"aim_builtin_note":      "Built-in — always ready, instant.",
+		"aim_missing":           "Not downloaded yet — press Download ⏬",
+		"aim_need_download":     "⚠ Download the selected AI model first",
 		"aim_header":            "Custom AI model",
 		"aim_note":              "Load your own model (JSON with \"bigrams\") from a file or URL.",
 		"aim_status_none":       "Using built-in model \"LuauGram-Mini\".",
@@ -72,6 +87,7 @@ const TR := {
 		"bar_extracting":        "📦 Extracting...",
 		"bar_ok_no_restart":     "✅ %s installed.",
 		"bar_ok_restart":        "✅ Updated — click to restart.",
+		"bar_restart_in":        "✅ Updated — restarting in %d s (Godot will reopen by itself)",
 		"bar_apply_close":       "✅ Ready. Godot will close and apply the DLL.",
 		"bar_restart":           "🔄 Restart editor",
 		"bar_restarting":        "🔄 Restarting...",
@@ -98,7 +114,13 @@ const TR := {
 		"sec_appearance":        "🎨  Apariencia",
 		"font_size_label":       "Tamaño del texto del panel",
 		"ai_title":              "Autocompletado con IA",
-		"ai_desc":               "Predice tu siguiente código usando un modelo de IA ligero.\nModelo: \"LuauGram-Mini\" — adaptado para escribir código Luau.\nPuede tardar un poco más que el Autocompletado Instantáneo (solo uno de los dos puede estar activo).",
+		"ai_desc":               "Predice tu siguiente código usando el modelo de IA elegido abajo.\nLos modelos más grandes predicen mejor pero pueden tardar más.\nSolo uno de IA / Autocompletado Instantáneo puede estar activo.",
+		"aim_select_label":      "Modelo de IA:",
+		"aim_params_suffix":     "parámetros",
+		"aim_btn_dl":            "Descargar ⏬",
+		"aim_builtin_note":      "Integrado — siempre listo, instantáneo.",
+		"aim_missing":           "Aún no descargado — pulsa Descargar ⏬",
+		"aim_need_download":     "⚠ Descarga primero el modelo de IA seleccionado",
 		"aim_header":            "Modelo de IA personalizado",
 		"aim_note":              "Carga tu propio modelo (JSON con \"bigrams\") desde archivo o URL.",
 		"aim_status_none":       "Usando el modelo integrado \"LuauGram-Mini\".",
@@ -146,6 +168,7 @@ const TR := {
 		"bar_extracting":        "📦 Extrayendo...",
 		"bar_ok_no_restart":     "✅ %s instalado.",
 		"bar_ok_restart":        "✅ Actualizado — clic para reiniciar.",
+		"bar_restart_in":        "✅ Actualizado — reiniciando en %d s (Godot se reabrirá solo)",
 		"bar_apply_close":       "✅ Listo. Godot se cerrará y aplicará la DLL.",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
@@ -172,7 +195,13 @@ const TR := {
 		"sec_appearance":        "🎨  Aparência",
 		"font_size_label":       "Tamanho do texto do painel",
 		"ai_title":              "Autocompletar com IA",
-		"ai_desc":               "Prevê seu próximo código usando um modelo de IA leve.\nModelo: \"LuauGram-Mini\" — adaptado para escrever código Luau.\nPode demorar um pouco mais que o Autocompletar Instantâneo (apenas um dos dois pode estar ativo).",
+		"ai_desc":               "Prevê seu próximo código usando o modelo de IA escolhido abaixo.\nModelos maiores preveem melhor mas podem demorar mais.\nApenas um de IA / Autocompletar Instantâneo pode estar ativo.",
+		"aim_select_label":      "Modelo de IA:",
+		"aim_params_suffix":     "parâmetros",
+		"aim_btn_dl":            "Baixar ⏬",
+		"aim_builtin_note":      "Integrado — sempre pronto, instantâneo.",
+		"aim_missing":           "Ainda não baixado — clique em Baixar ⏬",
+		"aim_need_download":     "⚠ Baixe primeiro o modelo de IA selecionado",
 		"aim_header":            "Modelo de IA personalizado",
 		"aim_note":              "Carregue seu próprio modelo (JSON com \"bigrams\") de um arquivo ou URL.",
 		"aim_status_none":       "Usando o modelo integrado \"LuauGram-Mini\".",
@@ -220,6 +249,7 @@ const TR := {
 		"bar_extracting":        "📦 Extraindo...",
 		"bar_ok_no_restart":     "✅ %s instalado.",
 		"bar_ok_restart":        "✅ Atualizado — clique para reiniciar.",
+		"bar_restart_in":        "✅ Atualizado — reiniciando em %d s (o Godot reabrirá sozinho)",
 		"bar_apply_close":       "✅ Pronto. O Godot fechará e aplicará a DLL.",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
@@ -557,6 +587,8 @@ func _register_settings() -> void:
 		"URL to download a custom autocomplete JSON from.")
 	_add_str("godot_luau/ai_model_url",                "",
 		"URL to download a custom AI model JSON from.")
+	_add_str("godot_luau/ai_model_selected",           "mini",
+		"Selected AI model id for AI Autocomplete (mini, plus, custom...).")
 
 func _add_bool(key: String, val: bool, hint: String) -> void:
 	if not ProjectSettings.has_setting(key): ProjectSettings.set_setting(key, val)
@@ -767,15 +799,63 @@ func _build_panel_contents() -> void:
 	vbox.add_child(z_ac[0]); zones.append(z_ac[0])
 	var ac_vb : VBoxContainer = z_ac[1]
 
-	# IA y Instantáneo son mutuamente excluyentes: activar uno apaga el otro
+	# IA y Instantáneo son mutuamente excluyentes; la IA requiere
+	# que el modelo seleccionado esté disponible (o descargado).
 	ac_vb.add_child(_make_row(_t("ai_title"), _t("ai_desc"),
 		"godot_luau/ai_autocomplete_enabled", false,
 		func(on: bool) -> void:
 			if on:
+				if not _ai_model_available(_selected_model_id()):
+					ProjectSettings.set_setting("godot_luau/ai_autocomplete_enabled", false)
+					ProjectSettings.save()
+					_set_notif(_t("aim_need_download"), Color(1.0, 0.75, 0.3))
+					_rebuild_panel()
+					return
 				ProjectSettings.set_setting("godot_luau/instant_autocomplete", false)
 				ProjectSettings.save()
 				_rebuild_panel()
 	))
+
+	# ── Selector de modelo (como el selector de idioma) ──────────────
+	var sel_row := HBoxContainer.new()
+	sel_row.add_theme_constant_override("separation", 8)
+	ac_vb.add_child(sel_row)
+
+	var sel_lbl := Label.new()
+	sel_lbl.text = _t("aim_select_label")
+	sel_lbl.add_theme_font_size_override("font_size", _fs(12))
+	sel_lbl.add_theme_color_override("font_color", _col_text)
+	sel_row.add_child(sel_lbl)
+
+	var model_opt := OptionButton.new()
+	model_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cur_id := _selected_model_id()
+	for mi in AI_MODELS.size():
+		var m : Dictionary = AI_MODELS[mi]
+		model_opt.add_item("%s  —  %s %s" % [m["name"], m["params"], _t("aim_params_suffix")], mi)
+		if m["id"] == cur_id:
+			model_opt.select(mi)
+	model_opt.item_selected.connect(func(idx: int) -> void:
+		var m : Dictionary = AI_MODELS[idx]
+		ProjectSettings.set_setting("godot_luau/ai_model_selected", m["id"])
+		# Si la IA estaba activa pero el modelo nuevo no está disponible, apagarla
+		if bool(ProjectSettings.get_setting("godot_luau/ai_autocomplete_enabled", false)) \
+				and not _ai_model_available(str(m["id"])):
+			ProjectSettings.set_setting("godot_luau/ai_autocomplete_enabled", false)
+			_set_notif(_t("aim_need_download"), Color(1.0, 0.75, 0.3))
+		ProjectSettings.save()
+		_rebuild_panel()
+	)
+	sel_row.add_child(model_opt)
+
+	# Botón "Descargar ⏬" solo si el modelo elegido es descargable y falta
+	var sel_entry := _model_entry(cur_id)
+	if sel_entry.has("url") and not _ai_model_available(cur_id):
+		var dl_btn := Button.new()
+		dl_btn.text = _t("aim_btn_dl")
+		dl_btn.add_theme_color_override("font_color", _accent(Color(0.4, 0.9, 1.0)))
+		dl_btn.pressed.connect(_download_selected_model)
+		sel_row.add_child(dl_btn)
 
 	ac_vb.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
 		"godot_luau/instant_autocomplete", true,
@@ -1083,20 +1163,85 @@ func _clear_custom_ac() -> void:
 	if FileAccess.file_exists(path): DirAccess.remove_absolute(path)
 	_refresh_cac_status()
 
-# ── Modelo de IA personalizado (mismo flujo que el autocompletado custom) ────
+# ── Modelos de IA: selección, descarga y estado ──────────────────────────────
 
 func _ai_model_path() -> String:
 	return OS.get_user_data_dir() + "/godotluau_ai_model.json"
 
+func _selected_model_id() -> String:
+	return str(ProjectSettings.get_setting("godot_luau/ai_model_selected", "mini"))
+
+func _model_entry(id: String) -> Dictionary:
+	for m in AI_MODELS:
+		if m["id"] == id: return m
+	return AI_MODELS[0]
+
+func _model_file(id: String) -> String:
+	if id == "custom": return _ai_model_path()
+	return OS.get_user_data_dir() + "/godotluau_models/" + id + ".json"
+
+func _ai_model_available(id: String) -> bool:
+	var e := _model_entry(id)
+	if e.get("builtin", false): return true
+	return FileAccess.file_exists(_model_file(id))
+
+# Descarga el modelo seleccionado del catálogo (solo cuando el usuario pulsa ⏬)
+func _download_selected_model() -> void:
+	if _http_aimodel and is_instance_valid(_http_aimodel): return
+	var id := _selected_model_id()
+	var e := _model_entry(id)
+	var url := str(e.get("url", ""))
+	if url.is_empty(): return
+	if _aim_status and is_instance_valid(_aim_status):
+		_aim_status.text = _t("cac_status_dl")
+		_aim_status.add_theme_color_override("font_color", Color(0.9, 0.85, 0.3))
+	_http_aimodel = HTTPRequest.new()
+	_http_aimodel.timeout = 60.0
+	add_child(_http_aimodel)
+	_http_aimodel.request_completed.connect(func(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+		if _http_aimodel and is_instance_valid(_http_aimodel):
+			_http_aimodel.queue_free(); _http_aimodel = null
+		if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+			if _aim_status and is_instance_valid(_aim_status):
+				_aim_status.text = _t("aim_status_err")
+				_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+			return
+		var text := body.get_string_from_utf8()
+		var parsed = JSON.parse_string(text)
+		if not (parsed is Dictionary and (parsed as Dictionary).has("bigrams")):
+			if _aim_status and is_instance_valid(_aim_status):
+				_aim_status.text = _t("aim_status_bad")
+				_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+			return
+		DirAccess.make_dir_recursive_absolute(OS.get_user_data_dir() + "/godotluau_models")
+		var f := FileAccess.open(_model_file(id), FileAccess.WRITE)
+		if f: f.store_string(text)
+		_rebuild_panel()
+	)
+	if _http_aimodel.request(url) != OK:
+		_http_aimodel.queue_free(); _http_aimodel = null
+		if _aim_status and is_instance_valid(_aim_status):
+			_aim_status.text = _t("aim_status_err")
+			_aim_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+
 func _refresh_aim_status() -> void:
 	if not (_aim_status and is_instance_valid(_aim_status)): return
-	if not FileAccess.file_exists(_ai_model_path()):
-		_aim_status.text = _t("aim_status_none")
-		_aim_status.add_theme_color_override("font_color", _col_faint)
+	var id := _selected_model_id()
+	var e := _model_entry(id)
+	if e.get("builtin", false):
+		_aim_status.text = _t("aim_builtin_note")
+		_aim_status.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
 		return
-	var parsed = JSON.parse_string(FileAccess.get_file_as_string(_ai_model_path()))
+	var path := _model_file(id)
+	if not FileAccess.file_exists(path):
+		_aim_status.text = _t("aim_missing")
+		_aim_status.add_theme_color_override("font_color", Color(0.9, 0.75, 0.3))
+		return
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if parsed is Dictionary and (parsed as Dictionary).has("bigrams"):
 		var n := ((parsed as Dictionary)["bigrams"] as Dictionary).size()
+		if (parsed as Dictionary).has("trigrams"):
+			n += ((parsed as Dictionary)["trigrams"] as Dictionary).size()
 		_aim_status.text = _t("aim_status_ok") % n
 		_aim_status.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
 	else:
@@ -1396,9 +1541,20 @@ func _apply_update() -> void:
 
 	_windows_staged_dlls = staged
 	if is_win and _try_rename_and_replace():
+		# DLLs ya intercambiadas: reinicio automático con cuenta regresiva.
+		# Godot se reabre solo con la versión nueva ya aplicada.
 		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
+		_auto_restart_countdown()
 	else:
 		_set_ver_status(_t("bar_apply_close"), "Apply & Close", Color(1.0, 0.7, 0.2), "apply")
+
+func _auto_restart_countdown() -> void:
+	for i in range(5, 0, -1):
+		if _bar_action != "restart": return  # el usuario hizo otra cosa
+		_set_ver_status(_t("bar_restart_in") % i, _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
+		await get_tree().create_timer(1.0).timeout
+	if _bar_action == "restart":
+		_do_editor_restart()
 
 func _try_rename_and_replace() -> bool:
 	for item in _windows_staged_dlls:
@@ -1445,7 +1601,8 @@ func _apply_windows_update_legacy() -> void:
 		var d : String = item["dst"].replace("/", "\\")
 		lines.append("try { Copy-Item -Force -Path \"%s\" -Destination \"%s\" } catch { Write-Host $_.Exception.Message }" % [s, d])
 	lines.append("Start-Sleep -Milliseconds 300")
-	lines.append("& \"%s\" --path \"%s\"" % [godot, proj_dir])
+	# -e: reabrir el EDITOR con el proyecto (sin -e se ejecutaría el juego)
+	lines.append("& \"%s\" -e --path \"%s\"" % [godot, proj_dir])
 
 	var pf := FileAccess.open(ps_path, FileAccess.WRITE)
 	if not pf: _set_ver_status(_t("bar_script_err"), "", Color(1.0, 0.4, 0.4)); return
