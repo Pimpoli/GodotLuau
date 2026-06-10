@@ -8,6 +8,7 @@ Ejecutar SIEMPRE después de recompilar las DLLs y antes de hacer push:
     python generar_release.py
 """
 import os
+import sys
 import hashlib
 import zipfile
 
@@ -63,4 +64,8 @@ def empaquetar():
 
 
 if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
     empaquetar()
