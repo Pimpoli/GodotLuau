@@ -10,13 +10,26 @@
 
 using namespace godot;
 
-// ── Shared helper to copy a Lua value between states (primitives only) ──────
-static void _lua_cross_push(lua_State* src, int idx, lua_State* dst) {
+// ── Shared helper to copy a Lua value between states ────────────────────────
+// Copia primitivos Y tablas (recursivo, máx. 8 niveles) — como Roblox, que
+// serializa tablas a través de los RemoteEvents.
+static void _lua_cross_push(lua_State* src, int idx, lua_State* dst, int depth = 0) {
     int t = lua_type(src, idx);
     if      (t == LUA_TNIL)     lua_pushnil(dst);
     else if (t == LUA_TBOOLEAN) lua_pushboolean(dst, lua_toboolean(src, idx));
     else if (t == LUA_TNUMBER)  lua_pushnumber(dst, lua_tonumber(src, idx));
     else if (t == LUA_TSTRING)  lua_pushstring(dst, lua_tostring(src, idx));
+    else if (t == LUA_TTABLE && depth < 8) {
+        if (idx < 0) idx = lua_gettop(src) + idx + 1;
+        lua_newtable(dst);
+        lua_pushnil(src);
+        while (lua_next(src, idx) != 0) {
+            _lua_cross_push(src, -2, dst, depth + 1);  // clave
+            _lua_cross_push(src, -1, dst, depth + 1);  // valor
+            lua_settable(dst, -3);
+            lua_pop(src, 1);
+        }
+    }
     else lua_pushnil(dst);
 }
 

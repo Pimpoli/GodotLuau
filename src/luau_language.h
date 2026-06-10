@@ -59,7 +59,7 @@ public:
     }
 
     Dictionary _complete_code(const String& p_code, const String& p_path, Object* p_owner) const override {
-        return LuauAutocomplete::get_suggestions(p_code);
+        return LuauAutocomplete::get_suggestions(p_code, p_path, p_owner);
     }
 
     // Hover documentation — language-aware, with BBCode formatting and Learn More link

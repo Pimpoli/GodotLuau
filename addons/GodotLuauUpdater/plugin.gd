@@ -10,6 +10,8 @@ const DATA_FILE      := "user://godotluau_usage.json"
 const CUSTOM_AC_FILE := "user://godotluau_custom_autocomplete.json"
 const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
 const WM_META_KEY    := "_godotluau_wm"
+const TRASH_DIR      := "res://.luau_trash"
+const SCRIPT_NODE_CLASSES := ["LocalScript", "ServerScript", "ModuleScript"]
 
 # ── Translation dictionary — EN / ES / PT-BR ─────────────────────────────────
 const TR := {
@@ -19,9 +21,8 @@ const TR := {
 		"sec_data":              "📊  Usage Data",
 		"sec_debug":             "🔧  Debug",
 		"sec_updates":           "🔄  Updates",
-		"font_small":            "S",
-		"font_normal":           "M",
-		"font_large":            "L",
+		"sec_appearance":        "🎨  Appearance",
+		"font_size_label":       "Panel text size",
 		"ai_title":              "AI Smart Autocomplete",
 		"ai_desc":               "Suggests values based on variable names (e.g. 'speed =' → '16').\nExperimental — not yet active in this version.",
 		"share_title":           "Share anonymous usage data",
@@ -86,9 +87,8 @@ const TR := {
 		"sec_data":              "📊  Datos de Uso",
 		"sec_debug":             "🔧  Debug",
 		"sec_updates":           "🔄  Actualizaciones",
-		"font_small":            "S",
-		"font_normal":           "M",
-		"font_large":            "L",
+		"sec_appearance":        "🎨  Apariencia",
+		"font_size_label":       "Tamaño del texto del panel",
 		"ai_title":              "Autocompletado Inteligente IA",
 		"ai_desc":               "Sugiere valores según nombres de variable (ej: 'speed =' → '16').\nExperimental — aún no activo en esta versión.",
 		"share_title":           "Compartir datos de uso anónimos",
@@ -153,9 +153,8 @@ const TR := {
 		"sec_data":              "📊  Dados de Uso",
 		"sec_debug":             "🔧  Debug",
 		"sec_updates":           "🔄  Atualizações",
-		"font_small":            "S",
-		"font_normal":           "M",
-		"font_large":            "L",
+		"sec_appearance":        "🎨  Aparência",
+		"font_size_label":       "Tamanho do texto do painel",
 		"ai_title":              "Autocompletar Inteligente IA",
 		"ai_desc":               "Sugere valores baseados em nomes de variáveis (ex: 'speed =' → '16').\nExperimental — ainda não ativo nesta versão.",
 		"share_title":           "Compartilhar dados de uso anônimos",
@@ -230,6 +229,7 @@ var _cac_status        : Label          = null
 var _cac_url_field     : LineEdit       = null
 var _lang              : String         = "en"
 var _font_scale        : float          = 1.0
+var _font_pct          : int            = 50
 var _first_build       : bool           = true
 var _ver_label         : Label          = null
 var _ver_btn           : Button         = null
@@ -237,6 +237,7 @@ var _reinstall_btn     : Button         = null
 var _notif_bar         : PanelContainer = null
 var _notif_label       : Label          = null
 var _outdated_timer    : Timer          = null
+var _suppress_trash_frame : int         = 0
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -250,13 +251,113 @@ func _enter_tree() -> void:
 	_build_settings_panel()
 	_check_watermark()
 	_check_for_update()
+	_connect_script_lifecycle()
+	_purge_old_trash()
 
 func _exit_tree() -> void:
+	_disconnect_script_lifecycle()
 	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _outdated_timer]:
 		if n and is_instance_valid(n): n.queue_free()
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
+
+# ── Ciclo de vida de scripts: papelera + restauración con Ctrl+Z ─────────────
+# Al borrar un nodo LocalScript/ServerScript/ModuleScript en el editor, su .lua
+# se mueve a res://.luau_trash/<script_id>.lua. Si el nodo vuelve (Ctrl+Z),
+# el archivo se restaura automáticamente con todo su contenido.
+
+func _connect_script_lifecycle() -> void:
+	var tree := get_tree()
+	if not tree.node_removed.is_connected(_on_any_node_removed):
+		tree.node_removed.connect(_on_any_node_removed)
+	if not tree.node_added.is_connected(_on_any_node_added):
+		tree.node_added.connect(_on_any_node_added)
+
+func _disconnect_script_lifecycle() -> void:
+	var tree := get_tree()
+	if tree.node_removed.is_connected(_on_any_node_removed):
+		tree.node_removed.disconnect(_on_any_node_removed)
+	if tree.node_added.is_connected(_on_any_node_added):
+		tree.node_added.disconnect(_on_any_node_added)
+
+func _node_script_id(n: Node) -> String:
+	var v = n.get("script_id")
+	return str(v) if v is String else ""
+
+func _node_script_path(n: Node) -> String:
+	var res = n.get("codigo_luau")
+	if res is Resource: return (res as Resource).resource_path
+	return ""
+
+func _on_any_node_removed(n: Node) -> void:
+	# Si se quita la raíz de la escena editada es un cierre/cambio de escena:
+	# suprimir el trasheo de todo ese lote de nodos
+	if n == EditorInterface.get_edited_scene_root():
+		_suppress_trash_frame = Engine.get_process_frames() + 5
+		return
+	if not (n.get_class() in SCRIPT_NODE_CLASSES): return
+	_check_script_removed.call_deferred(n, _node_script_id(n), _node_script_path(n))
+
+func _check_script_removed(n: Node, id: String, path: String) -> void:
+	await get_tree().process_frame
+	if Engine.get_process_frames() <= _suppress_trash_frame: return
+	if is_instance_valid(n) and n.is_inside_tree(): return   # reparent o undo inmediato
+	if EditorInterface.get_edited_scene_root() == null: return
+	_trash_script(id, path)
+
+func _trash_script(id: String, path: String) -> void:
+	if id.is_empty() or path.is_empty() or not path.begins_with("res://"): return
+	if not FileAccess.file_exists(path): return
+	# Nodo duplicado: si otro nodo de la escena usa el mismo ID, no tocar el archivo
+	var root := EditorInterface.get_edited_scene_root()
+	if root and _scene_has_script_id(root, id): return
+	var g_trash := ProjectSettings.globalize_path(TRASH_DIR)
+	DirAccess.make_dir_recursive_absolute(g_trash)
+	var ignore_path := g_trash + "/.gdignore"
+	if not FileAccess.file_exists(ignore_path):
+		var f := FileAccess.open(ignore_path, FileAccess.WRITE)
+		if f: f.store_string("")
+	if DirAccess.rename_absolute(ProjectSettings.globalize_path(path), g_trash + "/" + id + ".lua") == OK:
+		print("[GodotLuau] 🗑 Script en papelera: %s (Ctrl+Z para restaurar)" % path.get_file())
+		EditorInterface.get_resource_filesystem().scan()
+
+func _scene_has_script_id(n: Node, id: String) -> bool:
+	if n.get_class() in SCRIPT_NODE_CLASSES and _node_script_id(n) == id:
+		return true
+	for c in n.get_children():
+		if _scene_has_script_id(c, id): return true
+	return false
+
+func _on_any_node_added(n: Node) -> void:
+	if not (n.get_class() in SCRIPT_NODE_CLASSES): return
+	_check_script_restored.call_deferred(n)
+
+func _check_script_restored(n: Node) -> void:
+	if not is_instance_valid(n) or not n.is_inside_tree(): return
+	var id := _node_script_id(n)
+	if id.is_empty(): return
+	var path := _node_script_path(n)
+	if path.is_empty():
+		path = "res://%ss/%s.lua" % [n.get_class(), id]
+	if FileAccess.file_exists(path): return
+	var trash_file := ProjectSettings.globalize_path(TRASH_DIR + "/" + id + ".lua")
+	if not FileAccess.file_exists(trash_file): return
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	if DirAccess.rename_absolute(trash_file, ProjectSettings.globalize_path(path)) == OK:
+		print("[GodotLuau] ♻ Script restaurado: " + path.get_file())
+		EditorInterface.get_resource_filesystem().scan()
+
+func _purge_old_trash() -> void:
+	# Los scripts llevan más de 7 días en la papelera → limpieza definitiva
+	var g_trash := ProjectSettings.globalize_path(TRASH_DIR)
+	if not DirAccess.dir_exists_absolute(g_trash): return
+	var now := Time.get_unix_time_from_system()
+	for f in DirAccess.get_files_at(g_trash):
+		if not f.ends_with(".lua"): continue
+		var p := g_trash + "/" + f
+		if now - FileAccess.get_modified_time(p) > 7 * 86400:
+			DirAccess.remove_absolute(p)
 
 # ── Language ──────────────────────────────────────────────────────────────────
 
@@ -274,19 +375,21 @@ func _t(key: String) -> String:
 	return d.get(key, (TR["en"] as Dictionary).get(key, key))
 
 # ── Font preference (per-user, stored in EditorSettings) ─────────────────────
+# Escala 0-100 estilo barra de volumen; 50 = tamaño normal.
 
 func _load_font_pref() -> void:
 	var es := EditorInterface.get_editor_settings()
-	var idx := 1
-	if es.has_setting("godot_luau/panel_font_scale"):
-		idx = int(es.get_setting("godot_luau/panel_font_scale"))
-	_apply_font_idx(idx)
+	var pct := 50
+	if es.has_setting("godot_luau/panel_font_scale_pct"):
+		pct = int(es.get_setting("godot_luau/panel_font_scale_pct"))
+	elif es.has_setting("godot_luau/panel_font_scale"):
+		# Migración desde el viejo selector S/M/L
+		pct = [30, 50, 80][clampi(int(es.get_setting("godot_luau/panel_font_scale")), 0, 2)]
+	_apply_font_pct(pct)
 
-func _apply_font_idx(idx: int) -> void:
-	match idx:
-		0: _font_scale = 0.85
-		2: _font_scale = 1.2
-		_: _font_scale = 1.0
+func _apply_font_pct(pct: int) -> void:
+	_font_pct   = clampi(pct, 0, 100)
+	_font_scale = 0.85 + (_font_pct / 100.0) * 0.45   # 0.85x – 1.30x
 
 func _fs(base: int) -> int:
 	return max(9, int(base * _font_scale))
@@ -402,16 +505,35 @@ func _add_str(key: String, val: String, hint: String) -> void:
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
-func _make_section(text: String, color: Color) -> Control:
+# Zona tipo tarjeta: fondo redondeado + borde de acento a la izquierda.
+# Devuelve [tarjeta, contenedor_interno] — añade los controles al segundo.
+func _make_zone(title: String, accent: Color) -> Array:
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.12, 0.14, 0.18, 0.9)
+	sb.set_corner_radius_all(8)
+	sb.set_content_margin_all(12)
+	sb.border_width_left = 3
+	sb.border_color = accent
+	card.add_theme_stylebox_override("panel", sb)
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 4)
-	vb.add_child(HSeparator.new())
+	vb.add_theme_constant_override("separation", 6)
+	card.add_child(vb)
 	var lbl := Label.new()
-	lbl.text = text
+	lbl.text = title
 	lbl.add_theme_font_size_override("font_size", _fs(14))
-	lbl.add_theme_color_override("font_color", color)
+	lbl.add_theme_color_override("font_color", accent)
 	vb.add_child(lbl)
-	return vb
+	return [card, vb]
+
+# Fade-in escalonado de las zonas al construir el panel
+func _animate_zones(zones: Array) -> void:
+	for i in zones.size():
+		var z : Control = zones[i]
+		z.modulate.a = 0.0
+		var tw := z.create_tween()
+		tw.tween_interval(0.05 * i)
+		tw.tween_property(z, "modulate:a", 1.0, 0.2)
 
 func _make_row(title: String, desc: String, key: String, default_val: bool,
 			   on_change: Callable = Callable()) -> Control:
@@ -464,10 +586,10 @@ func _build_panel_contents() -> void:
 	_settings_panel.add_child(outer)
 
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
+	vbox.add_theme_constant_override("separation", 10)
 	outer.add_child(vbox)
 
-	# ── Header ──────────────────────────────────────────────────────────
+	# ── Header: solo título + idioma ─────────────────────────────────────
 	var hdr_row := HBoxContainer.new()
 	hdr_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(hdr_row)
@@ -475,35 +597,17 @@ func _build_panel_contents() -> void:
 	var hdr := Label.new()
 	hdr.text = _t("panel_title")
 	hdr.add_theme_color_override("font_color", Color(0.4, 0.8, 1.0))
-	hdr.add_theme_font_size_override("font_size", _fs(16))
+	hdr.add_theme_font_size_override("font_size", _fs(17))
 	hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(hdr)
 
-	# Font size selector
-	var font_opt := OptionButton.new()
-	font_opt.add_item(_t("font_small"),  0)
-	font_opt.add_item(_t("font_normal"), 1)
-	font_opt.add_item(_t("font_large"),  2)
-	var es_fs := EditorInterface.get_editor_settings()
-	var cur_fs_idx := 1
-	if es_fs.has_setting("godot_luau/panel_font_scale"):
-		cur_fs_idx = int(es_fs.get_setting("godot_luau/panel_font_scale"))
-	font_opt.select(cur_fs_idx)
-	font_opt.item_selected.connect(func(idx: int) -> void:
-		EditorInterface.get_editor_settings().set_setting("godot_luau/panel_font_scale", idx)
-		_apply_font_idx(idx)
-		_rebuild_panel()
-	)
-	hdr_row.add_child(font_opt)
-
-	# Language selector
 	var lang_lbl := Label.new()
 	lang_lbl.text = "🌐"
 	hdr_row.add_child(lang_lbl)
 	var lang_opt := OptionButton.new()
-	lang_opt.add_item("EN", 0)
-	lang_opt.add_item("ES", 1)
-	lang_opt.add_item("PT", 2)
+	lang_opt.add_item("English", 0)
+	lang_opt.add_item("Español", 1)
+	lang_opt.add_item("Português (BR)", 2)
 	match _lang:
 		"es": lang_opt.select(1)
 		"pt": lang_opt.select(2)
@@ -517,9 +621,14 @@ func _build_panel_contents() -> void:
 	)
 	hdr_row.add_child(lang_opt)
 
-	# ── Notification bar (transient messages) ───────────────────────────
+	# ── Barra de notificaciones (mensajes transitorios) ─────────────────
 	_notif_bar = PanelContainer.new()
 	_notif_bar.visible = false
+	var notif_sb := StyleBoxFlat.new()
+	notif_sb.bg_color = Color(0.16, 0.18, 0.24)
+	notif_sb.set_corner_radius_all(6)
+	notif_sb.set_content_margin_all(8)
+	_notif_bar.add_theme_stylebox_override("panel", notif_sb)
 	var notif_hb := HBoxContainer.new()
 	notif_hb.add_theme_constant_override("separation", 8)
 	_notif_bar.add_child(notif_hb)
@@ -534,128 +643,21 @@ func _build_panel_contents() -> void:
 	notif_hb.add_child(notif_x)
 	vbox.add_child(_notif_bar)
 
-	# ══ 🤖 AUTOCOMPLETE ════════════════════════════════════════════════
-	vbox.add_child(_make_section(_t("sec_autocomplete"), Color(0.4, 0.8, 1.0)))
+	var zones : Array = []
 
-	vbox.add_child(_make_row(_t("ai_title"), _t("ai_desc"),
-		"godot_luau/ai_autocomplete_enabled", false))
-
-	vbox.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
-		"godot_luau/instant_autocomplete", true,
-		func(on: bool) -> void:
-			if on: _apply_autocomplete_speed()
-	))
-
-	var cac_hdr := Label.new()
-	cac_hdr.text = "  " + _t("cac_header")
-	cac_hdr.add_theme_font_size_override("font_size", _fs(12))
-	cac_hdr.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
-	vbox.add_child(cac_hdr)
-
-	vbox.add_child(_make_row(_t("cac_toggle_title"), _t("cac_toggle_desc"),
-		"godot_luau/custom_autocomplete_enabled", false))
-
-	var url_lbl := Label.new()
-	url_lbl.text = _t("cac_url_label")
-	url_lbl.add_theme_font_size_override("font_size", _fs(11))
-	url_lbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
-	vbox.add_child(url_lbl)
-
-	var url_row := HBoxContainer.new()
-	url_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(url_row)
-	_cac_url_field = LineEdit.new()
-	_cac_url_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_cac_url_field.placeholder_text = _t("cac_url_hint")
-	_cac_url_field.text = str(ProjectSettings.get_setting("godot_luau/custom_autocomplete_url", ""))
-	_cac_url_field.text_changed.connect(func(txt: String) -> void:
-		ProjectSettings.set_setting("godot_luau/custom_autocomplete_url", txt)
-		ProjectSettings.save()
-	)
-	url_row.add_child(_cac_url_field)
-	var btn_dl := Button.new()
-	btn_dl.text = _t("cac_btn_download")
-	btn_dl.pressed.connect(_download_custom_ac)
-	url_row.add_child(btn_dl)
-
-	var cac_btns := HBoxContainer.new()
-	cac_btns.add_theme_constant_override("separation", 8)
-	vbox.add_child(cac_btns)
-	var btn_import := Button.new()
-	btn_import.text = _t("cac_btn_import")
-	btn_import.pressed.connect(_import_custom_ac_file)
-	cac_btns.add_child(btn_import)
-	var btn_clr_ac := Button.new()
-	btn_clr_ac.text = _t("cac_btn_clear")
-	btn_clr_ac.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6))
-	btn_clr_ac.pressed.connect(_clear_custom_ac)
-	cac_btns.add_child(btn_clr_ac)
-
-	_cac_status = Label.new()
-	_cac_status.add_theme_font_size_override("font_size", _fs(11))
-	vbox.add_child(_cac_status)
-	_refresh_cac_status()
-
-	# ══ 📊 USAGE DATA ══════════════════════════════════════════════════
-	vbox.add_child(_make_section(_t("sec_data"), Color(0.5, 0.9, 0.5)))
-
-	vbox.add_child(_make_row(_t("share_title"), _t("share_desc"),
-		"godot_luau/share_data_enabled", false))
-
-	var stats_sub := Label.new()
-	stats_sub.text = "  " + _t("stats_header")
-	stats_sub.add_theme_font_size_override("font_size", _fs(11))
-	stats_sub.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
-	vbox.add_child(stats_sub)
-
-	_stats_label = Label.new()
-	_stats_label.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
-	_stats_label.add_theme_font_size_override("font_size", _fs(11))
-	vbox.add_child(_stats_label)
-	_refresh_stats()
-
-	var stat_btns := HBoxContainer.new()
-	stat_btns.add_theme_constant_override("separation", 8)
-	vbox.add_child(stat_btns)
-	var btn_ref := Button.new()
-	btn_ref.text = _t("btn_refresh")
-	btn_ref.pressed.connect(_refresh_stats)
-	stat_btns.add_child(btn_ref)
-	var btn_open := Button.new()
-	btn_open.text = _t("btn_open")
-	btn_open.pressed.connect(func(): OS.shell_open(OS.get_user_data_dir()))
-	stat_btns.add_child(btn_open)
-	var btn_del := Button.new()
-	btn_del.text = _t("btn_clear")
-	btn_del.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
-	btn_del.pressed.connect(_confirm_clear_data)
-	stat_btns.add_child(btn_del)
-
-	# ══ 🔧 DEBUG ═══════════════════════════════════════════════════════
-	vbox.add_child(_make_section(_t("sec_debug"), Color(1.0, 0.7, 0.3)))
-
-	vbox.add_child(_make_row(_t("debug_title"), _t("debug_desc"),
-		"godot_luau/script_output", true,
-		func(on: bool) -> void:
-			# Espejo para DLLs antiguas que leen debug_mode
-			ProjectSettings.set_setting("godot_luau/debug_mode", on)
-			ProjectSettings.save()
-	))
-
-	vbox.add_child(_make_row(_t("notif_outdated_title"), _t("notif_outdated_desc"),
-		"godot_luau/notify_outdated_version", true))
-
-	# ══ 🔄 UPDATES ═════════════════════════════════════════════════════
-	vbox.add_child(_make_section(_t("sec_updates"), Color(0.3, 0.9, 0.8)))
+	# ══ ZONA 1 · 🔄 ACTUALIZACIONES ══════════════════════════════════════
+	var z_upd := _make_zone(_t("sec_updates"), Color(0.3, 0.9, 0.8))
+	vbox.add_child(z_upd[0]); zones.append(z_upd[0])
+	var upd_vb : VBoxContainer = z_upd[1]
 
 	var ver_row := HBoxContainer.new()
 	ver_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(ver_row)
+	upd_vb.add_child(ver_row)
 
 	_ver_label = Label.new()
 	_ver_label.text = _get_local_version()
-	_ver_label.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
-	_ver_label.add_theme_font_size_override("font_size", _fs(12))
+	_ver_label.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
+	_ver_label.add_theme_font_size_override("font_size", _fs(13))
 	_ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ver_row.add_child(_ver_label)
 
@@ -675,16 +677,9 @@ func _build_panel_contents() -> void:
 	_reinstall_btn.pressed.connect(_start_reinstall)
 	ver_row.add_child(_reinstall_btn)
 
-	# ── Footer ──────────────────────────────────────────────────────────
-	vbox.add_child(HSeparator.new())
-
-	var footer := VBoxContainer.new()
-	footer.add_theme_constant_override("separation", 3)
-	vbox.add_child(footer)
-
 	var gh_row := HBoxContainer.new()
 	gh_row.add_theme_constant_override("separation", 6)
-	footer.add_child(gh_row)
+	upd_vb.add_child(gh_row)
 	var gh_lbl := Label.new()
 	gh_lbl.text = _t("github_label")
 	gh_lbl.add_theme_font_size_override("font_size", _fs(11))
@@ -695,17 +690,180 @@ func _build_panel_contents() -> void:
 	gh_link.add_theme_font_size_override("font_size", _fs(11))
 	gh_link.add_theme_color_override("font_color", Color(0.35, 0.65, 1.0))
 	gh_link.mouse_filter = Control.MOUSE_FILTER_STOP
+	gh_link.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	gh_link.gui_input.connect(func(e: InputEvent) -> void:
 		if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT and e.pressed:
 			OS.shell_open(GITHUB_URL)
 	)
 	gh_row.add_child(gh_link)
 
+	# ══ ZONA 2 · 🤖 IA Y AUTOCOMPLETADO ══════════════════════════════════
+	var z_ac := _make_zone(_t("sec_autocomplete"), Color(0.4, 0.8, 1.0))
+	vbox.add_child(z_ac[0]); zones.append(z_ac[0])
+	var ac_vb : VBoxContainer = z_ac[1]
+
+	ac_vb.add_child(_make_row(_t("ai_title"), _t("ai_desc"),
+		"godot_luau/ai_autocomplete_enabled", false))
+
+	ac_vb.add_child(_make_row(_t("speed_title"), _t("speed_desc"),
+		"godot_luau/instant_autocomplete", true,
+		func(on: bool) -> void:
+			if on: _apply_autocomplete_speed()
+	))
+
+	var cac_hdr := Label.new()
+	cac_hdr.text = _t("cac_header")
+	cac_hdr.add_theme_font_size_override("font_size", _fs(12))
+	cac_hdr.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
+	ac_vb.add_child(cac_hdr)
+
+	ac_vb.add_child(_make_row(_t("cac_toggle_title"), _t("cac_toggle_desc"),
+		"godot_luau/custom_autocomplete_enabled", false))
+
+	var url_lbl := Label.new()
+	url_lbl.text = _t("cac_url_label")
+	url_lbl.add_theme_font_size_override("font_size", _fs(11))
+	url_lbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	ac_vb.add_child(url_lbl)
+
+	var url_row := HBoxContainer.new()
+	url_row.add_theme_constant_override("separation", 6)
+	ac_vb.add_child(url_row)
+	_cac_url_field = LineEdit.new()
+	_cac_url_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cac_url_field.placeholder_text = _t("cac_url_hint")
+	_cac_url_field.text = str(ProjectSettings.get_setting("godot_luau/custom_autocomplete_url", ""))
+	_cac_url_field.text_changed.connect(func(txt: String) -> void:
+		ProjectSettings.set_setting("godot_luau/custom_autocomplete_url", txt)
+		ProjectSettings.save()
+	)
+	url_row.add_child(_cac_url_field)
+	var btn_dl := Button.new()
+	btn_dl.text = _t("cac_btn_download")
+	btn_dl.pressed.connect(_download_custom_ac)
+	url_row.add_child(btn_dl)
+
+	var cac_btns := HBoxContainer.new()
+	cac_btns.add_theme_constant_override("separation", 8)
+	ac_vb.add_child(cac_btns)
+	var btn_import := Button.new()
+	btn_import.text = _t("cac_btn_import")
+	btn_import.pressed.connect(_import_custom_ac_file)
+	cac_btns.add_child(btn_import)
+	var btn_clr_ac := Button.new()
+	btn_clr_ac.text = _t("cac_btn_clear")
+	btn_clr_ac.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6))
+	btn_clr_ac.pressed.connect(_clear_custom_ac)
+	cac_btns.add_child(btn_clr_ac)
+
+	_cac_status = Label.new()
+	_cac_status.add_theme_font_size_override("font_size", _fs(11))
+	ac_vb.add_child(_cac_status)
+	_refresh_cac_status()
+
+	# ══ ZONA 3 · 📊 DATOS DE USO ═════════════════════════════════════════
+	var z_data := _make_zone(_t("sec_data"), Color(0.5, 0.9, 0.5))
+	vbox.add_child(z_data[0]); zones.append(z_data[0])
+	var data_vb : VBoxContainer = z_data[1]
+
+	data_vb.add_child(_make_row(_t("share_title"), _t("share_desc"),
+		"godot_luau/share_data_enabled", false))
+
+	var stats_sub := Label.new()
+	stats_sub.text = _t("stats_header")
+	stats_sub.add_theme_font_size_override("font_size", _fs(11))
+	stats_sub.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	data_vb.add_child(stats_sub)
+
+	_stats_label = Label.new()
+	_stats_label.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	_stats_label.add_theme_font_size_override("font_size", _fs(11))
+	data_vb.add_child(_stats_label)
+	_refresh_stats()
+
+	var stat_btns := HBoxContainer.new()
+	stat_btns.add_theme_constant_override("separation", 8)
+	data_vb.add_child(stat_btns)
+	var btn_ref := Button.new()
+	btn_ref.text = _t("btn_refresh")
+	btn_ref.pressed.connect(_refresh_stats)
+	stat_btns.add_child(btn_ref)
+	var btn_open := Button.new()
+	btn_open.text = _t("btn_open")
+	btn_open.pressed.connect(func(): OS.shell_open(OS.get_user_data_dir()))
+	stat_btns.add_child(btn_open)
+	var btn_del := Button.new()
+	btn_del.text = _t("btn_clear")
+	btn_del.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+	btn_del.pressed.connect(_confirm_clear_data)
+	stat_btns.add_child(btn_del)
+
+	# ══ ZONA 4 · 🔧 DEBUG ════════════════════════════════════════════════
+	var z_dbg := _make_zone(_t("sec_debug"), Color(1.0, 0.7, 0.3))
+	vbox.add_child(z_dbg[0]); zones.append(z_dbg[0])
+	var dbg_vb : VBoxContainer = z_dbg[1]
+
+	dbg_vb.add_child(_make_row(_t("debug_title"), _t("debug_desc"),
+		"godot_luau/script_output", true,
+		func(on: bool) -> void:
+			# Espejo para DLLs antiguas que leen debug_mode
+			ProjectSettings.set_setting("godot_luau/debug_mode", on)
+			ProjectSettings.save()
+	))
+
+	dbg_vb.add_child(_make_row(_t("notif_outdated_title"), _t("notif_outdated_desc"),
+		"godot_luau/notify_outdated_version", true))
+
+	# ══ ZONA 5 · 🎨 APARIENCIA ═══════════════════════════════════════════
+	var z_app := _make_zone(_t("sec_appearance"), Color(0.85, 0.6, 1.0))
+	vbox.add_child(z_app[0]); zones.append(z_app[0])
+	var app_vb : VBoxContainer = z_app[1]
+
+	var size_lbl := Label.new()
+	size_lbl.text = _t("font_size_label")
+	size_lbl.add_theme_font_size_override("font_size", _fs(12))
+	size_lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	app_vb.add_child(size_lbl)
+
+	var size_row := HBoxContainer.new()
+	size_row.add_theme_constant_override("separation", 10)
+	app_vb.add_child(size_row)
+
+	var slider := HSlider.new()
+	slider.min_value = 0
+	slider.max_value = 100
+	slider.step = 1
+	slider.value = _font_pct
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	slider.custom_minimum_size = Vector2(140, 0)
+	size_row.add_child(slider)
+
+	var pct_lbl := Label.new()
+	pct_lbl.text = "%d%%" % _font_pct
+	pct_lbl.custom_minimum_size = Vector2(46, 0)
+	pct_lbl.add_theme_font_size_override("font_size", _fs(12))
+	pct_lbl.add_theme_color_override("font_color", Color(0.85, 0.6, 1.0))
+	size_row.add_child(pct_lbl)
+
+	slider.value_changed.connect(func(v: float) -> void:
+		pct_lbl.text = "%d%%" % int(v)
+	)
+	slider.drag_ended.connect(func(changed: bool) -> void:
+		if not changed: return
+		EditorInterface.get_editor_settings().set_setting("godot_luau/panel_font_scale_pct", int(slider.value))
+		_apply_font_pct(int(slider.value))
+		_rebuild_panel()
+	)
+
+	# ── Footer ──────────────────────────────────────────────────────────
 	var data_lbl := Label.new()
 	data_lbl.text = _t("footer_data")
 	data_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
 	data_lbl.add_theme_font_size_override("font_size", _fs(10))
-	footer.add_child(data_lbl)
+	vbox.add_child(data_lbl)
+
+	_animate_zones(zones)
 
 func _rebuild_panel() -> void:
 	# Reconstruye solo el contenido, sin quitar el panel inferior (evita el parpadeo)
@@ -846,8 +1004,16 @@ func _set_notif(msg: String, color: Color) -> void:
 	_notif_label.text = msg
 	_notif_label.add_theme_color_override("font_color", color)
 	_notif_bar.visible = true
+	_notif_bar.modulate.a = 0.0
+	var tw := _notif_bar.create_tween()
+	tw.tween_property(_notif_bar, "modulate:a", 1.0, 0.2)
 	get_tree().create_timer(4.0).timeout.connect(func():
-		if _notif_bar and is_instance_valid(_notif_bar): _notif_bar.visible = false
+		if not (_notif_bar and is_instance_valid(_notif_bar)): return
+		var tw_out := _notif_bar.create_tween()
+		tw_out.tween_property(_notif_bar, "modulate:a", 0.0, 0.3)
+		tw_out.tween_callback(func():
+			if _notif_bar and is_instance_valid(_notif_bar): _notif_bar.visible = false
+		)
 	)
 
 func _reset_ver_idle() -> void:

@@ -31,16 +31,32 @@ end
 print("[Health] Regeneracion activa: " .. script.Parent.Name)
 
 -- ── Configuración ─────────────────────────────────────────────────
-local REGEN_DELAY = 3.0   -- segundos antes de empezar a regenerar
-local REGEN_RATE  = 1.0   -- HP por segundo
+-- Igual que Roblox: la regeneracion empieza REGEN_DELAY segundos
+-- despues del ULTIMO daño recibido (recibir daño reinicia el contador).
+local REGEN_DELAY = 3.0    -- segundos sin recibir daño para regenerar
+local REGEN_RATE  = 0.01   -- fraccion de MaxHealth por segundo (1% como Roblox)
 
-local timer = 0.0
+local last_health = humanoid.Health
+local since_damage = REGEN_DELAY  -- permite regenerar desde el inicio
+
+humanoid.HealthChanged:Connect(function(newHP)
+    if newHP < last_health then
+        since_damage = 0.0  -- recibio daño → reiniciar el contador
+    end
+    last_health = newHP
+end)
+
+humanoid.Died:Connect(function()
+    print("[Health] " .. script.Parent.Name .. " ha muerto.")
+end)
 
 RunService.Heartbeat:Connect(function(dt)
-    timer = timer + dt
-    if timer < REGEN_DELAY then return end
+    since_damage = since_damage + dt
+    if since_damage < REGEN_DELAY then return end
     if humanoid.Health > 0 and humanoid.Health < humanoid.MaxHealth then
-        humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + REGEN_RATE * dt)
+        local nuevo = humanoid.Health + humanoid.MaxHealth * REGEN_RATE * dt
+        humanoid.Health = math.min(humanoid.MaxHealth, nuevo)
+        last_health = humanoid.Health
     end
 end)
 )LUAU";
@@ -117,20 +133,27 @@ humanoid.JumpPower = ControlModule.JumpPower
 
 print("[PlayerModule] Jugador listo! Speed=" .. ControlModule.WalkSpeed)
 
--- ── Heartbeat: actualizar velocidad en tiempo real ───────────────
+-- ── Eventos del personaje ─────────────────────────────────────────
+humanoid.Died:Connect(function()
+    print("[PlayerModule] El personaje ha muerto.")
+end)
+
+-- ── Heartbeat: sprint suave, estamina y velocidad en tiempo real ──
 RunService.Heartbeat:Connect(function(dt)
     if humanoid.Health <= 0 then return end
 
+    -- El ControlModule calcula la velocidad (sprint con aceleracion suave)
+    ControlModule:Update(dt)
     local speed = ControlModule:GetCurrentSpeed()
-    if humanoid.WalkSpeed ~= speed then
+    if math.abs(humanoid.WalkSpeed - speed) > 0.01 then
         humanoid.WalkSpeed = speed
     end
 
     -- ══ ZONA PERSONALIZABLE ═══════════════════════════════════
     -- Aqui puedes agregar logica por frame del jugador:
     --
-    -- local x, z = ControlModule:GetMoveVector()
-    -- print("Dir:", x, z)
+    -- local x, z = ControlModule:GetMoveVector()      -- direccion teclado
+    -- local st, stMax = ControlModule:GetStamina()    -- estamina actual
     --
     -- if ChatModule:IsOpen() then ... end
     -- ══════════════════════════════════════════════════════════
@@ -181,11 +204,25 @@ function ControlModule:Initialize()
     print("[ControlModule] Plataforma: " .. (p == "" and "Auto(PC)" or p))
 end
 
+-- Llamado cada frame por PlayerModule (sprint suave, estamina, etc.)
+function ControlModule:Update(dt)
+    if active and active.Update then
+        active:Update(dt)
+    end
+end
+
 function ControlModule:GetCurrentSpeed()
     if active and active.GetCurrentSpeed then
         return active:GetCurrentSpeed()
     end
     return self.WalkSpeed
+end
+
+function ControlModule:GetStamina()
+    if active and active.GetStamina then
+        return active:GetStamina()
+    end
+    return 100, 100
 end
 
 function ControlModule:GetMoveVector()
@@ -210,26 +247,72 @@ local PCModule = {}
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │  VELOCIDADES PC                                                │
--- │  WalkSpeed: unidades/seg (16 = velocidad Roblox estandar)     │
--- │  RunSpeed:  velocidad al mantener LeftShift                    │
--- │  JumpPower: fuerza de salto                                   │
+-- │  WalkSpeed:    unidades/seg (16 = velocidad Roblox estandar)  │
+-- │  RunSpeed:     velocidad al mantener LeftShift                 │
+-- │  Acceleration: que tan rapido cambia la velocidad (suavidad)  │
+-- │  JumpPower:    fuerza de salto                                 │
 -- └────────────────────────────────────────────────────────────────┘
-PCModule.WalkSpeed  = 16
-PCModule.RunSpeed   = 24
-PCModule.JumpPower  = 20
-PCModule.AutoRotate = true  -- Girar el personaje hacia la direccion del movimiento
+PCModule.WalkSpeed    = 16
+PCModule.RunSpeed     = 24
+PCModule.Acceleration = 8     -- mayor = cambio mas brusco, menor = mas suave
+PCModule.JumpPower    = 20
+PCModule.AutoRotate   = true  -- Girar el personaje hacia la direccion del movimiento
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │  ESTAMINA (opcional) — desactivada por defecto                 │
+-- │  Si la activas, correr consume estamina y se regenera al      │
+-- │  caminar. Cuando llega a 0 no se puede correr.                │
+-- └────────────────────────────────────────────────────────────────┘
+PCModule.StaminaEnabled = false
+PCModule.StaminaMax     = 100
+PCModule.StaminaDrain   = 20   -- por segundo corriendo
+PCModule.StaminaRegen   = 15   -- por segundo caminando
+
+local current_speed = 16
+local stamina       = 100
 
 function PCModule:Initialize()
+    current_speed = self.WalkSpeed
+    stamina       = self.StaminaMax
     print("[PCModule] Modo PC activo: W/A/S/D para mover, Shift para correr")
 end
 
+-- Llamado cada frame por ControlModule:Update(dt)
+function PCModule:Update(dt)
+    local wants_run = UserInputService:IsKeyDown("LeftShift")
+
+    if self.StaminaEnabled then
+        if wants_run and stamina > 0 then
+            stamina = math.max(0, stamina - self.StaminaDrain * dt)
+        else
+            stamina = math.min(self.StaminaMax, stamina + self.StaminaRegen * dt)
+        end
+        if stamina <= 0 then wants_run = false end
+    end
+
+    -- Aceleracion suave hacia la velocidad objetivo (sin saltos bruscos)
+    local target = wants_run and self.RunSpeed or self.WalkSpeed
+    local t = math.min(1, self.Acceleration * dt)
+    current_speed = current_speed + (target - current_speed) * t
+end
+
 function PCModule:GetCurrentSpeed()
-    -- El C++ maneja el Shift internamente; devolvemos WalkSpeed como base
-    return self.WalkSpeed
+    return current_speed
+end
+
+function PCModule:GetStamina()
+    return stamina, self.StaminaMax
 end
 
 function PCModule:GetMoveVector()
-    return 0, 0  -- El C++ (Humanoid._physics_process) lee el input directamente
+    -- Vector de movimiento leido del teclado (el C++ mueve al personaje;
+    -- esto es util para logica propia: animaciones, efectos, etc.)
+    local x, z = 0, 0
+    if UserInputService:IsKeyDown("A") then x = x - 1 end
+    if UserInputService:IsKeyDown("D") then x = x + 1 end
+    if UserInputService:IsKeyDown("W") then z = z - 1 end
+    if UserInputService:IsKeyDown("S") then z = z + 1 end
+    return x, z
 end
 
 return PCModule
@@ -416,51 +499,112 @@ return CameraModule
 //// GameManager.lua — Script principal del servidor (ServerScriptService)
 static const char* LUAU_TEMPLATE_GAME_MANAGER = R"LUAU(
 -- GameManager.lua — ServerScript
+-- El cerebro del servidor: jugadores, eventos remotos y rondas.
+-- TODO lo que pase aqui es autoridad del servidor (anti-exploit).
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS         = game:GetService("ReplicatedStorage")
 
-print("[Server] GameManager started!")
+print("[Server] GameManager iniciado!")
 
--- Create shared RemoteEvents in ReplicatedStorage
+-- ── Jugadores: entrada y salida ───────────────────────────────────
+Players.PlayerAdded:Connect(function(player)
+    print("[Server] + " .. player.Name .. " entro a la partida")
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    print("[Server] - " .. player.Name .. " salio de la partida")
+end)
+
+-- ── RemoteEvents compartidos en ReplicatedStorage ─────────────────
 local DamageEvent = Instance.new("RemoteEvent")
 DamageEvent.Name   = "DamageEvent"
 DamageEvent.Parent = RS
 
--- Client fires DamageEvent:FireServer(targetName, amount)
+-- REGLA DE ORO multijugador: NUNCA confiar en lo que manda el cliente.
+-- Validar siempre los datos antes de aplicarlos.
+local MAX_DAMAGE = 35
+
 DamageEvent.OnServerEvent:Connect(function(player, targetName, amount)
-    print("[Server]", player.Name, "-> damage", targetName, amount)
+    -- Validacion anti-exploit
+    if type(targetName) ~= "string" or type(amount) ~= "number" then return end
+    amount = math.clamp(amount, 0, MAX_DAMAGE)
+
+    print("[Server]", player.Name, "-> daño a", targetName, "(" .. amount .. ")")
+    -- Aqui aplicarias el daño al objetivo, por ejemplo:
+    -- local target = workspace:FindFirstChild(targetName)
+    -- local hum = target and target:FindFirstChild("Humanoid")
+    -- if hum then hum:TakeDamage(amount) end
 end)
 
--- Round timer example
-local roundTime = 0
+-- ── Sistema de rondas (esqueleto) ─────────────────────────────────
+local ROUND_TIME = 120  -- segundos por ronda
+
 task.spawn(function()
     while true do
-        task.wait(60)
-        roundTime = roundTime + 1
-        print("[Server] Round time:", roundTime, "min")
+        print("[Server] Ronda nueva! (" .. ROUND_TIME .. "s)")
+        task.wait(ROUND_TIME)
+        print("[Server] Fin de la ronda.")
+        task.wait(5)  -- intermedio entre rondas
     end
 end)
 
-print("[Server] Game ready!")
+print("[Server] Juego listo!")
 )LUAU";
 
 // Default LocalScript template
 static const char* LUAU_TEMPLATE_LOCAL_SCRIPT = R"LUAU(
--- GodotLuau - PimpoliDev
-print("Hello World Client")
+-- > GodotLuau — LocalScript (se ejecuta en el CLIENTE)
+-- Ideal para: input, camara, GUI, efectos visuales.
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+print("[Client] LocalScript activo")
+
+-- RunService.Heartbeat:Connect(function(dt)
+--     -- logica por frame del cliente
+-- end)
 )LUAU";
 
 // Default ServerScript template
 static const char* LUAU_TEMPLATE_SERVER_SCRIPT = R"LUAU(
--- GodotLuau - PimpoliDev
-print("Hello World Server")
+-- > GodotLuau — ServerScript (se ejecuta en el SERVIDOR)
+-- Ideal para: reglas del juego, daño, datos, anti-exploit.
+-- Nunca confies en datos que vienen del cliente: validalos siempre.
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+
+print("[Server] ServerScript activo")
+
+-- Players.PlayerAdded:Connect(function(player)
+--     print(player.Name .. " ha entrado")
+-- end)
 )LUAU";
 
 // Default ModuleScript OOP template
 static const char* LUAU_TEMPLATE_MODULE_OOP = R"LUAU(
--- GodotLuau - PimpoliDev
-print("Hello World Module Script")
+-- > GodotLuau — ModuleScript (codigo compartido)
+-- Se carga con: local MiModulo = require(ruta.al.modulo)
+-- El modulo se cachea: todos los require() devuelven la misma tabla.
+
+local MiModulo = {}
+MiModulo.__index = MiModulo
+
+-- Constructor (estilo OOP de Roblox)
+function MiModulo.new()
+    local self = setmetatable({}, MiModulo)
+    return self
+end
+
+function MiModulo:Ejemplo()
+    print("[MiModulo] funcionando!")
+end
+
+return MiModulo
 )LUAU";
 
 #include "luau_api.h"
@@ -697,21 +841,40 @@ public:
         }
     }
 
-    bool _auto_created_script = false;
+    // ID persistente e inmutable del script (ej. "ServerScript_ID_12").
+    // Vincula el nodo con su archivo .lua para poder borrarlo/restaurarlo junto al nodo.
+    String script_id;
 
 protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("set_codigo_luau", "s"), &ScriptNodeBase::set_codigo_luau);
         ClassDB::bind_method(D_METHOD("get_codigo_luau"), &ScriptNodeBase::get_codigo_luau);
         ClassDB::bind_method(D_METHOD("iniciar_corrutina"), &ScriptNodeBase::iniciar_corrutina);
+        ClassDB::bind_method(D_METHOD("set_script_id", "id"), &ScriptNodeBase::set_script_id);
+        ClassDB::bind_method(D_METHOD("get_script_id"), &ScriptNodeBase::get_script_id);
 
         ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "codigo_luau", PROPERTY_HINT_RESOURCE_TYPE, "LuauScript"),
                      "set_codigo_luau", "get_codigo_luau");
+        // Visible en el inspector pero NO editable por el usuario
+        ADD_PROPERTY(PropertyInfo(Variant::STRING, "script_id", PROPERTY_HINT_NONE, "",
+                     PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY),
+                     "set_script_id", "get_script_id");
     }
 
     void _notification(int p_what) {
         if (Engine::get_singleton()->is_editor_hint()) {
             if (p_what == NOTIFICATION_ENTER_TREE) {
+                // ── Asignar ID persistente la primera vez ──────────────────
+                // Contador secuencial por tipo guardado en project.godot
+                if (script_id.is_empty()) {
+                    String cls_id = get_class();
+                    String counter_key = "godot_luau/script_id_counter_" + cls_id.to_lower();
+                    int64_t next_id = (int64_t)ProjectSettings::get_singleton()->get_setting(counter_key, 0) + 1;
+                    ProjectSettings::get_singleton()->set_setting(counter_key, next_id);
+                    ProjectSettings::get_singleton()->save();
+                    script_id = cls_id + "_ID_" + String::num_int64(next_id);
+                }
+
                 bool necesita_archivo = codigo_luau.is_null() ||
                     (!codigo_luau->get_path().is_empty() &&
                      !FileAccess::file_exists(codigo_luau->get_path()));
@@ -724,7 +887,8 @@ protected:
                         dir->make_dir(folder);
                     }
 
-                    String file_path = folder + "/" + cls + "_" + String::num(get_instance_id()) + ".lua";
+                    // El archivo se nombra por el ID → estable entre sesiones
+                    String file_path = folder + "/" + script_id + ".lua";
 
                     Ref<LuauScript> new_script;
                     new_script.instantiate();
@@ -766,26 +930,17 @@ protected:
                         template_code = "-- > GodotLuau\nprint(\"Hello from " + cls + "\")\n";
                     }
 
-                    new_script->_set_source_code(template_code);
+                    // Cabecera con el ID para poder localizar el archivo aunque lo renombren
+                    new_script->_set_source_code("-- @ID: " + script_id + "\n" + template_code);
                     new_script->set_path(file_path);
                     ResourceSaver::get_singleton()->save(new_script, file_path);
                     set_codigo_luau(new_script);
-                    _auto_created_script = true;
                     UtilityFunctions::print("[GodotLuau] Script creado: ", file_path);
                 }
             }
-            else if (p_what == NOTIFICATION_EXIT_TREE) {
-                if (_auto_created_script && is_queued_for_deletion() && codigo_luau.is_valid()) {
-                    String path = codigo_luau->get_path();
-                    if (!path.is_empty() && path.begins_with("res://") && FileAccess::file_exists(path)) {
-                        Ref<DirAccess> dir = DirAccess::open(path.get_base_dir());
-                        if (dir.is_valid()) {
-                            dir->remove(path.get_file());
-                            UtilityFunctions::print("[GodotLuau] Script eliminado: ", path.get_file());
-                        }
-                    }
-                }
-            }
+            // NOTA: el borrado/restauración del archivo al borrar el nodo (con soporte
+            // de Ctrl+Z vía papelera res://.luau_trash/) lo gestiona el addon
+            // GodotLuauUpdater, que puede distinguir un borrado real de un cierre de escena.
         } else {
             if (p_what == NOTIFICATION_EXIT_TREE) {
                 if (L_main) {
@@ -839,6 +994,9 @@ public:
 
     void set_codigo_luau(const Ref<LuauScript> &s) { codigo_luau = s; }
     Ref<LuauScript> get_codigo_luau() const { return codigo_luau; }
+
+    void set_script_id(const String &p_id) { script_id = p_id; }
+    String get_script_id() const { return script_id; }
 
     void iniciar_corrutina() {
         if (Engine::get_singleton()->is_editor_hint()) return;

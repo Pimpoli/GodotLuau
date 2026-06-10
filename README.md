@@ -31,11 +31,18 @@ Al abrir el proyecto en Godot verás la estructura familiar: `Workspace`, `Playe
 
 ## Panel de configuración
 
-En la barra inferior del editor aparece **GodotLuau Config** (EN/ES/PT):
+En la barra inferior del editor aparece **GodotLuau Config** (English/Español/Português), organizado en zonas: Actualizaciones, IA y Autocompletado, Datos, Debug y Apariencia (con control deslizante de tamaño de texto 0–100).
 
 - **Salida de scripts (print/warn):** activada por defecto; desactívala si quieres un Output limpio.
 - **Autocompletado instantáneo** y **autocompletado personalizado** desde JSON local o URL.
 - **Actualizaciones:** comprueba la versión en GitHub, descarga y aplica la nueva DLL (con verificación de integridad SHA-256) y reinicia el editor.
+
+## Características destacadas
+
+- **Autocompletado consciente de la escena** (como Roblox Studio): al escribir `workspace.` o `FindFirstChild("` se sugieren los hijos *reales* del árbol con su clase; las propiedades se resuelven según la clase real del nodo.
+- **Scripts con ID persistente:** cada LocalScript/ServerScript/ModuleScript recibe un `script_id` inmutable (ej. `ServerScript_ID_3`) que nombra su archivo `.lua`. Al **borrar el nodo se "borra" su script** (va a la papelera `res://.luau_trash/`) y con **Ctrl+Z vuelven los dos**. La papelera se purga sola a los 7 días.
+- **Lighting estilo Roblox:** `ClockTime`, `TimeOfDay` ("18:30:00"), `Brightness`, `Ambient`/`OutdoorAmbient`, niebla, `ColorShift_Top/Bottom`, presets (Realistic, Cartoon, Anime, Sunset, Night…), `SetMinutesAfterMidnight()`, y **ciclo día/noche automático** (`DayNightCycle` + `DayLengthMinutes`). `Technology` ajusta la calidad real: Compatibility/Legacy (rendimiento), ShadowMap (equilibrado), Future (SSAO+SSIL+Glow), Voxel (GI global).
+- **Sistemas de jugador en Luau editables:** sprint con aceleración suave, estamina opcional, módulos por plataforma (PC/Móvil/Consola), regeneración de vida fiel a Roblox (se reinicia al recibir daño) y GameManager con validación anti-exploit.
 
 ## Compilar desde el código fuente
 

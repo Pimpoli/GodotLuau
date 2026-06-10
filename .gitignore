@@ -3,10 +3,15 @@
 
 # Archivos de compilación de SCons y C++
 *.obj
+*.o
+*.a
 *.lib
 *.exp
 *.pdb
 .sconsign.dblite
+
+# Papelera de scripts de GodotLuau (restauración con Ctrl+Z)
+.luau_trash/
 
 # Ignorar las librerías compiladas (opcional, pero recomendado para el source code)
 bin/*.dll

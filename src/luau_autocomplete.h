@@ -12,6 +12,10 @@
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/resource.hpp>
 #include <unordered_set>
 #include <unordered_map>
 #include <string>
@@ -30,7 +34,7 @@ struct LuauAPIItem {
     int kind;
 };
 
-struct LocalVar { String name; String inferred_type; };
+struct LocalVar { String name; String inferred_type; String value_expr; };
 
 struct TempSuggestion {
     int priority_layer, usage_count, fuzzy_score;
@@ -786,7 +790,116 @@ private:
 
 public:
 
-    static Dictionary get_suggestions(const String& p_code) {
+    // ════════════════════════════════════════════════════════════════
+    //  Conciencia del árbol de escena (estilo Roblox Studio)
+    //  Resuelve expresiones como game.Workspace.Casa o script.Parent
+    //  a nodos REALES de la escena editada para sugerir hijos y clases.
+    // ════════════════════════════════════════════════════════════════
+
+    static Node* get_scene_root() {
+        if (!Engine::get_singleton() || !Engine::get_singleton()->is_editor_hint()) return nullptr;
+        EditorInterface* ei = EditorInterface::get_singleton();
+        return ei ? ei->get_edited_scene_root() : nullptr;
+    }
+
+    // Encuentra el nodo de script cuya resource codigo_luau apunta a p_path
+    static Node* find_script_node_by_path(Node* n, const String& p_path) {
+        if (!n || p_path.is_empty()) return nullptr;
+        Variant v = n->get("codigo_luau");
+        Ref<Resource> r = v;
+        if (r.is_valid() && r->get_path() == p_path) return n;
+        for (int i = 0; i < n->get_child_count(); i++)
+            if (Node* found = find_script_node_by_path(n->get_child(i), p_path)) return found;
+        return nullptr;
+    }
+
+    // Mapea clases C++ de GodotLuau a sus nombres Roblox para la base de tipos
+    static String godot_class_to_roblox(const String& c) {
+        static const char* m[][2] = {
+            {"RobloxPart","BasePart"},{"RobloxWorkspace","Workspace"},{"RobloxWorkspace2D","Workspace"},
+            {"RobloxPlayer","Player"},{"RobloxPlayer2D","Player"},
+            {"Humanoid","Humanoid"},{"Humanoid2D","Humanoid"},
+            {"RobloxDataModel","DataModel"},{"RobloxGame3D","DataModel"},{"RobloxGame2D","DataModel"},
+            {"RemoteEventNode","RemoteEvent"},{"RemoteFunctionNode","RemoteFunction"},
+            {"BindableEventNode","BindableEvent"},
+            {"RobloxSound","Sound"},{"RobloxSoundGroup","SoundGroup"},{"RobloxTween","Tween"},
+            {"ScreenGui","ScreenGui"},{"RobloxFrame","Frame"},{"RobloxTextLabel","TextLabel"},
+            {"RobloxTextButton","TextButton"},{"RobloxTextBox","TextBox"},
+            {"RobloxImageLabel","ImageLabel"},{"RobloxScrollingFrame","ScrollingFrame"},
+            {"LocalScript","LocalScript"},{"ServerScript","Script"},{"ModuleScript","ModuleScript"},
+            {"RobloxTool","Tool"},{"RobloxChat","TextChatService"},
+            {nullptr,nullptr}};
+        for (int i = 0; m[i][0]; i++) if (c == String(m[i][0])) return String(m[i][1]);
+        return c;  // servicios y demás conservan su nombre (Players, Lighting...)
+    }
+
+    // Resuelve una cadena directa (game.X.Y, workspace.X, script.Parent...)
+    // Normaliza GetService("X") / WaitForChild("X") / FindFirstChild("X") a accesos por punto.
+    static Node* resolve_chain(const String& expr_in, Node* root, Node* script_node) {
+        if (expr_in.is_empty()) return nullptr;
+        String expr = expr_in.strip_edges();
+        expr = expr.replace(":GetService(\"", ".").replace(":WaitForChild(\"", ".")
+                   .replace(":FindFirstChild(\"", ".").replace("\")", "");
+        expr = expr.replace(":GetService('", ".").replace(":WaitForChild('", ".")
+                   .replace(":FindFirstChild('", ".").replace("')", "");
+        if (expr.find("(") != -1 || expr.find(")") != -1) return nullptr;
+        PackedStringArray parts = expr.split(".");
+        if (parts.size() == 0) return nullptr;
+        String head = parts[0].strip_edges();
+        Node* cur = nullptr;
+        if      (head == "game")                          cur = root;
+        else if (head == "workspace" || head == "Workspace") cur = root ? root->get_node_or_null("Workspace") : nullptr;
+        else if (head == "script")                        cur = script_node;
+        else return nullptr;
+        for (int i = 1; i < parts.size() && cur; i++) {
+            String p = parts[i].strip_edges();
+            if (p.is_empty()) continue;
+            if (p == "Parent") { cur = cur->get_parent(); continue; }
+            if (p == "Workspace" && cur == root) { cur = root->get_node_or_null("Workspace"); continue; }
+            cur = cur->get_node_or_null(NodePath(p));
+        }
+        return cur;
+    }
+
+    // Igual que resolve_chain pero siguiendo variables locales:
+    //   local ws = game.Workspace  →  ws.Casa resuelve al nodo real
+    static Node* resolve_expr_to_node(const String& expr, Node* root, Node* script_node,
+                                      const std::vector<LocalVar>& locals, int depth) {
+        if (depth > 3 || expr.is_empty()) return nullptr;
+        if (Node* direct = resolve_chain(expr, root, script_node)) return direct;
+        PackedStringArray parts = expr.split(".");
+        if (parts.size() == 0) return nullptr;
+        String head = parts[0].strip_edges();
+        for (const auto& lv : locals) {
+            if (lv.name != head || lv.value_expr.is_empty()) continue;
+            String rest;
+            for (int i = 1; i < parts.size(); i++) { rest += "."; rest += parts[i]; }
+            return resolve_expr_to_node(lv.value_expr + rest, root, script_node, locals, depth + 1);
+        }
+        return nullptr;
+    }
+
+    // Extrae el receptor de la última llamada :FindFirstChild( / :WaitForChild( antes del cursor
+    static String extract_receiver_expr(const String& code_to_cursor) {
+        static const char* fns[] = {":FindFirstChild", ":WaitForChild", ":FindFirstChildOfClass", nullptr};
+        int call_pos = -1;
+        for (int i = 0; fns[i]; i++) {
+            int p = code_to_cursor.rfind(fns[i]);
+            if (p > call_pos) call_pos = p;
+        }
+        if (call_pos <= 0) return String();
+        int s = call_pos - 1;
+        while (s >= 0) {
+            char32_t ch = code_to_cursor[s];
+            bool ok = (ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||
+                      ch=='_'||ch=='.'||ch==':'||ch=='"'||ch=='\''||ch=='('||ch==')';
+            if (!ok) break;
+            s--;
+        }
+        return code_to_cursor.substr(s + 1, call_pos - (s + 1)).strip_edges();
+    }
+
+    static Dictionary get_suggestions(const String& p_code, const String& p_path = String(), Object* p_owner = nullptr) {
         Dictionary res;
         Array out;
 
@@ -874,7 +987,7 @@ public:
             String var_val=(eq!=-1)?line.substr(eq+1).strip_edges():"";
             std::string vs=var_decl.utf8().get_data();
             if(known_vars.count(vs)||is_lua_keyword(var_decl)||var_decl.is_empty()) continue;
-            LocalVar lv; lv.name=var_decl; lv.inferred_type="any";
+            LocalVar lv; lv.name=var_decl; lv.inferred_type="any"; lv.value_expr=var_val;
             // Instance.new("ClassName") → map to Roblox type
             if(var_val.find("Instance.new(")!=-1) {
                 static const char* inst_map[][2]={
@@ -935,6 +1048,11 @@ public:
             locals.push_back(lv); known_vars.insert(vs);
         }
 
+        // ── Acceso al árbol de escena real (estilo Roblox Studio) ──────────
+        Node* scene_root  = get_scene_root();
+        Node* script_node = scene_root ? find_script_node_by_path(scene_root, p_path) : nullptr;
+        if (!script_node && p_owner) script_node = Object::cast_to<Node>(p_owner);
+
         String resolved_type=target_prefix;
         for(const auto& v:locals) if(v.name==target_prefix) { resolved_type=v.inferred_type; break; }
         static const char* direct_maps[][2]={
@@ -982,11 +1100,34 @@ public:
                     int sc=fuzzy_match_score(filter_str,filter_lower,svc); if(sc<=0) continue;
                     int layer=svc.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
                     std::string k=svc.utf8().get_data(); int u=usage_mem.count(k)?usage_mem.at(k):0;
-                    sorter.push_back({layer,u,sc,svc,svc,String("[Service] ") + svc,"",5,Color(0.9f,0.7f,0.3f,1.0f)});
+                    // Servicios que existen de verdad en la escena → arriba del todo
+                    bool in_scene = scene_root && scene_root->get_node_or_null(NodePath(svc));
+                    if (in_scene) { layer = 0; u += 50; }
+                    String desc = in_scene ? (String("[Service] ") + svc + " — present in this scene.")
+                                           : (String("[Service] ") + svc);
+                    sorter.push_back({layer,u,sc,svc,svc,desc,"",5,Color(0.9f,0.7f,0.3f,1.0f)});
                 }
             } else if(str_ctx==STR_CTX_FIND_CHILD||str_ctx==STR_CTX_WAIT_CHILD) {
+                // 1º: hijos REALES del receptor en el árbol de escena (estilo Roblox Studio)
+                std::unordered_set<std::string> real_children;
+                Node* recv = resolve_expr_to_node(extract_receiver_expr(code_to_cursor),
+                                                  scene_root, script_node, locals, 0);
+                if (recv) {
+                    for (int ci = 0; ci < recv->get_child_count(); ci++) {
+                        Node* ch = recv->get_child(ci);
+                        String cn = ch->get_name();
+                        int sc = fuzzy_match_score(filter_str, filter_lower, cn); if (sc <= 0) continue;
+                        real_children.insert(std::string(cn.utf8().get_data()));
+                        String rcls = godot_class_to_roblox(ch->get_class());
+                        sorter.push_back({0, 80, sc, cn + String("  ·") + rcls, cn,
+                            String("[Instance] ") + rcls + " — real child in the scene tree.",
+                            "", 5, Color(0.45f, 0.95f, 0.75f, 1.0f)});
+                    }
+                }
+                // 2º: nombres mencionados en el propio script (fallback)
                 auto names=extract_known_names(p_code);
                 for(const auto& n:names) {
+                    if (real_children.count(n)) continue;
                     String sn=String(n.c_str());
                     int sc=fuzzy_match_score(filter_str,filter_lower,sn); if(sc<=0) continue;
                     int layer=sn.to_lower().begins_with(String(filter_str.c_str()).to_lower())?1:2;
@@ -1025,6 +1166,26 @@ public:
         }
 
         if(!target_prefix.is_empty()) {
+            // ── Árbol de escena real: hijos del nodo y su clase verdadera ──
+            // Hace que `workspace.MiCasa.` sugiera los hijos reales y las
+            // propiedades de la clase real del nodo, como en Roblox Studio.
+            Node* prefix_node = resolve_expr_to_node(target_prefix, scene_root, script_node, locals, 0);
+            if (prefix_node) {
+                if (resolved_type == target_prefix)
+                    resolved_type = godot_class_to_roblox(prefix_node->get_class());
+                if (!is_after_colon) {
+                    for (int ci = 0; ci < prefix_node->get_child_count(); ci++) {
+                        Node* ch = prefix_node->get_child(ci);
+                        String cn = ch->get_name();
+                        int sc = fuzzy_match_score(filter_str, filter_lower, cn); if (sc <= 0) continue;
+                        String rcls = godot_class_to_roblox(ch->get_class());
+                        sorter.push_back({0, 50, sc, cn + String("  ·") + rcls, cn,
+                            String("[Instance] ") + rcls + " — real child in the scene tree.",
+                            "", 5, Color(0.45f, 0.95f, 0.75f, 1.0f)});
+                    }
+                }
+            }
+
             String cls=resolved_type.is_empty()?target_prefix:resolved_type;
             add_dynamic_suggestions(cls,filter_str,filter_lower,sorter,usage_mem);
 

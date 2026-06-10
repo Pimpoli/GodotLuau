@@ -14,6 +14,7 @@
 #include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/core/object.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -369,8 +370,15 @@ private:
     Color color_shift_bottom   = Color(0, 0, 0);
     // Technology: 0=Compatibility 1=Legacy 2=Future 3=ShadowMap 4=Voxel
     int   technology           = 3; // ShadowMap default (same as modern Roblox Studio / igual que Roblox Studio moderno)
+    // ── Día/noche automático ─────────────────────────────────────
+    bool  day_night_cycle      = false;
+    float day_length_minutes   = 10.0f;  // minutos reales por día completo (24h)
     // ── Preset ───────────────────────────────────────────────────
     int lighting_preset        = PRESET_DEFAULT;
+
+    // Cache de nodos (evita recorrer el árbol entero en cada cambio)
+    mutable uint64_t cached_we_id  = 0;
+    mutable uint64_t cached_sun_id = 0;
 
     // ── Tree helpers ─────────────────────────────────────────────
     WorldEnvironment* _find_we_r(Node* n) const {
@@ -384,8 +392,15 @@ private:
         return nullptr;
     }
     WorldEnvironment* _find_world_env() const {
+        if (cached_we_id) {
+            WorldEnvironment* we = Object::cast_to<WorldEnvironment>(ObjectDB::get_instance(cached_we_id));
+            if (we && we->is_inside_tree()) return we;
+            cached_we_id = 0;
+        }
         if (!is_inside_tree()) return nullptr;
-        return _find_we_r((Node*)get_tree()->get_root()); // <-- AÑADIDO (Node*)
+        WorldEnvironment* we = _find_we_r((Node*)get_tree()->get_root());
+        if (we) cached_we_id = we->get_instance_id();
+        return we;
     }
     Ref<Environment> _get_env() const {
         WorldEnvironment* we = _find_world_env();
@@ -403,8 +418,15 @@ private:
         return nullptr;
     }
     DirectionalLight3D* _find_sun() const {
+        if (cached_sun_id) {
+            DirectionalLight3D* d = Object::cast_to<DirectionalLight3D>(ObjectDB::get_instance(cached_sun_id));
+            if (d && d->is_inside_tree()) return d;
+            cached_sun_id = 0;
+        }
         if (!is_inside_tree()) return nullptr;
-        return _find_sun_r((Node*)get_tree()->get_root()); // <-- AÑADIDO (Node*)
+        DirectionalLight3D* d = _find_sun_r((Node*)get_tree()->get_root());
+        if (d) cached_sun_id = d->get_instance_id();
+        return d;
     }
 
     // Returns sun elevation in degrees. max_elev_out receives the latitude cap.
@@ -441,6 +463,11 @@ private:
         // Color: white at noon, deep orange-red at horizon
         float horizon_f = 1.0f - Math::clamp(elev_norm * 3.0f + 0.5f, 0.0f, 1.0f);
         Color sun_col = Color(1.0f, 1.0f, 1.0f).lerp(Color(1.0f, 0.38f, 0.04f), horizon_f * 0.92f);
+        // ColorShift_Top tiñe la luz directa del sol (como en Roblox)
+        sun_col = Color(
+            Math::clamp(sun_col.r + color_shift_top.r * 0.6f, 0.0f, 1.0f),
+            Math::clamp(sun_col.g + color_shift_top.g * 0.6f, 0.0f, 1.0f),
+            Math::clamp(sun_col.b + color_shift_top.b * 0.6f, 0.0f, 1.0f));
         sun->set_color(sun_col);
     }
 
@@ -457,9 +484,16 @@ private:
         float t_night  = Math::clamp(-elev_norm * 3.0f, 0.0f, 1.0f);
 
         // Dynamic ambient: neutral day → warm sunset → cool night
+        // De día domina OutdoorAmbient (luz del cielo); Ambient es la base interior
+        Color base_amb   = ambient.lerp(outdoor_ambient, 0.6f * t_day);
         Color night_amb  = Color(0.04f, 0.05f, 0.10f);
         Color sunset_amb = Color(0.52f, 0.26f, 0.08f);
-        Color dyn_amb    = ambient.lerp(sunset_amb, t_sunset * 0.65f).lerp(night_amb, t_night);
+        Color dyn_amb    = base_amb.lerp(sunset_amb, t_sunset * 0.65f).lerp(night_amb, t_night);
+        // ColorShift_Bottom tiñe la luz ambiental que viene "del suelo" (como en Roblox)
+        dyn_amb = Color(
+            Math::clamp(dyn_amb.r + color_shift_bottom.r * 0.4f, 0.0f, 1.0f),
+            Math::clamp(dyn_amb.g + color_shift_bottom.g * 0.4f, 0.0f, 1.0f),
+            Math::clamp(dyn_amb.b + color_shift_bottom.b * 0.4f, 0.0f, 1.0f));
 
         env->set_ambient_light_color(dyn_amb);
         env->set_ambient_light_energy(brightness * (0.15f + t_day * 0.35f));
@@ -484,6 +518,41 @@ private:
             env->set_fog_mode(Environment::FOG_MODE_EXPONENTIAL);
             env->set_fog_density(fog_density * 0.08f);
             env->set_fog_light_color(dyn_fog);
+        }
+
+        // ── Technology → calidad visual real (antes era decorativo) ──
+        // Compatibility/Legacy = máximo rendimiento, ShadowMap = equilibrado,
+        // Future = máxima calidad, Voxel = iluminación global (SDFGI)
+        switch (technology) {
+            case 0: case 1: // Compatibility / Legacy
+                env->set_ssao_enabled(false);
+                env->set_ssil_enabled(false);
+                env->set_glow_enabled(false);
+                env->set_sdfgi_enabled(false);
+                break;
+            case 2:         // Future
+                env->set_ssao_enabled(true);
+                env->set_ssao_intensity(1.5f);
+                env->set_ssil_enabled(true);
+                env->set_glow_enabled(true);
+                env->set_glow_intensity(0.35f);
+                env->set_glow_bloom(0.08f);
+                env->set_sdfgi_enabled(false);
+                break;
+            case 4:         // Voxel
+                env->set_ssao_enabled(true);
+                env->set_ssil_enabled(false);
+                env->set_glow_enabled(true);
+                env->set_glow_intensity(0.25f);
+                env->set_sdfgi_enabled(true);
+                break;
+            default:        // ShadowMap (equilibrado, por defecto)
+                env->set_ssao_enabled(true);
+                env->set_ssao_intensity(1.0f);
+                env->set_ssil_enabled(false);
+                env->set_glow_enabled(false);
+                env->set_sdfgi_enabled(false);
+                break;
         }
     }
 
@@ -620,11 +689,41 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::INT,"Technology",PROPERTY_HINT_ENUM,
             "Compatibility:0,Legacy:1,Future:2,ShadowMap:3,Voxel:4"),
             "set_technology","get_technology");
+
+        // TimeOfDay estilo Roblox ("14:30:00") — espejo editable de ClockTime
+        ClassDB::bind_method(D_METHOD("set_time_of_day","t"), &Lighting::set_time_of_day);
+        ClassDB::bind_method(D_METHOD("get_time_of_day"),     &Lighting::get_time_of_day);
+        ADD_PROPERTY(PropertyInfo(Variant::STRING,"TimeOfDay",PROPERTY_HINT_NONE,"",
+            PROPERTY_USAGE_EDITOR), "set_time_of_day","get_time_of_day");
+
+        ClassDB::bind_method(D_METHOD("GetMinutesAfterMidnight"), &Lighting::get_minutes_after_midnight);
+        ClassDB::bind_method(D_METHOD("SetMinutesAfterMidnight","m"), &Lighting::set_minutes_after_midnight);
+
+        // Ciclo día/noche automático
+        ClassDB::bind_method(D_METHOD("set_day_night_cycle","v"), &Lighting::set_day_night_cycle);
+        ClassDB::bind_method(D_METHOD("get_day_night_cycle"),     &Lighting::get_day_night_cycle);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"DayNightCycle"),"set_day_night_cycle","get_day_night_cycle");
+
+        ClassDB::bind_method(D_METHOD("set_day_length_minutes","v"), &Lighting::set_day_length_minutes);
+        ClassDB::bind_method(D_METHOD("get_day_length_minutes"),     &Lighting::get_day_length_minutes);
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"DayLengthMinutes",PROPERTY_HINT_RANGE,"0.5,120,0.5"),
+            "set_day_length_minutes","get_day_length_minutes");
     }
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
             if (!_enforce_game_parent(this)) return;
+            _apply_all();
+            if (!Engine::get_singleton()->is_editor_hint() && day_night_cycle)
+                set_process(true);
+        } else if (p_what == NOTIFICATION_PROCESS) {
+            if (!day_night_cycle || Engine::get_singleton()->is_editor_hint()) {
+                set_process(false);
+                return;
+            }
+            // Avanza el reloj: 24h del juego en day_length_minutes minutos reales
+            double dt = get_process_delta_time();
+            clock_time = Math::fmod(clock_time + (float)(dt * 24.0 / (day_length_minutes * 60.0)), 24.0f);
             _apply_all();
         }
     }
@@ -665,12 +764,40 @@ public:
     float get_fog_density() const       { return fog_density; }
     void set_fog_color(Color c)          { fog_color = c;                             if(is_inside_tree()) _apply_env(); }
     Color get_fog_color() const          { return fog_color; }
-    void  set_color_shift_top(Color c)   { color_shift_top = c; }
+    void  set_color_shift_top(Color c)   { color_shift_top = c;    if(is_inside_tree()) _apply_sun(); }
     Color get_color_shift_top() const    { return color_shift_top; }
-    void  set_color_shift_bottom(Color c){ color_shift_bottom = c; }
+    void  set_color_shift_bottom(Color c){ color_shift_bottom = c; if(is_inside_tree()) _apply_env(); }
     Color get_color_shift_bottom() const { return color_shift_bottom; }
-    void  set_technology(int t)          { technology = Math::clamp(t, 0, 4); }
+    void  set_technology(int t)          { technology = Math::clamp(t, 0, 4); if(is_inside_tree()) _apply_env(); }
     int   get_technology() const         { return technology; }
+
+    // ── TimeOfDay estilo Roblox ("HH:MM:SS") ─────────────────────
+    void set_time_of_day(const String& s) {
+        PackedStringArray p = s.split(":");
+        float h  = p.size() > 0 ? (float)p[0].to_int() : 0.0f;
+        float m  = p.size() > 1 ? (float)p[1].to_int() : 0.0f;
+        float sc = p.size() > 2 ? (float)p[2].to_int() : 0.0f;
+        set_clock_time(h + m / 60.0f + sc / 3600.0f);
+    }
+    String get_time_of_day() const {
+        int total = (int)Math::round(clock_time * 3600.0f);
+        int h = (total / 3600) % 24, m = (total % 3600) / 60, s = total % 60;
+        return String::num_int64(h).pad_zeros(2) + ":" +
+               String::num_int64(m).pad_zeros(2) + ":" +
+               String::num_int64(s).pad_zeros(2);
+    }
+    void  set_minutes_after_midnight(float m) { set_clock_time(Math::fmod(Math::abs(m), 1440.0f) / 60.0f); }
+    float get_minutes_after_midnight() const  { return clock_time * 60.0f; }
+
+    // ── Ciclo día/noche automático ───────────────────────────────
+    void set_day_night_cycle(bool v) {
+        day_night_cycle = v;
+        if (is_inside_tree() && !Engine::get_singleton()->is_editor_hint())
+            set_process(v);
+    }
+    bool get_day_night_cycle() const { return day_night_cycle; }
+    void set_day_length_minutes(float v)  { day_length_minutes = Math::clamp(v, 0.5f, 120.0f); }
+    float get_day_length_minutes() const  { return day_length_minutes; }
 };
 
 // ════════════════════════════════════════════════════════════════════

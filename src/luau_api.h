@@ -713,6 +713,25 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "FogColor")                 == 0) { Color c = light_svc->get_fog_color();      push_color3(L, c.r, c.g, c.b); return 1; }
         if (strcmp(key, "ColorShift_Top")           == 0) { Color c = light_svc->get_color_shift_top();   push_color3(L, c.r, c.g, c.b); return 1; }
         if (strcmp(key, "ColorShift_Bottom")        == 0) { Color c = light_svc->get_color_shift_bottom();push_color3(L, c.r, c.g, c.b); return 1; }
+        if (strcmp(key, "TimeOfDay")                == 0) { lua_pushstring(L, light_svc->get_time_of_day().utf8().get_data()); return 1; }
+        if (strcmp(key, "DayNightCycle")            == 0) { lua_pushboolean(L, light_svc->get_day_night_cycle());     return 1; }
+        if (strcmp(key, "DayLengthMinutes")         == 0) { lua_pushnumber(L,  light_svc->get_day_length_minutes()); return 1; }
+        if (strcmp(key, "GetMinutesAfterMidnight")  == 0) {
+            lua_pushlightuserdata(L, (void*)light_svc);
+            lua_pushcclosure(L, [](lua_State* L) -> int {
+                Lighting* lt = (Lighting*)lua_touserdata(L, lua_upvalueindex(1));
+                lua_pushnumber(L, lt ? lt->get_minutes_after_midnight() : 0.0);
+                return 1;
+            }, "GetMinutesAfterMidnight", 1); return 1;
+        }
+        if (strcmp(key, "SetMinutesAfterMidnight")  == 0) {
+            lua_pushlightuserdata(L, (void*)light_svc);
+            lua_pushcclosure(L, [](lua_State* L) -> int {
+                Lighting* lt = (Lighting*)lua_touserdata(L, lua_upvalueindex(1));
+                if (lt) lt->set_minutes_after_midnight((float)luaL_checknumber(L, 2));
+                return 0;
+            }, "SetMinutesAfterMidnight", 1); return 1;
+        }
     }
 
     // ── Node3D ────────────────────────────────────────────────────
@@ -2552,6 +2571,9 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "FogColor")                 == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_fog_color(Color(c->r,c->g,c->b)); return 0; }
         if (strcmp(key, "ColorShift_Top")           == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_top(Color(c->r,c->g,c->b)); return 0; }
         if (strcmp(key, "ColorShift_Bottom")        == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_bottom(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "TimeOfDay")                == 0) { light->set_time_of_day(String(luaL_checkstring(L,3)));         return 0; }
+        if (strcmp(key, "DayNightCycle")            == 0) { light->set_day_night_cycle(lua_toboolean(L,3) != 0);           return 0; }
+        if (strcmp(key, "DayLengthMinutes")         == 0) { light->set_day_length_minutes((float)luaL_checknumber(L,3));   return 0; }
     }
 
     // ── BodyMovers — newindex ──────────────────────────────────────
