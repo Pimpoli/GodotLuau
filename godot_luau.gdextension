@@ -7,7 +7,7 @@ windows.debug.x86_64 = "res://bin/godot_luau.windows.template_debug.x86_64.dll"
 windows.release.x86_64 = "res://bin/godot_luau.windows.template_release.x86_64.dll"
 
 [icons]
-RobloxDataModel = "res://icons/RobloxDataModel.svg"
+RobloxTemplate = "res://icons/RobloxDataModel.svg"
 RobloxGame3D = "res://icons/RobloxGame3D.svg"
 RobloxGame2D = "res://icons/RobloxGame2D.svg"
 Folder = "res://icons/Folder.svg"

@@ -53,7 +53,7 @@ using namespace godot;
 
 static inline bool _is_valid_game_parent(Node* p) {
     if (!p) return false;
-    return p->is_class("RobloxDataModel") ||
+    return p->is_class("RobloxTemplate") ||
            p->is_class("RobloxGame3D")    ||
            p->is_class("RobloxGame2D");
 }
@@ -71,7 +71,7 @@ static inline bool _enforce_game_parent(Node* self) {
     UtilityFunctions::push_error(
         String("[GodotLuau] '") + self->get_class() +
         "' is a Roblox service and can only exist as a direct child of "
-        "RobloxGame3D, RobloxGame2D or RobloxDataModel. "
+        "RobloxGame3D, RobloxGame2D or RobloxTemplate. "
         "Use the RobloxGame3D/2D root node to auto-generate the structure.");
     self->queue_free();
     return false;

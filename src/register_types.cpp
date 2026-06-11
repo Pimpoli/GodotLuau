@@ -140,9 +140,8 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<ColorCorrectionEffect>();
         ClassDB::register_class<DepthOfFieldEffect>();
 
-        // DataModel (legacy root node)
-        //// DataModel (nodo raíz heredado)
-        ClassDB::register_class<RobloxDataModel>();
+        // RobloxTemplate (nodo raíz generador de la estructura Roblox)
+        ClassDB::register_class<RobloxTemplate>();
 
         // New root nodes: choose 3D or 2D when creating the scene
         //// Nuevos nodos raíz: selecciona 3D o 2D al crear la escena

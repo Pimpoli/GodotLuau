@@ -434,6 +434,12 @@ func _purge_old_trash() -> void:
 
 func _detect_editor_lang() -> void:
 	var es := EditorInterface.get_editor_settings()
+	# Preferir el idioma elegido por el usuario en el panel (persistente)
+	if es.has_setting("godot_luau/lang"):
+		var saved := str(es.get_setting("godot_luau/lang"))
+		if saved in ["en", "es", "pt"]:
+			_lang = saved
+			return
 	var locale : String = "en"
 	if es.has_setting("interface/editor/editor_language"):
 		locale = str(es.get_setting("interface/editor/editor_language"))
@@ -720,6 +726,8 @@ func _build_panel_contents() -> void:
 			0: _lang = "en"
 			1: _lang = "es"
 			2: _lang = "pt"
+		# Persistir la elección: la extensión recordará el idioma siempre
+		EditorInterface.get_editor_settings().set_setting("godot_luau/lang", _lang)
 		_rebuild_panel()
 	)
 	hdr_row.add_child(lang_opt)

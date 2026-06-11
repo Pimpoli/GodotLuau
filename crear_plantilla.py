@@ -25,14 +25,14 @@ def uid_godot():
 
 # ─────────────────────────────────────────────────────────────────────
 #  CONTENIDO DE LA ESCENA PRINCIPAL
-#  Un solo nodo RobloxDataModel — al abrirlo en Godot crea todos
+#  Un solo nodo RobloxTemplate — al abrirlo en Godot crea todos
 #  los servicios automáticamente.
 # ─────────────────────────────────────────────────────────────────────
 def escena_principal() -> str:
     return textwrap.dedent(f"""\
         [gd_scene format=3 uid="{uid_godot()}"]
 
-        [node name="RobloxGame" type="RobloxDataModel"]
+        [node name="RobloxGame" type="RobloxTemplate"]
         WorkspaceMode = 0
     """)
 

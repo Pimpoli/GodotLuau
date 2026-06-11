@@ -1,11 +1,15 @@
 #ifndef ROBLOX_DATAMODEL_H
 #define ROBLOX_DATAMODEL_H
 
-// RobloxDataModel — legacy root node; prefer RobloxGame3D/2D for new scenes.
-// Provides a property-driven "Generate environment" button in the editor.
+// RobloxTemplate — root node that generates the full Roblox structure.
+// Provides a property-driven generator in the editor.
+// NOTE: node/class names ALWAYS stay in English (systems reference them);
+// only UI texts are localized.
 ////
-// RobloxDataModel — nodo raíz heredado; usa RobloxGame3D/2D para nuevas escenas.
-// Expone un botón de "Generar entorno" mediante una propiedad en el editor.
+// RobloxTemplate — nodo raíz que genera la estructura Roblox completa.
+// Expone un generador mediante una propiedad en el editor.
+// NOTA: los nombres de nodos/clases SIEMPRE quedan en inglés (los sistemas
+// los referencian); solo se traducen los textos de la interfaz.
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -16,19 +20,24 @@
 
 using namespace godot;
 
-class RobloxDataModel : public Node {
-    GDCLASS(RobloxDataModel, Node);
+class RobloxTemplate : public Node {
+    GDCLASS(RobloxTemplate, Node);
 
 private:
     int entorno_setup = 0;
 
 protected:
     static void _bind_methods() {
-        ClassDB::bind_method(D_METHOD("set_entorno_setup", "val"), &RobloxDataModel::set_entorno_setup);
-        ClassDB::bind_method(D_METHOD("get_entorno_setup"), &RobloxDataModel::get_entorno_setup);
-        ClassDB::bind_method(D_METHOD("generar_entorno", "tipo"), &RobloxDataModel::generar_entorno);
+        ClassDB::bind_method(D_METHOD("set_entorno_setup", "val"), &RobloxTemplate::set_entorno_setup);
+        ClassDB::bind_method(D_METHOD("get_entorno_setup"), &RobloxTemplate::get_entorno_setup);
+        ClassDB::bind_method(D_METHOD("generar_entorno", "tipo"), &RobloxTemplate::generar_entorno);
 
-        ADD_PROPERTY(PropertyInfo(Variant::INT, "Modo_Roblox_Studio", PROPERTY_HINT_ENUM, "Seleccionar...,Generar Estructura 3D,Generar Estructura 2D"), "set_entorno_setup", "get_entorno_setup");
+        // El "Seleccionar..." se traduce según el idioma del sistema;
+        // los nombres de las plantillas quedan en inglés a propósito.
+        String hint = gl_tr3("Select...", "Seleccionar...", "Selecionar...") +
+                      String(",RobloxTemplate Game 3D,RobloxTemplate Game 2D");
+        ADD_PROPERTY(PropertyInfo(Variant::INT, "Modo_Roblox_Studio", PROPERTY_HINT_ENUM, hint),
+                     "set_entorno_setup", "get_entorno_setup");
     }
 
 public:

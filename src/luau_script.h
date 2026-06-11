@@ -632,18 +632,10 @@ return MiModulo
 
 #include <godot_cpp/classes/os.hpp>
 
-#include "gl_debug.h"
+#include "gl_debug.h"   // GL_DEBUG_PRINT + gl_tr3
 
 #include <vector>
 #include <string>
-
-// Mensaje de runtime en el idioma del sistema (EN/ES/PT)
-static inline godot::String gl_tr3(const char* en, const char* es, const char* pt) {
-    godot::String loc = godot::OS::get_singleton()->get_locale().left(2);
-    if (loc == godot::String("es")) return godot::String::utf8(es);
-    if (loc == godot::String("pt")) return godot::String::utf8(pt);
-    return godot::String::utf8(en);
-}
 
 using namespace godot;
 
@@ -865,15 +857,24 @@ protected:
 
     // Contador secuencial por tipo en res://.luau_ids.cfg
     // (NO se usa project.godot: guardarlo hace que el editor recargue los plugins)
+    // Cacheado en memoria y con los handles SIEMPRE cerrados antes de reabrir:
+    // en Windows, leer y escribir el mismo archivo con el handle abierto
+    // produce "archivo en uso, bloqueado" cuando entran varios scripts a la vez.
     static int64_t _next_script_counter(const String& cls_lower) {
+        static Dictionary counters;
+        static bool loaded = false;
         const String path = "res://.luau_ids.cfg";
-        Dictionary counters;
-        Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-        if (f.is_valid()) {
-            while (!f->eof_reached()) {
-                String line = f->get_line().strip_edges();
-                int eq = line.find("=");
-                if (eq > 0) counters[line.substr(0, eq)] = line.substr(eq + 1).to_int();
+
+        if (!loaded) {
+            loaded = true;
+            Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+            if (f.is_valid()) {
+                while (!f->eof_reached()) {
+                    String line = f->get_line().strip_edges();
+                    int eq = line.find("=");
+                    if (eq > 0) counters[line.substr(0, eq)] = line.substr(eq + 1).to_int();
+                }
+                f->close();  // cerrar ANTES de cualquier escritura posterior
             }
         }
         // Migración: contadores antiguos guardados en project.godot
@@ -884,11 +885,13 @@ protected:
         }
         int64_t next = (int64_t)counters.get(cls_lower, 0) + 1;
         counters[cls_lower] = next;
+
         Ref<FileAccess> w = FileAccess::open(path, FileAccess::WRITE);
         if (w.is_valid()) {
             Array keys = counters.keys();
             for (int i = 0; i < keys.size(); i++)
                 w->store_line(String(keys[i]) + "=" + String::num_int64((int64_t)counters[keys[i]]));
+            w->close();
         }
         return next;
     }
@@ -1190,11 +1193,11 @@ public:
         Node* ws_node = nullptr;
         {
             Node* root = get_tree()->get_root();
-            // Buscar nodo "game": RobloxDataModel, RobloxGame3D, RobloxGame2D,
+            // Buscar nodo "game": RobloxTemplate, RobloxGame3D, RobloxGame2D,
             // o cualquier nodo llamado "Game"
             for (int _i = 0; _i < root->get_child_count() && !game_node; _i++) {
                 Node* ch = root->get_child(_i);
-                if (ch && (ch->is_class("RobloxDataModel") ||
+                if (ch && (ch->is_class("RobloxTemplate") ||
                             ch->is_class("RobloxGame3D")   ||
                             ch->is_class("RobloxGame2D")   ||
                             ch->get_name() == StringName("Game"))) {
@@ -1202,7 +1205,7 @@ public:
                 } else if (ch) {
                     for (int _j = 0; _j < ch->get_child_count() && !game_node; _j++) {
                         Node* gc = ch->get_child(_j);
-                        if (gc && (gc->is_class("RobloxDataModel") ||
+                        if (gc && (gc->is_class("RobloxTemplate") ||
                                     gc->is_class("RobloxGame3D")   ||
                                     gc->is_class("RobloxGame2D")   ||
                                     gc->get_name() == StringName("Game"))) {

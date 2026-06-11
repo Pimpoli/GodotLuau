@@ -863,7 +863,7 @@ public:
             {"RobloxPart","BasePart"},{"RobloxWorkspace","Workspace"},{"RobloxWorkspace2D","Workspace"},
             {"RobloxPlayer","Player"},{"RobloxPlayer2D","Player"},
             {"Humanoid","Humanoid"},{"Humanoid2D","Humanoid"},
-            {"RobloxDataModel","DataModel"},{"RobloxGame3D","DataModel"},{"RobloxGame2D","DataModel"},
+            {"RobloxTemplate","DataModel"},{"RobloxGame3D","DataModel"},{"RobloxGame2D","DataModel"},
             {"RemoteEventNode","RemoteEvent"},{"RemoteFunctionNode","RemoteFunction"},
             {"BindableEventNode","BindableEvent"},
             {"RobloxSound","Sound"},{"RobloxSoundGroup","SoundGroup"},{"RobloxTween","Tween"},

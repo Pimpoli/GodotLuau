@@ -2,6 +2,7 @@
 #define GL_DEBUG_H
 
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 // true si el Modo Debug de GodotLuau está activo.
@@ -12,5 +13,14 @@ static inline bool gl_debug_on() {
 }
 
 #define GL_DEBUG_PRINT(...) do { if (gl_debug_on()) godot::UtilityFunctions::print(__VA_ARGS__); } while (0)
+
+// Mensaje en el idioma del sistema (EN/ES/PT) — para textos de UI/runtime.
+// Los nombres de nodos y clases SIEMPRE quedan en inglés (los referencian los sistemas).
+static inline godot::String gl_tr3(const char* en, const char* es, const char* pt) {
+    godot::String loc = godot::OS::get_singleton()->get_locale().left(2);
+    if (loc == godot::String("es")) return godot::String::utf8(es);
+    if (loc == godot::String("pt")) return godot::String::utf8(pt);
+    return godot::String::utf8(en);
+}
 
 #endif
