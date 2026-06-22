@@ -1,19 +1,21 @@
 # GodotLuau - Generador de personaje R15 riggeado (para Blender headless)
 #
-# Crea un personaje estilo Roblox R15 con partes SEPARADAS y un esqueleto
-# (armature). Cada parte es una caja atada rigidamente a un hueso, como el R15
-# real (partes rigidas unidas por juntas), exportado como .glb para Godot.
+# Crea un personaje estilo Roblox R15 con partes SEPARADAS, un esqueleto
+# (armature) de 16 huesos y una cara en la cabeza. Cada parte es una caja atada
+# rigidamente a su hueso, como el R15 real, exportado como .glb para Godot.
+#
+# Los HUESOS llevan nombre limpio (Head, LeftUpperArm, ...) para poder animarlos
+# desde codigo (skel.find_bone("LeftUpperArm")); las mallas usan sufijo "_M".
 #
 # Uso:
-#   blender --background --python tools/rig_character.py -- <ruta_salida.glb>
-import bpy, sys, math
+#   blender --background --python tools/rig_character.py -- <salida.glb>
+import bpy, sys
 
 out = "AvatarR15_rigged.glb"
 if "--" in sys.argv:
-    args = sys.argv[sys.argv.index("--") + 1:]
-    if args: out = args[0]
+    a = sys.argv[sys.argv.index("--") + 1:]
+    if a: out = a[0]
 
-# ── Escena limpia ─────────────────────────────────────────────────────────────
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # ── Armature ──────────────────────────────────────────────────────────────────
@@ -24,10 +26,8 @@ bpy.context.view_layer.objects.active = arm_obj
 bpy.ops.object.mode_set(mode='EDIT')
 ebs = arm_data.edit_bones
 
-# name, parent, bone_head, bone_tail, box_center, box_size  (Z arriba, metros)
 def P(name, parent, bh, bt, c, s): return dict(name=name, parent=parent, bh=bh, bt=bt, c=c, s=s)
-SX = 0.55   # x del hombro
-HX = 0.20   # x de la cadera
+SX, HX = 0.55, 0.20
 parts = [
     P("HumanoidRootPart", None, (0,0,1.0), (0,0,1.1), None, None),
     P("LowerTorso", "HumanoidRootPart", (0,0,1.0), (0,0,1.2), (0,0,1.10), (0.80,0.45,0.25)),
@@ -46,42 +46,49 @@ for side, sx in (("Left", 1.0), ("Right", -1.0)):
 
 made = {}
 for p in parts:
-    b = ebs.new(p["name"])
-    b.head = p["bh"]; b.tail = p["bt"]
-    made[p["name"]] = b
+    b = ebs.new(p["name"]); b.head = p["bh"]; b.tail = p["bt"]; made[p["name"]] = b
 for p in parts:
     if p["parent"]:
-        made[p["name"]].parent = made[p["parent"]]
-        made[p["name"]].use_connect = False
+        made[p["name"]].parent = made[p["parent"]]; made[p["name"]].use_connect = False
 bpy.ops.object.mode_set(mode='OBJECT')
 
 # ── Materiales ────────────────────────────────────────────────────────────────
 def mat(name, rgb):
     m = bpy.data.materials.new(name); m.use_nodes = True
-    bsdf = m.node_tree.nodes.get("Principled BSDF")
-    if bsdf:
-        bsdf.inputs["Base Color"].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
-        if "Roughness" in bsdf.inputs: bsdf.inputs["Roughness"].default_value = 0.9
+    n = m.node_tree.nodes.get("Principled BSDF")
+    if n:
+        n.inputs["Base Color"].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+        if "Roughness" in n.inputs: n.inputs["Roughness"].default_value = 0.9
     return m
 body_mat = mat("Body", (0.62, 0.62, 0.62))
-head_mat = mat("Head", (0.95, 0.80, 0.20))   # cabeza amarilla (estilo Roblox)
+head_mat = mat("Head", (0.96, 0.80, 0.22))   # cabeza amarilla estilo Roblox
+face_mat = mat("Face", (0.05, 0.05, 0.05))    # ojos / boca
 
-# ── Cajas (partes) atadas rigidamente a su hueso ──────────────────────────────
-for p in parts:
-    if p["c"] is None: continue   # HumanoidRootPart: invisible
-    bpy.ops.mesh.primitive_cube_add(size=1.0, location=p["c"])
-    obj = bpy.context.active_object
-    obj.name = p["name"]
-    obj.scale = p["s"]
+# ── Caja atada rigidamente a un hueso ─────────────────────────────────────────
+def make_box(obj_name, bone, center, size, material):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=center)
+    o = bpy.context.active_object
+    o.name = obj_name
+    o.scale = size
     bpy.ops.object.transform_apply(scale=True)
-    vg = obj.vertex_groups.new(name=p["name"])
-    vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
-    md = obj.modifiers.new("Armature", 'ARMATURE'); md.object = arm_obj
-    obj.parent = arm_obj
-    obj.data.materials.append(head_mat if p["name"] == "Head" else body_mat)
+    vg = o.vertex_groups.new(name=bone)
+    vg.add(list(range(len(o.data.vertices))), 1.0, 'REPLACE')
+    md = o.modifiers.new("Armature", 'ARMATURE'); md.object = arm_obj
+    o.parent = arm_obj
+    o.data.materials.append(material)
+    return o
+
+for p in parts:
+    if p["c"] is None: continue
+    make_box(p["name"] + "_M", p["name"], p["c"], p["s"], head_mat if p["name"] == "Head" else body_mat)
+
+# ── Cara en la cabeza (front = -Y en Blender). Ojos + boca, atados al hueso Head.
+FY = -0.31           # justo en la cara frontal de la cabeza (half-depth 0.30)
+make_box("Eye_L_M", "Head", (-0.13, FY, 1.84), (0.09, 0.03, 0.10), face_mat)
+make_box("Eye_R_M", "Head", ( 0.13, FY, 1.84), (0.09, 0.03, 0.10), face_mat)
+make_box("Mouth_M", "Head", ( 0.00, FY, 1.71), (0.22, 0.03, 0.05), face_mat)
 
 # ── Exportar GLB ──────────────────────────────────────────────────────────────
 bpy.ops.object.select_all(action='SELECT')
-bpy.ops.export_scene.gltf(filepath=out, export_format='GLB',
-                          export_yup=True, use_selection=True)
+bpy.ops.export_scene.gltf(filepath=out, export_format='GLB', export_yup=True, use_selection=True)
 print("RIG_EXPORT_OK:", out)
