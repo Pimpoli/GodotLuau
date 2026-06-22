@@ -223,6 +223,13 @@ def crear_proyecto(destino, nombre, modo):
                         os.path.join(destino, "addons", "GodotLuauUpdater"),
                         dirs_exist_ok=True)
         print("  ✔ addons/GodotLuauUpdater/")
+    # Avatares por defecto (personaje R15/R6)
+    avatars_origen = os.path.join(ORIGEN, "assets", "avatars")
+    if os.path.isdir(avatars_origen):
+        shutil.copytree(avatars_origen,
+                        os.path.join(destino, "assets", "avatars"),
+                        dirs_exist_ok=True)
+        print("  ✔ assets/avatars/")
     version_origen = os.path.join(ORIGEN, "Version")
     if os.path.exists(version_origen):
         shutil.copy2(version_origen, os.path.join(destino, "Version"))

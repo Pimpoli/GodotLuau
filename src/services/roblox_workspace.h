@@ -13,6 +13,8 @@
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/capsule_mesh.hpp>      // <-- INDISPENSABLE
 #include <godot_cpp/classes/capsule_shape3d.hpp>   // <-- INDISPENSABLE
+#include <godot_cpp/classes/resource_loader.hpp>   // malla de avatar por defecto
+#include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/world_environment.hpp>
@@ -237,8 +239,31 @@ public:
         {
             MeshInstance3D* m = memnew(MeshInstance3D);
             m->set_name("Mesh");
-            Ref<CapsuleMesh> cm; cm.instantiate();
-            m->set_mesh(cm);
+            // Default character mesh: use the R15 avatar if the project has it,
+            // else fall back to a capsule (Roblox's default look).
+            Ref<Mesh> avatar_mesh;
+            {
+                ResourceLoader* rl = ResourceLoader::get_singleton();
+                const String avatar_path = "res://assets/avatars/AvatarR15.obj";
+                if (rl && rl->exists(avatar_path)) {
+                    Ref<Resource> res = rl->load(avatar_path);
+                    avatar_mesh = Ref<Mesh>(Object::cast_to<Mesh>(res.ptr()));
+                }
+            }
+            if (avatar_mesh.is_valid()) {
+                m->set_mesh(avatar_mesh);
+                // El .obj viene en una escala desconocida: lo normalizamos a ~2
+                // unidades de alto y dejamos los pies en la base de la capsula (y=-1).
+                AABB box = avatar_mesh->get_aabb();
+                if (box.size.y > 0.0001f) {
+                    float s = 2.0f / box.size.y;
+                    m->set_scale(Vector3(s, s, s));
+                    m->set_position(Vector3(0, -1.0f - box.position.y * s, 0));
+                }
+            } else {
+                Ref<CapsuleMesh> cm; cm.instantiate();
+                m->set_mesh(cm);
+            }
             p->add_child(m);
 
             CollisionShape3D* c = memnew(CollisionShape3D);

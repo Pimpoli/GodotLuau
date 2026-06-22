@@ -24,6 +24,7 @@ CARPETAS = [
     "bin",
     "DefaultScripts",
     "icons",
+    "assets/avatars",   # modelos de personaje por defecto (R15/R6)
 ]
 EXTENSIONES_BIN = (".dll", ".so", ".dylib", ".lib", ".exp")
 EXTENSIONES_TEXTO = (".cfg", ".gd", ".gdextension", ".txt", ".md", ".json", ".lua", ".uid")
