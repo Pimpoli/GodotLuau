@@ -208,7 +208,11 @@ public:
         // ── RunService oculto: como en Roblox, existe pero no se ve en el editor ──
         if (get_parent() && !get_parent()->get_node_or_null("RunService")) {
             Node* rs = Object::cast_to<Node>(ClassDB::instantiate(StringName("RunService")));
-            if (rs) { rs->set_name("RunService"); get_parent()->add_child(rs); }
+            // add_child diferido: en _ready el padre (game) aun esta montando sus
+            // hijos y Godot rechaza un add_child directo ("Parent node is busy").
+            // El deferred corre antes que los scripts (iniciar_corrutina tambien
+            // es diferido y se encola despues), asi RunService existe a tiempo.
+            if (rs) { rs->set_name("RunService"); get_parent()->call_deferred("add_child", rs); }
         }
 
         // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────

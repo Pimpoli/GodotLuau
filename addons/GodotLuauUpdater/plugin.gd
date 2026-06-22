@@ -368,11 +368,15 @@ func _on_any_node_removed(n: Node) -> void:
 		_suppress_trash_frame = Engine.get_process_frames() + 5
 		return
 	if not (n.get_class() in SCRIPT_NODE_CLASSES): return
-	_check_script_removed.call_deferred(n, _node_script_id(n), _node_script_path(n))
+	# Se pasa el instance_id (int), no el Node: para cuando corre el deferred el
+	# nodo puede estar ya liberado y marshalarlo como Node falla
+	# ("Cannot convert argument 1 from Object to Object").
+	_check_script_removed.call_deferred(n.get_instance_id(), _node_script_id(n), _node_script_path(n))
 
-func _check_script_removed(n: Node, id: String, path: String) -> void:
+func _check_script_removed(node_id: int, id: String, path: String) -> void:
 	await get_tree().process_frame
 	if Engine.get_process_frames() <= _suppress_trash_frame: return
+	var n := instance_from_id(node_id) as Node
 	if is_instance_valid(n) and n.is_inside_tree(): return   # reparent o undo inmediato
 	if EditorInterface.get_edited_scene_root() == null: return
 	_trash_script(id, path)
