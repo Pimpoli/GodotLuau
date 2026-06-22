@@ -48,7 +48,7 @@ const TR := {
 		"aim_need_download":     "⚠ Download the selected AI model first",
 		"aim_header":            "Custom AI model",
 		"aim_note":              "Load your own model (JSON with \"bigrams\") from a file or URL.",
-		"aim_status_none":       "Using built-in model \"LuauGram-Mini\".",
+		"aim_status_none":       "Using built-in model \"LuauIA-Mini\".",
 		"aim_status_ok":         "✅ Custom model loaded (%d entries).",
 		"aim_status_err":        "❌ Download failed — check the URL.",
 		"aim_status_bad":        "❌ Invalid model (expected JSON with \"bigrams\").",
@@ -129,7 +129,7 @@ const TR := {
 		"aim_need_download":     "⚠ Descarga primero el modelo de IA seleccionado",
 		"aim_header":            "Modelo de IA personalizado",
 		"aim_note":              "Carga tu propio modelo (JSON con \"bigrams\") desde archivo o URL.",
-		"aim_status_none":       "Usando el modelo integrado \"LuauGram-Mini\".",
+		"aim_status_none":       "Usando el modelo integrado \"LuauIA-Mini\".",
 		"aim_status_ok":         "✅ Modelo personalizado cargado (%d entradas).",
 		"aim_status_err":        "❌ Descarga fallida — verifica la URL.",
 		"aim_status_bad":        "❌ Modelo inválido (se esperaba JSON con \"bigrams\").",
@@ -210,7 +210,7 @@ const TR := {
 		"aim_need_download":     "⚠ Baixe primeiro o modelo de IA selecionado",
 		"aim_header":            "Modelo de IA personalizado",
 		"aim_note":              "Carregue seu próprio modelo (JSON com \"bigrams\") de um arquivo ou URL.",
-		"aim_status_none":       "Usando o modelo integrado \"LuauGram-Mini\".",
+		"aim_status_none":       "Usando o modelo integrado \"LuauIA-Mini\".",
 		"aim_status_ok":         "✅ Modelo personalizado carregado (%d entradas).",
 		"aim_status_err":        "❌ Download falhou — verifique a URL.",
 		"aim_status_bad":        "❌ Modelo inválido (era esperado JSON com \"bigrams\").",
@@ -582,7 +582,7 @@ func _cleanup_old_dlls() -> void:
 
 func _register_settings() -> void:
 	_add_bool("godot_luau/ai_autocomplete_enabled",    false,
-		"AI Autocomplete — predicts code with the lightweight LuauGram-Mini model.")
+		"AI Autocomplete — predicts code with the lightweight LuauIA-Mini model.")
 	_add_bool("godot_luau/share_data_enabled",         true,
 		"Collect anonymous local usage statistics to improve suggestion ranking.")
 	_add_bool("godot_luau/script_output",              true,
@@ -1488,20 +1488,22 @@ func _start_hash_verify() -> void:
 	add_child(_http_hash)
 	_http_hash.request_completed.connect(_on_hash_received)
 	if _http_hash.request(HASH_URL) != OK:
+		# Sin verificación de integridad NO instalamos (evita aplicar un ZIP
+		# manipulado o corrupto). El repo oficial siempre publica el .sha256.
 		_http_hash.queue_free(); _http_hash = null
-		push_warning("[GodotLuau] Could not fetch checksum — installing without verification.")
-		_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
-		_apply_update.call_deferred()
+		DirAccess.remove_absolute(OS.get_user_data_dir() + "/godotluau_update.zip")
+		_set_ver_status(_t("bar_hash_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
 
 func _on_hash_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
 	if _http_hash and is_instance_valid(_http_hash):
 		_http_hash.queue_free(); _http_hash = null
 	var zip_path := OS.get_user_data_dir() + "/godotluau_update.zip"
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		# Releases antiguas sin .sha256 — instalar igualmente, pero avisar
-		push_warning("[GodotLuau] Checksum file not available — installing without verification.")
-		_set_ver_status(_t("bar_extracting"), "", Color(0.4, 0.8, 1.0))
-		_apply_update.call_deferred()
+		# No se pudo obtener el checksum → abortar (no instalar sin verificar).
+		DirAccess.remove_absolute(zip_path)
+		_set_ver_status(_t("bar_hash_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
 		return
 	var expected := body.get_string_from_utf8().strip_edges().to_lower()
 	if expected.contains(" "): expected = expected.split(" ")[0]
@@ -1544,7 +1546,11 @@ func _apply_update() -> void:
 		var dst_dir : String          = dst.get_base_dir()
 		if not DirAccess.dir_exists_absolute(dst_dir):
 			DirAccess.make_dir_recursive_absolute(dst_dir)
-		if is_win and rel.get_extension().to_lower() in DLL_EXTENSIONS:
+		# Las librerías nativas (.dll/.so/.dylib) están CARGADAS en memoria mientras
+		# el editor corre: sobrescribirlas en el sitio corrompe la librería mapeada
+		# (crash en Linux/macOS). En TODAS las plataformas las preparamos aparte y
+		# luego hacemos rename+reemplazo (atómico) antes de reiniciar.
+		if rel.get_extension().to_lower() in DLL_EXTENSIONS:
 			var stage := staging + rel.get_file()
 			var sf := FileAccess.open(stage, FileAccess.WRITE)
 			if sf: sf.store_buffer(data); staged.append({"src": stage, "dst": dst})
@@ -1563,13 +1569,18 @@ func _apply_update() -> void:
 		_refresh_stats(); return
 
 	_windows_staged_dlls = staged
-	if is_win and _try_rename_and_replace():
-		# DLLs ya intercambiadas: reinicio automático con cuenta regresiva.
-		# Godot se reabre solo con la versión nueva ya aplicada.
+	# rename+reemplazo funciona en todas las plataformas (en Unix renombrar una
+	# .so cargada es seguro: el proceso conserva el inodo viejo y el nuevo queda
+	# listo para el próximo arranque).
+	if _try_rename_and_replace():
 		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
 		_auto_restart_countdown()
-	else:
+	elif is_win:
+		# La DLL estaba bloqueada: aplicar tras cerrar mediante script externo.
 		_set_ver_status(_t("bar_apply_close"), "Apply & Close", Color(1.0, 0.7, 0.2), "apply")
+	else:
+		# Unix: no se pudo reemplazar; pedir reinicio manual.
+		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
 
 func _auto_restart_countdown() -> void:
 	for i in range(5, 0, -1):
