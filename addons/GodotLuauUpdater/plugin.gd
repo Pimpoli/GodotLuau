@@ -11,6 +11,7 @@ const CUSTOM_AC_FILE := "user://godotluau_custom_autocomplete.json"
 const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
 const WM_META_KEY    := "_godotluau_wm"
 const TRASH_DIR      := "res://.luau_trash"
+const BACKUP_DIR     := "res://.luau_backup"   # respaldo de la version anterior (rollback)
 const SCRIPT_NODE_CLASSES := ["LocalScript", "ServerScript", "ModuleScript"]
 
 # ── Catálogo de modelos de IA para el autocompletado ─────────────────────────
@@ -95,6 +96,8 @@ const TR := {
 		"bar_ok_restart":        "✅ Updated — click to restart.",
 		"bar_restart_in":        "✅ Updated — restarting in %d s (Godot will reopen by itself)",
 		"bar_apply_close":       "✅ Ready. Godot will close and apply the DLL.",
+		"btn_rollback":          "↺ Back to %s",
+		"bar_rollback_done":     "✅ Restored %s. Restart to apply.",
 		"bar_restart":           "🔄 Restart editor",
 		"bar_restarting":        "🔄 Restarting...",
 		"bar_data_cleared":      "🗑 Data deleted.",
@@ -176,6 +179,8 @@ const TR := {
 		"bar_ok_restart":        "✅ Actualizado — clic para reiniciar.",
 		"bar_restart_in":        "✅ Actualizado — reiniciando en %d s (Godot se reabrirá solo)",
 		"bar_apply_close":       "✅ Listo. Godot se cerrará y aplicará la DLL.",
+		"btn_rollback":          "↺ Volver a %s",
+		"bar_rollback_done":     "✅ Restaurado %s. Reinicia para aplicar.",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
 		"bar_data_cleared":      "🗑 Datos eliminados.",
@@ -257,6 +262,8 @@ const TR := {
 		"bar_ok_restart":        "✅ Atualizado — clique para reiniciar.",
 		"bar_restart_in":        "✅ Atualizado — reiniciando em %d s (o Godot reabrirá sozinho)",
 		"bar_apply_close":       "✅ Pronto. O Godot fechará e aplicará a DLL.",
+		"btn_rollback":          "↺ Voltar para %s",
+		"bar_rollback_done":     "✅ Restaurado %s. Reinicie para aplicar.",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
 		"bar_data_cleared":      "🗑 Dados excluídos.",
@@ -297,6 +304,7 @@ var _first_build       : bool           = true
 var _ver_label         : Label          = null
 var _ver_btn           : Button         = null
 var _reinstall_btn     : Button         = null
+var _rollback_btn      : Button         = null
 var _notif_bar         : PanelContainer = null
 var _notif_label       : Label          = null
 var _outdated_timer    : Timer          = null
@@ -575,7 +583,12 @@ func _cleanup_old_dlls() -> void:
 	dir.list_dir_begin()
 	var f := dir.get_next()
 	while f != "":
-		if f.ends_with(".dll.old") or f.ends_with(".so.old") or f.ends_with(".dylib.old"):
+		# Restos del intercambio de DLL (.old / .new) y los temporales que deja
+		# Windows al renombrar (~...TMP). El '~godotluau...dll' es la copia viva
+		# que usa Godot mientras corre; si esta bloqueada el borrado falla solo,
+		# y si quedo huerfana de una sesion anterior se limpia.
+		if f.ends_with(".old") or f.ends_with(".new") or f.ends_with(".TMP") \
+		or (f.begins_with("~") and f.contains("godot_luau")):
 			DirAccess.remove_absolute(bin_path + f)
 		f = dir.get_next()
 
@@ -788,6 +801,15 @@ func _build_panel_contents() -> void:
 	_reinstall_btn.tooltip_text = "Re-download and reinstall the current version"
 	_reinstall_btn.pressed.connect(_start_reinstall)
 	ver_row.add_child(_reinstall_btn)
+
+	# Volver a la version anterior (visible solo si hay un respaldo guardado)
+	_rollback_btn = Button.new()
+	_rollback_btn.flat = true
+	_rollback_btn.add_theme_color_override("font_color", Color(1.0, 0.75, 0.4))
+	_rollback_btn.tooltip_text = "Restore the previous version saved on your PC"
+	_rollback_btn.pressed.connect(_on_rollback_pressed)
+	ver_row.add_child(_rollback_btn)
+	_refresh_rollback_btn()
 
 	var gh_row := HBoxContainer.new()
 	gh_row.add_theme_constant_override("separation", 6)
@@ -1524,18 +1546,34 @@ var _windows_staged_dlls : Array[Dictionary] = []
 func _apply_update() -> void:
 	var zip_path  := OS.get_user_data_dir() + "/godotluau_update.zip"
 	var proj_path := ProjectSettings.globalize_path("res://")
+
+	# ── 1. Validar el ZIP COMPLETO antes de tocar el proyecto ──────────────────
 	var zip := ZIPReader.new()
 	if zip.open(zip_path) != OK:
-		_set_ver_status(_t("bar_dl_failed") % 0, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
-		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
-		return
+		_fail_apply(); return
+	var zfiles := zip.get_files()
+	var has_ext := false
+	var has_dll := false
+	for rel in zfiles:
+		if rel.ends_with("godot_luau.gdextension"): has_ext = true
+		if rel.get_extension().to_lower() in DLL_EXTENSIONS: has_dll = true
+	if not (has_ext and has_dll):
+		# ZIP incompleto o corrupto → abortar SIN haber tocado nada.
+		zip.close(); _fail_apply(); return
 
+	# ── 2. Respaldar la version actual (solo lo que se va a sobrescribir) ───────
+	var old_ver := _get_local_version()
+	_backup_current(zfiles, old_ver)
+
+	# ── 3. Extraer: archivos normales directo, librerias a staging. Si algo no
+	#       se puede escribir, restauramos del respaldo y abortamos. ────────────
 	var staged  : Array[Dictionary] = []
 	var staging := OS.get_user_data_dir() + "/godotluau_staging/"
 	DirAccess.make_dir_recursive_absolute(staging)
-	var is_win : bool = (OS.get_name() == "Windows")
+	var is_win  : bool = (OS.get_name() == "Windows")
+	var write_ok := true
 
-	for rel in zip.get_files():
+	for rel in zfiles:
 		if rel.ends_with("/"): continue
 		# Anti zip-slip: rechazar rutas absolutas o con '..'
 		var rel_clean : String = rel.replace("\\", "/")
@@ -1547,41 +1585,158 @@ func _apply_update() -> void:
 		var dst_dir : String          = dst.get_base_dir()
 		if not DirAccess.dir_exists_absolute(dst_dir):
 			DirAccess.make_dir_recursive_absolute(dst_dir)
-		# Las librerías nativas (.dll/.so/.dylib) están CARGADAS en memoria mientras
-		# el editor corre: sobrescribirlas en el sitio corrompe la librería mapeada
-		# (crash en Linux/macOS). En TODAS las plataformas las preparamos aparte y
-		# luego hacemos rename+reemplazo (atómico) antes de reiniciar.
+		# Las librerias nativas estan CARGADAS mientras el editor corre: no se
+		# sobrescriben en el sitio, se preparan aparte y se cambian con rename.
 		if rel.get_extension().to_lower() in DLL_EXTENSIONS:
 			var stage := staging + rel.get_file()
 			var sf := FileAccess.open(stage, FileAccess.WRITE)
 			if sf: sf.store_buffer(data); staged.append({"src": stage, "dst": dst})
+			else: write_ok = false
 		else:
 			var f := FileAccess.open(dst, FileAccess.WRITE)
 			if f: f.store_buffer(data)
-
+			else: write_ok = false
 	zip.close()
+
+	if not write_ok:
+		# No dejar el proyecto a medias: restaurar lo respaldado.
+		_restore_from_backup()
+		_fail_apply(); return
+
+	DirAccess.remove_absolute(zip_path)
+
+	# ── 4. Cambiar las DLL (la anterior ya quedo guardada en el respaldo) ──────
+	var swapped := true
+	if not staged.is_empty():
+		_windows_staged_dlls = staged
+		swapped = _try_rename_and_replace()
+
+	# ── 5. Escribir la version SOLO ahora que todo salio bien ──────────────────
 	var vf := FileAccess.open(VERSION_FILE, FileAccess.WRITE)
 	if vf: vf.store_string(_remote_version + "\n")
-	DirAccess.remove_absolute(zip_path)
 	if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
+	_refresh_rollback_btn()
 
 	if staged.is_empty():
 		_set_ver_status(_t("bar_ok_no_restart") % _remote_version, "", Color(0.3, 0.9, 0.5))
 		_refresh_stats(); return
-
-	_windows_staged_dlls = staged
-	# rename+reemplazo funciona en todas las plataformas (en Unix renombrar una
-	# .so cargada es seguro: el proceso conserva el inodo viejo y el nuevo queda
-	# listo para el próximo arranque).
-	if _try_rename_and_replace():
+	if swapped:
 		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
 		_auto_restart_countdown()
 	elif is_win:
 		# La DLL estaba bloqueada: aplicar tras cerrar mediante script externo.
 		_set_ver_status(_t("bar_apply_close"), "Apply & Close", Color(1.0, 0.7, 0.2), "apply")
 	else:
-		# Unix: no se pudo reemplazar; pedir reinicio manual.
 		_set_ver_status(_t("bar_ok_restart"), _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
+
+func _fail_apply() -> void:
+	DirAccess.remove_absolute(OS.get_user_data_dir() + "/godotluau_update.zip")
+	_set_ver_status(_t("bar_dl_failed") % 0, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+	if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
+
+# ── Respaldo y vuelta atras (rollback) ────────────────────────────────────────
+
+# Guarda en res://.luau_backup/files/ una copia de cada archivo del proyecto que
+# la actualizacion va a sobrescribir, mas la version anterior. Permite deshacer.
+func _backup_current(zfiles: PackedStringArray, old_ver: String) -> void:
+	var proj := ProjectSettings.globalize_path("res://")
+	var bdir := ProjectSettings.globalize_path(BACKUP_DIR) + "/"
+	_rmdir_recursive(bdir)
+	DirAccess.make_dir_recursive_absolute(bdir + "files")
+	var gi := FileAccess.open(bdir + ".gdignore", FileAccess.WRITE)  # que Godot no lo importe
+	if gi: gi.close()
+	for rel in zfiles:
+		if rel.ends_with("/"): continue
+		var rel_clean : String = rel.replace("\\", "/")
+		if rel_clean.begins_with("/") or rel_clean.contains("..") or rel_clean.contains(":"): continue
+		var cur := proj + rel_clean
+		if not FileAccess.file_exists(cur): continue
+		var bpath := bdir + "files/" + rel_clean
+		DirAccess.make_dir_recursive_absolute(bpath.get_base_dir())
+		var bf := FileAccess.open(bpath, FileAccess.WRITE)
+		if bf: bf.store_buffer(FileAccess.get_file_as_bytes(cur))
+	var inf := FileAccess.open(bdir + "version.txt", FileAccess.WRITE)
+	if inf: inf.store_string(old_ver + "\n")
+
+func _can_rollback() -> bool:
+	return FileAccess.file_exists(ProjectSettings.globalize_path(BACKUP_DIR) + "/version.txt")
+
+func _backup_version() -> String:
+	var p := ProjectSettings.globalize_path(BACKUP_DIR) + "/version.txt"
+	if not FileAccess.file_exists(p): return ""
+	var f := FileAccess.open(p, FileAccess.READ)
+	return f.get_as_text().strip_edges() if f else ""
+
+# Restaura los archivos respaldados a su sitio (lo usa tanto el rollback manual
+# como el aborto de una extraccion fallida). Las DLL van por staging+rename.
+func _restore_from_backup() -> bool:
+	var proj := ProjectSettings.globalize_path("res://")
+	var base := ProjectSettings.globalize_path(BACKUP_DIR) + "/files"
+	if not DirAccess.dir_exists_absolute(base): return false
+	var staged  : Array[Dictionary] = []
+	var staging := OS.get_user_data_dir() + "/godotluau_rollback/"
+	DirAccess.make_dir_recursive_absolute(staging)
+	_collect_backup(base, "", proj, staging, staged)
+	if not staged.is_empty():
+		_windows_staged_dlls = staged
+		_try_rename_and_replace()
+	return true
+
+func _collect_backup(base: String, rel: String, proj: String, staging: String, staged: Array) -> void:
+	var dir_path := base + ("/" + rel if rel != "" else "")
+	var d := DirAccess.open(dir_path)
+	if not d: return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		var sub := (rel + "/" + entry) if rel != "" else entry
+		if d.current_is_dir():
+			_collect_backup(base, sub, proj, staging, staged)
+		else:
+			var src := base + "/" + sub
+			var dst := proj + sub
+			if src.get_extension().to_lower() in DLL_EXTENSIONS:
+				var stage := staging + entry
+				var sf := FileAccess.open(stage, FileAccess.WRITE)
+				if sf: sf.store_buffer(FileAccess.get_file_as_bytes(src)); staged.append({"src": stage, "dst": dst})
+			else:
+				DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
+				var f := FileAccess.open(dst, FileAccess.WRITE)
+				if f: f.store_buffer(FileAccess.get_file_as_bytes(src))
+		entry = d.get_next()
+	d.list_dir_end()
+
+func _rmdir_recursive(path: String) -> void:
+	var clean := path.rstrip("/")
+	if not DirAccess.dir_exists_absolute(clean): return
+	var d := DirAccess.open(clean)
+	if not d: return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		var full := clean + "/" + entry
+		if d.current_is_dir(): _rmdir_recursive(full)
+		else: DirAccess.remove_absolute(full)
+		entry = d.get_next()
+	d.list_dir_end()
+	DirAccess.remove_absolute(clean)
+
+func _on_rollback_pressed() -> void:
+	if not _can_rollback(): return
+	var ver := _backup_version()
+	_restore_from_backup()
+	var vf := FileAccess.open(VERSION_FILE, FileAccess.WRITE)
+	if vf: vf.store_string(ver + "\n")
+	_set_ver_status(_t("bar_rollback_done") % ver, _t("bar_restart"), Color(0.4, 0.9, 1.0), "restart")
+	_auto_restart_countdown()
+
+func _refresh_rollback_btn() -> void:
+	if not (_rollback_btn and is_instance_valid(_rollback_btn)): return
+	if _can_rollback():
+		_rollback_btn.visible = true
+		_rollback_btn.text = _t("btn_rollback") % _backup_version()
+	else:
+		_rollback_btn.visible = false
 
 func _auto_restart_countdown() -> void:
 	for i in range(5, 0, -1):
