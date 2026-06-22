@@ -35,6 +35,8 @@
 #include "lualib.h"
 #include "Luau/Compiler.h"
 
+#include "gl_runtime.h"   // GodotObjectWrapper (ObjectID), gow_node/gow_set, registro de estados vivos
+
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -45,9 +47,8 @@ using namespace godot;
 //  Data structures for Luau types
 ////
 //  Estructuras de datos para los tipos Luau
+//  (GodotObjectWrapper vive en gl_runtime.h: guarda ObjectID, no Node* crudo)
 // ════════════════════════════════════════════════════════════════════
-
-struct GodotObjectWrapper { Node* node_ptr; };
 
 struct LuauVector3 {
     float x, y, z;
@@ -78,7 +79,7 @@ struct LuauCFrame { Transform3D transform; };
 static void wrap_node(lua_State* L, Node* node) {
     if (!node) { lua_pushnil(L); return; }
     GodotObjectWrapper* wrap = (GodotObjectWrapper*)lua_newuserdata(L, sizeof(GodotObjectWrapper));
-    wrap->node_ptr = node;
+    gow_set(wrap, node);
     luaL_getmetatable(L, "GodotObject");
     lua_setmetatable(L, -2);
 }
@@ -99,6 +100,111 @@ static LuauColor3* push_color3(lua_State* L, float r, float g, float b) {
     return c;
 }
 
+// ── Comprobación de tipo segura: solo devuelve el puntero si el userdata
+//    tiene EXACTAMENTE la metatable esperada. Evita reinterpretar un tipo
+//    por otro (p.ej. pasar un Color3 donde se espera un Vector3, o un nodo
+//    donde se espera un Vector3 → lectura fuera de límites). ────────────────
+static inline bool _gl_has_metatable(lua_State* L, int idx, const char* mt) {
+    if (lua_type(L, idx) != LUA_TUSERDATA) return false;
+    if (!lua_getmetatable(L, idx)) return false;
+    luaL_getmetatable(L, mt);
+    bool ok = lua_rawequal(L, -1, -2);
+    lua_pop(L, 2);
+    return ok;
+}
+static inline LuauVector3* check_vector3(lua_State* L, int idx) {
+    return _gl_has_metatable(L, idx, "Vector3") ? (LuauVector3*)lua_touserdata(L, idx) : nullptr;
+}
+static inline LuauColor3* check_color3(lua_State* L, int idx) {
+    return _gl_has_metatable(L, idx, "Color3") ? (LuauColor3*)lua_touserdata(L, idx) : nullptr;
+}
+
+// Señal "inerte": objeto con Connect/Once/Wait que NO hace nada y NO filtra
+// referencias. Se usa para señales aún no soportadas (antes conectaban a
+// métodos inexistentes y acumulaban refs sin liberarse nunca).
+static inline void _gl_push_inert_signal(lua_State* L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, [](lua_State* pL) -> int {
+        // Devuelve una conexión con Disconnect()/Connected = false
+        lua_newtable(pL);
+        lua_pushcfunction(pL, [](lua_State*) -> int { return 0; }, "Disconnect");
+        lua_setfield(pL, -2, "Disconnect");
+        lua_pushboolean(pL, 0); lua_setfield(pL, -2, "Connected");
+        return 1;
+    }, "Connect");
+    lua_setfield(L, -2, "Connect");
+    lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "Once");
+    lua_setfield(L, -2, "Once");
+    lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnil(pL); return 1; }, "Wait");
+    lua_setfield(L, -2, "Wait");
+}
+
+// Devuelve un objeto conexión estilo Roblox: { Disconnect(), Connected }.
+// Disconnect resuelve el nodo por ObjectID (seguro tras destruir) y llama al
+// método _gl_disconnect(ref) de la clase, que desactiva ese callback.
+static void _gl_push_connection(lua_State* L, Node* node, int ref) {
+    lua_newtable(L);
+    lua_pushlightuserdata(L, (void*)(uintptr_t)(node ? (uint64_t)node->get_instance_id() : 0));
+    lua_pushinteger(L, ref);
+    lua_pushcclosure(L, [](lua_State* dL) -> int {
+        uint64_t id = (uint64_t)(uintptr_t)lua_touserdata(dL, lua_upvalueindex(1));
+        int r = (int)lua_tointeger(dL, lua_upvalueindex(2));
+        Node* n = Object::cast_to<Node>(ObjectDB::get_instance(id));
+        if (n && n->has_method("_gl_disconnect")) n->call("_gl_disconnect", r);
+        return 0;
+    }, "Disconnect", 2);
+    lua_setfield(L, -2, "Disconnect");
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "Connected");
+}
+
+// ── ClassName / IsA estilo Roblox ────────────────────────────────────────────
+// Devuelve el nombre de clase Roblox a partir de la clase Godot interna.
+static const char* gl_roblox_classname(Node* n) {
+    if (!n) return "Instance";
+    String c = n->get_class();
+    struct M { const char* g; const char* r; };
+    static const M map[] = {
+        {"RobloxPart","Part"},{"Folder","Folder"},{"Humanoid","Humanoid"},{"Humanoid2D","Humanoid"},
+        {"RobloxPlayer","Player"},{"RobloxPlayer2D","Player"},
+        {"OmniLight3D","PointLight"},{"SpotLight3D","SpotLight"},{"DirectionalLight3D","DirectionalLight"},
+        {"RemoteEventNode","RemoteEvent"},{"RemoteFunctionNode","RemoteFunction"},{"BindableEventNode","BindableEvent"},
+        {"RobloxSound","Sound"},{"RobloxSoundGroup","SoundGroup"},{"RobloxTween","Tween"},{"TweenService","TweenService"},
+        {"ScreenGui","ScreenGui"},{"RobloxFrame","Frame"},{"RobloxTextLabel","TextLabel"},
+        {"RobloxTextButton","TextButton"},{"RobloxTextBox","TextBox"},{"RobloxImageLabel","ImageLabel"},
+        {"RobloxScrollingFrame","ScrollingFrame"},{"ServerScript","Script"},{"LocalScript","LocalScript"},
+        {"ModuleScript","ModuleScript"},{"RobloxTool","Tool"},{"ClickDetector","ClickDetector"},
+        {"ProximityPrompt","ProximityPrompt"},{"SpawnLocation","SpawnLocation"},{"BillboardGui","BillboardGui"},
+        {"SurfaceGui","SurfaceGui"},{"Motor6D","Motor6D"},{"AnimationObject","Animation"},{"AnimationTrack","AnimationTrack"},
+        {"RobloxWorkspace","Workspace"},{"RobloxWorkspace2D","Workspace"},{"RobloxChat","TextChatService"},
+        {"BodyVelocity","BodyVelocity"},{"BodyPosition","BodyPosition"},{"BodyForce","BodyForce"},
+        {"BodyAngularVelocity","BodyAngularVelocity"},{"BodyGyro","BodyGyro"},
+        {"WeldConstraint","WeldConstraint"},{"HingeConstraint","HingeConstraint"},
+        {"BallSocketConstraint","BallSocketConstraint"},{"RodConstraint","RodConstraint"},{"SpringConstraint","SpringConstraint"},
+        {nullptr,nullptr}
+    };
+    for (int i = 0; map[i].g; i++) if (c == map[i].g) return map[i].r;
+    // Servicios / nodos no mapeados conservan su nombre (Players, Lighting, ReplicatedStorage...)
+    static CharString buf; buf = c.utf8(); return buf.get_data();
+}
+
+// IsA estilo Roblox: nombre exacto + jerarquía pragmática + compat con clase Godot.
+static bool gl_isa(Node* n, const char* q) {
+    if (!n || !q) return false;
+    if (strcmp(q, "Instance") == 0) return true;          // todo es Instance
+    const char* rc = gl_roblox_classname(n);
+    if (strcmp(rc, q) == 0) return true;
+    if (strcmp(rc, "Part") == 0 && (strcmp(q,"BasePart")==0 || strcmp(q,"PVInstance")==0)) return true;
+    bool gui = (strcmp(rc,"Frame")==0||strcmp(rc,"TextLabel")==0||strcmp(rc,"TextButton")==0||
+                strcmp(rc,"TextBox")==0||strcmp(rc,"ImageLabel")==0||strcmp(rc,"ScrollingFrame")==0);
+    if (gui && (strcmp(q,"GuiObject")==0 || strcmp(q,"GuiBase2d")==0)) return true;
+    if ((strcmp(rc,"Script")==0||strcmp(rc,"LocalScript")==0||strcmp(rc,"ModuleScript")==0)
+        && strcmp(q,"LuaSourceContainer")==0) return true;
+    // Compat: aceptar también el nombre de clase Godot (IsA("RobloxPart"), IsA("Node")...)
+    if (n->is_class(q)) return true;
+    return false;
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  Instance methods (accessible from Lua)
 ////
@@ -107,14 +213,23 @@ static LuauColor3* push_color3(lua_State* L, float r, float g, float b) {
 
 static int method_destroy(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
-    if (w && w->node_ptr) w->node_ptr->queue_free();
+    Node* n = w ? gow_node(w) : nullptr;
+    if (n) {
+        // Como Roblox: la instancia desaparece del árbol de inmediato y se
+        // libera la memoria. Sacarla del padre primero garantiza que deje de
+        // verse/colisionar al instante (queue_free por sí solo difiere al final
+        // del frame).
+        Node* parent = n->get_parent();
+        if (parent) parent->remove_child(n);
+        n->queue_free();
+    }
     return 0;
 }
 
 static int method_clone(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
-    if (w && w->node_ptr) {
-        Node* cloned = w->node_ptr->duplicate();
+    if (w && gow_node(w)) {
+        Node* cloned = gow_node(w)->duplicate();
         if (cloned) { wrap_node(L, cloned); return 1; }
     }
     lua_pushnil(L); return 1;
@@ -122,8 +237,8 @@ static int method_clone(lua_State* L) {
 
 static int method_clearallchildren(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
-    if (w && w->node_ptr) {
-        TypedArray<Node> ch = w->node_ptr->get_children();
+    if (w && gow_node(w)) {
+        TypedArray<Node> ch = gow_node(w)->get_children();
         for (int i = 0; i < ch.size(); i++) {
             Node* n = Object::cast_to<Node>(ch[i]);
             if (n) n->queue_free();
@@ -136,18 +251,18 @@ static int method_findfirstchild(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* name = luaL_checkstring(L, 2);
     bool recursive  = lua_isboolean(L, 3) && lua_toboolean(L, 3);
-    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    if (!w || !gow_node(w)) { lua_pushnil(L); return 1; }
     if (!recursive) {
         // Direct children only — Roblox default
-        for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
-            Node* ch = w->node_ptr->get_child(i);
+        for (int i = 0; i < gow_node(w)->get_child_count(); i++) {
+            Node* ch = gow_node(w)->get_child(i);
             if (ch && ch->get_name() == StringName(name)) { wrap_node(L, ch); return 1; }
         }
     } else {
         // Recursive — BFS through all descendants
         std::vector<Node*> queue;
-        for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
-            Node* ch = w->node_ptr->get_child(i);
+        for (int i = 0; i < gow_node(w)->get_child_count(); i++) {
+            Node* ch = gow_node(w)->get_child(i);
             if (ch) queue.push_back(ch);
         }
         while (!queue.empty()) {
@@ -165,8 +280,8 @@ static int method_findfirstchild(lua_State* L) {
 static int method_findfirstancestor(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* name = luaL_checkstring(L, 2);
-    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
-    Node* cur = w->node_ptr->get_parent();
+    if (!w || !gow_node(w)) { lua_pushnil(L); return 1; }
+    Node* cur = gow_node(w)->get_parent();
     while (cur) {
         if (cur->get_name() == StringName(name)) { wrap_node(L, cur); return 1; }
         cur = cur->get_parent();
@@ -177,10 +292,10 @@ static int method_findfirstancestor(lua_State* L) {
 static int method_findfirstancestorofclass(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* cls = luaL_checkstring(L, 2);
-    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
-    Node* cur = w->node_ptr->get_parent();
+    if (!w || !gow_node(w)) { lua_pushnil(L); return 1; }
+    Node* cur = gow_node(w)->get_parent();
     while (cur) {
-        if (cur->is_class(cls)) { wrap_node(L, cur); return 1; }
+        if (gl_isa(cur, cls)) { wrap_node(L, cur); return 1; }
         cur = cur->get_parent();
     }
     lua_pushnil(L); return 1;
@@ -189,10 +304,10 @@ static int method_findfirstancestorofclass(lua_State* L) {
 static int method_isancestorof(lua_State* L) {
     GodotObjectWrapper* w  = (GodotObjectWrapper*)lua_touserdata(L, 1);
     GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(L, 2);
-    if (!w || !w->node_ptr || !w2 || !w2->node_ptr) { lua_pushboolean(L, false); return 1; }
-    Node* cur = w2->node_ptr->get_parent();
+    if (!w || !gow_node(w) || !w2 || !gow_node(w2)) { lua_pushboolean(L, false); return 1; }
+    Node* cur = gow_node(w2)->get_parent();
     while (cur) {
-        if (cur == w->node_ptr) { lua_pushboolean(L, true); return 1; }
+        if (cur == gow_node(w)) { lua_pushboolean(L, true); return 1; }
         cur = cur->get_parent();
     }
     lua_pushboolean(L, false); return 1;
@@ -201,10 +316,10 @@ static int method_isancestorof(lua_State* L) {
 static int method_isdescendantof(lua_State* L) {
     GodotObjectWrapper* w  = (GodotObjectWrapper*)lua_touserdata(L, 1);
     GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(L, 2);
-    if (!w || !w->node_ptr || !w2 || !w2->node_ptr) { lua_pushboolean(L, false); return 1; }
-    Node* cur = w->node_ptr->get_parent();
+    if (!w || !gow_node(w) || !w2 || !gow_node(w2)) { lua_pushboolean(L, false); return 1; }
+    Node* cur = gow_node(w)->get_parent();
     while (cur) {
-        if (cur == w2->node_ptr) { lua_pushboolean(L, true); return 1; }
+        if (cur == gow_node(w2)) { lua_pushboolean(L, true); return 1; }
         cur = cur->get_parent();
     }
     lua_pushboolean(L, false); return 1;
@@ -212,10 +327,10 @@ static int method_isdescendantof(lua_State* L) {
 
 static int method_getfullname(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
-    if (!w || !w->node_ptr) { lua_pushstring(L, ""); return 1; }
+    if (!w || !gow_node(w)) { lua_pushstring(L, ""); return 1; }
     // Build path by walking up the tree (stop at root or DataModel)
     std::vector<std::string> parts;
-    Node* cur = w->node_ptr;
+    Node* cur = gow_node(w);
     while (cur && cur->get_parent()) {
         parts.push_back(String(cur->get_name()).utf8().get_data());
         cur = cur->get_parent();
@@ -231,10 +346,10 @@ static int method_getfullname(lua_State* L) {
 static int method_findfirstchild_whichisa(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* cls = luaL_checkstring(L, 2);
-    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
-    for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
-        Node* ch = w->node_ptr->get_child(i);
-        if (ch && ch->is_class(cls)) { wrap_node(L, ch); return 1; }
+    if (!w || !gow_node(w)) { lua_pushnil(L); return 1; }
+    for (int i = 0; i < gow_node(w)->get_child_count(); i++) {
+        Node* ch = gow_node(w)->get_child(i);
+        if (ch && gl_isa(ch, cls)) { wrap_node(L, ch); return 1; }
     }
     lua_pushnil(L); return 1;
 }
@@ -242,11 +357,11 @@ static int method_findfirstchild_whichisa(lua_State* L) {
 static int method_findfirstchildofclass(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* cls = luaL_checkstring(L, 2);
-    if (w && w->node_ptr) {
-        TypedArray<Node> ch = w->node_ptr->get_children();
+    if (w && gow_node(w)) {
+        TypedArray<Node> ch = gow_node(w)->get_children();
         for (int i = 0; i < ch.size(); i++) {
             Node* n = Object::cast_to<Node>(ch[i]);
-            if (n && n->is_class(cls)) { wrap_node(L, n); return 1; }
+            if (n && gl_isa(n, cls)) { wrap_node(L, n); return 1; }
         }
     }
     lua_pushnil(L); return 1;
@@ -255,8 +370,8 @@ static int method_findfirstchildofclass(lua_State* L) {
 static int method_getchildren(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     lua_newtable(L);
-    if (w && w->node_ptr) {
-        TypedArray<Node> ch = w->node_ptr->get_children();
+    if (w && gow_node(w)) {
+        TypedArray<Node> ch = gow_node(w)->get_children();
         for (int i = 0; i < ch.size(); i++) {
             wrap_node(L, Object::cast_to<Node>(ch[i]));
             lua_rawseti(L, -2, i + 1);
@@ -268,7 +383,7 @@ static int method_getchildren(lua_State* L) {
 static int method_getdescendants(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     lua_newtable(L);
-    if (w && w->node_ptr) {
+    if (w && gow_node(w)) {
         TypedArray<Node> all;
         std::function<void(Node*)> collect = [&](Node* n) {
             TypedArray<Node> ch = n->get_children();
@@ -277,7 +392,7 @@ static int method_getdescendants(lua_State* L) {
                 if (child) { all.push_back(child); collect(child); }
             }
         };
-        collect(w->node_ptr);
+        collect(gow_node(w));
         for (int i = 0; i < all.size(); i++) {
             wrap_node(L, Object::cast_to<Node>(all[i]));
             lua_rawseti(L, -2, i + 1);
@@ -289,20 +404,20 @@ static int method_getdescendants(lua_State* L) {
 static int method_isa(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* cls = luaL_checkstring(L, 2);
-    lua_pushboolean(L, w && w->node_ptr && w->node_ptr->is_class(cls));
+    lua_pushboolean(L, w && gl_isa(gow_node(w), cls));
     return 1;
 }
 
 static int method_setattribute(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
-    if (w && w->node_ptr) {
+    if (w && gow_node(w)) {
         const char* key = luaL_checkstring(L, 2);
         if (lua_isnumber(L, 3)) {
-            w->node_ptr->set_meta(key, lua_tonumber(L, 3));
+            gow_node(w)->set_meta(key, lua_tonumber(L, 3));
         } else if (lua_isboolean(L, 3)) {
-            w->node_ptr->set_meta(key, (bool)lua_toboolean(L, 3));
+            gow_node(w)->set_meta(key, (bool)lua_toboolean(L, 3));
         } else {
-            w->node_ptr->set_meta(key, String(lua_tostring(L, 3)));
+            gow_node(w)->set_meta(key, String(lua_tostring(L, 3)));
         }
     }
     return 0;
@@ -311,8 +426,8 @@ static int method_setattribute(lua_State* L) {
 static int method_getattribute(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
-    if (w && w->node_ptr && w->node_ptr->has_meta(key)) {
-        Variant val = w->node_ptr->get_meta(key);
+    if (w && gow_node(w) && gow_node(w)->has_meta(key)) {
+        Variant val = gow_node(w)->get_meta(key);
         if (val.get_type() == Variant::FLOAT || val.get_type() == Variant::INT) {
             lua_pushnumber(L, (double)val);
         } else if (val.get_type() == Variant::BOOL) {
@@ -364,7 +479,7 @@ static const char* _VIRTUAL_CONTAINERS[] = {
 static int method_getservice(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* svc_name = luaL_checkstring(L, 2);
-    if (!w || !w->node_ptr) { lua_pushnil(L); return 1; }
+    if (!w || !gow_node(w)) { lua_pushnil(L); return 1; }
 
     // ── Client/server separation ──────────────────────────────────────────
     //// ── Separacion cliente/servidor ──────────────────────────────────────
@@ -375,10 +490,22 @@ static int method_getservice(lua_State* L) {
     lua_getglobal(L, "__IS_CLIENT");
     const bool is_client = lua_isboolean(L, -1) && (lua_toboolean(L, -1) != 0);
     lua_pop(L, 1);
+    lua_getglobal(L, "__IS_SERVER");
+    const bool is_server = lua_isboolean(L, -1) && (lua_toboolean(L, -1) != 0);
+    lua_pop(L, 1);
     if (is_client && (strcmp(svc_name, "ServerStorage") == 0 ||
                       strcmp(svc_name, "ServerScriptService") == 0)) {
-        UtilityFunctions::print("[GodotLuau] LocalScript no puede acceder a '",
+        UtilityFunctions::push_error("[GodotLuau] LocalScript no puede acceder a '",
             svc_name, "' — este servicio es exclusivo del servidor.");
+        lua_pushnil(L);
+        return 1;
+    }
+    // Los servicios de ENTRADA son exclusivos del cliente: un ServerScript no
+    // puede leer teclado/ratón/pantalla (igual que en Roblox).
+    if (is_server && (strcmp(svc_name, "UserInputService")   == 0 ||
+                      strcmp(svc_name, "ContextActionService") == 0)) {
+        UtilityFunctions::push_error("[GodotLuau] ServerScript no puede acceder a '",
+            svc_name, "' — la entrada de hardware solo existe en el cliente (LocalScript).");
         lua_pushnil(L);
         return 1;
     }
@@ -390,25 +517,25 @@ static int method_getservice(lua_State* L) {
     lua_pop(L, 1);
 
     // 2. Direct child of game node by exact name
-    for (int i = 0; i < w->node_ptr->get_child_count(); i++) {
-        Node* ch = w->node_ptr->get_child(i);
+    for (int i = 0; i < gow_node(w)->get_child_count(); i++) {
+        Node* ch = gow_node(w)->get_child(i);
         if (ch && ch->get_name() == StringName(svc_name)) { wrap_node(L, ch); return 1; }
     }
 
     // 3. Anywhere in subtree
-    Node* svc = _find_node_by_name(w->node_ptr, svc_name);
+    Node* svc = _find_node_by_name(gow_node(w), svc_name);
     if (svc) { wrap_node(L, svc); return 1; }
 
     // 4. Search whole scene tree from root
-    if (w->node_ptr->is_inside_tree()) {
-        svc = _find_node_by_name((Node*)w->node_ptr->get_tree()->get_root(), svc_name);
+    if (gow_node(w)->is_inside_tree()) {
+        svc = _find_node_by_name((Node*)gow_node(w)->get_tree()->get_root(), svc_name);
         if (svc) { wrap_node(L, svc); return 1; }
     }
 
     // 5. Auto-create well-known virtual containers
     for (int i = 0; _VIRTUAL_CONTAINERS[i]; i++) {
         if (strcmp(_VIRTUAL_CONTAINERS[i], svc_name) == 0) {
-            Node* c = _get_or_create_container(w->node_ptr, svc_name);
+            Node* c = _get_or_create_container(gow_node(w), svc_name);
             wrap_node(L, c); return 1;
         }
     }
@@ -424,8 +551,8 @@ static int method_getservice(lua_State* L) {
 static int godot_object_index(lua_State* L) {
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
-    if (!wrapper || !wrapper->node_ptr) { lua_pushnil(L); return 1; }
-    Node* n = wrapper->node_ptr;
+    if (!wrapper || !gow_node(wrapper)) { lua_pushnil(L); return 1; }
+    Node* n = gow_node(wrapper);
 
     if (strcmp(key, "Destroy")          == 0) { lua_pushcfunction(L, method_destroy,                   "Destroy");                return 1; }
     if (strcmp(key, "Clone")            == 0) { lua_pushcfunction(L, method_clone,                     "Clone");                  return 1; }
@@ -460,130 +587,75 @@ static int godot_object_index(lua_State* L) {
             Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
             bool adding = lua_toboolean(pL, lua_upvalueindex(2)) != 0;
             if (!nd || !lua_isfunction(pL, 2)) { lua_pushnil(pL); return 1; }
+            // Dueño del callback = el ScriptNodeBase. Godot desconecta solo al
+            // liberar cualquiera de los dos extremos → sin fugas ni use-after-free.
+            lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_SCRIPT_NODE");
+            Node* sn = (Node*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+            if (!sn) { lua_pushnil(pL); return 1; }
             lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
-            // Store in node's meta attribute
-            const char* attr = adding ? "__child_added_refs" : "__child_removed_refs";
-            // We store in a Lua table in the registry keyed by node pointer
-            lua_pushstring(pL, attr);
-            lua_rawget(pL, LUA_REGISTRYINDEX);
-            if (lua_isnil(pL, -1)) {
-                lua_pop(pL, 1);
-                lua_newtable(pL);
-                lua_pushstring(pL, attr);
-                lua_pushvalue(pL, -2);
-                lua_rawset(pL, LUA_REGISTRYINDEX);
-            }
-            // key = lightuserdata(node), value = array of refs
-            lua_pushlightuserdata(pL, (void*)nd);
-            lua_rawget(pL, -2);
-            if (lua_isnil(pL, -1)) {
-                lua_pop(pL, 1);
-                lua_newtable(pL);
-                lua_pushlightuserdata(pL, (void*)nd);
-                lua_pushvalue(pL, -2);
-                lua_rawset(pL, -4);
-            }
-            int n2 = (int)lua_objlen(pL, -1) + 1;
-            lua_pushinteger(pL, ref);
-            lua_rawseti(pL, -2, n2);
-            lua_pop(pL, 2);
-            lua_pushnil(pL); return 1;
-        }, "Connect", 2);
-        lua_setfield(L, -2, "Connect");
-        return 1;
-    }
-
-    // GetPropertyChangedSignal — conecta a Godot "property_list_changed" o polling per-frame
-    if (strcmp(key, "GetPropertyChangedSignal") == 0) {
-        lua_pushlightuserdata(L, (void*)n);
-        lua_pushcclosure(L, [](lua_State* pL) -> int {
-            Node* nd  = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
-            // const char* prop = luaL_checkstring(pL, 2); // not used yet
+            const char* gsig = adding ? "child_entered_tree" : "child_exiting_tree";
+            if (nd->has_signal(gsig))
+                nd->connect(gsig, Callable(sn, "_gl_child_event").bind(ref));
+            // Objeto conexión con Disconnect() (resuelve por ObjectID: seguro
+            // aunque los nodos se hayan destruido cuando se llame).
             lua_newtable(pL);
-            lua_pushlightuserdata(pL, (void*)nd);
-            lua_pushcclosure(pL, [](lua_State* LL) -> int {
-                Node* nd2 = (Node*)lua_touserdata(LL, lua_upvalueindex(1));
-                if (!nd2 || !lua_isfunction(LL, 2)) return 0;
-                lua_pushvalue(LL, 2); int ref = lua_ref(LL, -1); lua_pop(LL, 1);
-                int64_t ptr_L = (int64_t)LL;
-                // Connect to Godot's generic "property_list_changed" signal
-                if (nd2->has_signal("property_list_changed")) {
-                    nd2->connect("property_list_changed",
-                        Callable(nd2, "_on_luau_prop_changed").bind(ref, ptr_L));
+            lua_pushlightuserdata(pL, (void*)(uintptr_t)nd->get_instance_id());
+            lua_pushlightuserdata(pL, (void*)(uintptr_t)sn->get_instance_id());
+            lua_pushstring(pL, gsig);
+            lua_pushinteger(pL, ref);
+            lua_pushcclosure(pL, [](lua_State* dL) -> int {
+                uint64_t tid = (uint64_t)(uintptr_t)lua_touserdata(dL, lua_upvalueindex(1));
+                uint64_t sid = (uint64_t)(uintptr_t)lua_touserdata(dL, lua_upvalueindex(2));
+                const char* sig = lua_tostring(dL, lua_upvalueindex(3));
+                int r = (int)lua_tointeger(dL, lua_upvalueindex(4));
+                Node* tnd = Object::cast_to<Node>(ObjectDB::get_instance(tid));
+                Node* snn = Object::cast_to<Node>(ObjectDB::get_instance(sid));
+                if (tnd && snn) {
+                    Callable c = Callable(snn, "_gl_child_event").bind(r);
+                    if (tnd->is_connected(sig, c)) tnd->disconnect(sig, c);
                 }
                 return 0;
-            }, "Connect", 1);
-            lua_setfield(pL, -2, "Connect");
-            // stub Wait/Once for now
-            lua_pushcclosure(pL, [](lua_State* LL) -> int { lua_pushnil(LL); return 1; }, "Wait", 0);
-            lua_setfield(pL, -2, "Wait");
+            }, "Disconnect", 4);
+            lua_setfield(pL, -2, "Disconnect");
             return 1;
-        }, "GetPropertyChangedSignal", 1);
-        return 1;
-    }
-
-    // AncestryChanged — conecta al signal "tree_exiting" / parent change (best-effort)
-    if (strcmp(key, "AncestryChanged") == 0) {
-        lua_newtable(L);
-        lua_pushlightuserdata(L, (void*)n);
-        lua_pushcclosure(L, [](lua_State* pL) -> int {
-            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
-            if (!nd || !lua_isfunction(pL, 2)) return 0;
-            lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
-            int64_t ptr_L = (int64_t)pL;
-            // Use "tree_entered" as proxy for ancestry change
-            if (nd->has_signal("tree_entered"))
-                nd->connect("tree_entered", Callable(nd, "_on_luau_ancestry").bind(ref, ptr_L));
-            return 0;
-        }, "Connect", 1);
-        lua_setfield(L, -2, "Connect");
-        return 1;
-    }
-
-    // DescendantAdded / DescendantRemoving — connected to child_entered/exiting_tree recursive
-    if (strcmp(key, "DescendantAdded") == 0 || strcmp(key, "DescendantRemoving") == 0) {
-        bool is_added = (strcmp(key, "DescendantAdded") == 0);
-        lua_newtable(L);
-        lua_pushlightuserdata(L, (void*)n);
-        lua_pushboolean(L, is_added ? 1 : 0);
-        lua_pushcclosure(L, [](lua_State* pL) -> int {
-            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
-            bool adding = lua_toboolean(pL, lua_upvalueindex(2)) != 0;
-            if (!nd || !lua_isfunction(pL, 2)) return 0;
-            lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
-            const char* attr = adding ? "__desc_added_refs" : "__desc_removed_refs";
-            lua_pushstring(pL, attr); lua_rawget(pL, LUA_REGISTRYINDEX);
-            if (lua_isnil(pL, -1)) {
-                lua_pop(pL, 1); lua_newtable(pL);
-                lua_pushstring(pL, attr); lua_pushvalue(pL, -2); lua_rawset(pL, LUA_REGISTRYINDEX);
-            }
-            lua_pushlightuserdata(pL, (void*)nd); lua_rawget(pL, -2);
-            if (lua_isnil(pL, -1)) {
-                lua_pop(pL, 1); lua_newtable(pL);
-                lua_pushlightuserdata(pL, (void*)nd); lua_pushvalue(pL, -2); lua_rawset(pL, -4);
-            }
-            int n2 = (int)lua_objlen(pL, -1) + 1;
-            lua_pushinteger(pL, ref); lua_rawseti(pL, -2, n2);
-            lua_pop(pL, 2);
-            // Connect Godot signal once
-            const char* gsig = adding ? "child_entered_tree" : "child_exiting_tree";
-            if (nd->has_signal(gsig) && !nd->is_connected(gsig, Callable(nd, "_on_luau_desc_change")))
-                nd->connect(gsig, Callable(nd, "_on_luau_desc_change").bind(adding ? 1 : 0));
-            return 0;
         }, "Connect", 2);
         lua_setfield(L, -2, "Connect");
+        return 1;
+    }
+
+    // GetPropertyChangedSignal(prop) → señal (aún no soportada: inerte, sin fugas)
+    if (strcmp(key, "GetPropertyChangedSignal") == 0) {
+        lua_pushcfunction(L, [](lua_State* pL) -> int {
+            _gl_push_inert_signal(pL);
+            return 1;
+        }, "GetPropertyChangedSignal");
+        return 1;
+    }
+
+    // AncestryChanged / DescendantAdded / DescendantRemoving — aún no soportadas.
+    // Devolvemos una señal inerte (Connect/Once/Wait no-op) en vez de conectar a
+    // métodos inexistentes y filtrar referencias como antes.
+    if (strcmp(key, "AncestryChanged")    == 0 ||
+        strcmp(key, "DescendantAdded")    == 0 ||
+        strcmp(key, "DescendantRemoving") == 0) {
+        _gl_push_inert_signal(L);
         return 1;
     }
 
     // ── Propiedades de Instance ───────────────────────────────────
     if (strcmp(key, "Name")      == 0) { lua_pushstring(L, String(n->get_name()).utf8().get_data()); return 1; }
-    if (strcmp(key, "ClassName") == 0) { lua_pushstring(L, String(n->get_class()).utf8().get_data()); return 1; }
+    if (strcmp(key, "ClassName") == 0) { lua_pushstring(L, gl_roblox_classname(n)); return 1; }
     if (strcmp(key, "Parent")    == 0) { wrap_node(L, n->get_parent()); return 1; }
 
     // ── Players ───────────────────────────────────────────────────
     Players* players_svc = Object::cast_to<Players>(n);
     if (players_svc) {
         if (strcmp(key, "LocalPlayer") == 0) {
+            // El servidor no tiene "jugador local": LocalPlayer = nil en un ServerScript.
+            lua_getglobal(L, "__IS_SERVER");
+            bool srv = lua_isboolean(L, -1) && (lua_toboolean(L, -1) != 0);
+            lua_pop(L, 1);
+            if (srv) { lua_pushnil(L); return 1; }
             wrap_node(L, players_svc->get_local_player()); return 1;
         }
         if (strcmp(key, "MaxPlayers") == 0) { lua_pushnumber(L, players_svc->get_max_players()); return 1; }
@@ -612,8 +684,8 @@ static int godot_object_index(lua_State* L) {
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 Players* ps = (Players*)lua_touserdata(pL, lua_upvalueindex(1));
                 GodotObjectWrapper* cw = (GodotObjectWrapper*)lua_touserdata(pL, 2);
-                if (!ps || !cw || !cw->node_ptr) { lua_pushnil(pL); return 1; }
-                Node* character = cw->node_ptr;
+                if (!ps || !cw || !gow_node(cw)) { lua_pushnil(pL); return 1; }
+                Node* character = gow_node(cw);
                 TypedArray<Node> all_players = ps->get_players();
                 for (int i = 0; i < all_players.size(); i++) {
                     Node* p = Object::cast_to<Node>(all_players[i]);
@@ -659,7 +731,7 @@ static int godot_object_index(lua_State* L) {
                 if (!mL) mL = pL;
                 if (strcmp(ev, "PlayerAdded") == 0)    ps->add_player_added_cb(mL, ref);
                 else                                    ps->add_player_removing_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, ps, ref); return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -672,7 +744,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "SendMessage") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                TextChatService* t = w2 ? Object::cast_to<TextChatService>(w2->node_ptr) : nullptr;
+                TextChatService* t = w2 ? Object::cast_to<TextChatService>(gow_node(w2)) : nullptr;
                 if (t) {
                     String player = luaL_checkstring(pL, 2);
                     String msg    = luaL_checkstring(pL, 3);
@@ -685,7 +757,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "SetPlayerName") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                TextChatService* t = w2 ? Object::cast_to<TextChatService>(w2->node_ptr) : nullptr;
+                TextChatService* t = w2 ? Object::cast_to<TextChatService>(gow_node(w2)) : nullptr;
                 if (t) t->set_player_name(luaL_checkstring(pL, 2));
                 return 0;
             }, "SetPlayerName");
@@ -784,7 +856,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "Raycast") == 0 || strcmp(key, "FindPartOnRay") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* wr = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                if (!wr || !wr->node_ptr) { lua_pushnil(pL); return 1; }
+                if (!wr || !gow_node(wr)) { lua_pushnil(pL); return 1; }
 
                 auto read_v3 = [&](int idx) -> Vector3 {
                     if (lua_isuserdata(pL, idx)) {
@@ -811,7 +883,7 @@ static int godot_object_index(lua_State* L) {
                     max_d = (float)lua_tonumber(pL, 4);
                 }
 
-                Node3D* ws3d = Object::cast_to<Node3D>(wr->node_ptr);
+                Node3D* ws3d = Object::cast_to<Node3D>(gow_node(wr));
                 if (!ws3d || !ws3d->is_inside_tree()) { lua_pushnil(pL); return 1; }
                 PhysicsDirectSpaceState3D* space = ws3d->get_world_3d()->get_direct_space_state();
                 if (!space) { lua_pushnil(pL); return 1; }
@@ -930,7 +1002,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "TakeDamage") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid* h = w2 ? Object::cast_to<Humanoid>(w2->node_ptr) : nullptr;
+                Humanoid* h = w2 ? Object::cast_to<Humanoid>(gow_node(w2)) : nullptr;
                 if (h) h->take_damage((float)luaL_checknumber(pL, 2));
                 return 0;
             }, "TakeDamage");
@@ -939,7 +1011,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "Heal") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid* h = w2 ? Object::cast_to<Humanoid>(w2->node_ptr) : nullptr;
+                Humanoid* h = w2 ? Object::cast_to<Humanoid>(gow_node(w2)) : nullptr;
                 if (h) h->heal((float)luaL_checknumber(pL, 2));
                 return 0;
             }, "Heal");
@@ -983,7 +1055,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "GetState") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid* h = w2 ? Object::cast_to<Humanoid>(w2->node_ptr) : nullptr;
+                Humanoid* h = w2 ? Object::cast_to<Humanoid>(gow_node(w2)) : nullptr;
                 lua_pushnumber(pL, h ? h->get_state() : 1);
                 return 1;
             }, "GetState");
@@ -992,7 +1064,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "ChangeState") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid* h = w2 ? Object::cast_to<Humanoid>(w2->node_ptr) : nullptr;
+                Humanoid* h = w2 ? Object::cast_to<Humanoid>(gow_node(w2)) : nullptr;
                 if (h) h->change_state((int)luaL_checknumber(pL, 2));
                 return 0;
             }, "ChangeState");
@@ -1019,8 +1091,8 @@ static int godot_object_index(lua_State* L) {
                 // Get animation name from arg (AnimationObject or string)
                 String anim_name_s = "default";
                 GodotObjectWrapper* aw = (GodotObjectWrapper*)lua_touserdata(pL, 2);
-                if (aw && aw->node_ptr) {
-                    AnimationObject* ao = Object::cast_to<AnimationObject>(aw->node_ptr);
+                if (aw && gow_node(aw)) {
+                    AnimationObject* ao = Object::cast_to<AnimationObject>(gow_node(aw));
                     if (ao) {
                         anim_name_s = ao->get_anim_name();
                         // Load the animation from file if specified
@@ -1044,7 +1116,7 @@ static int godot_object_index(lua_State* L) {
                 h->add_child(track);
                 // Wrap and return
                 GodotObjectWrapper* tw = (GodotObjectWrapper*)lua_newuserdata(pL, sizeof(GodotObjectWrapper));
-                tw->node_ptr = track;
+                gow_set(tw, track);
                 luaL_getmetatable(pL, "GodotObject");
                 lua_setmetatable(pL, -2);
                 return 1;
@@ -1080,8 +1152,8 @@ static int godot_object_index(lua_State* L) {
                 Humanoid* h = (Humanoid*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!h) return 0;
                 GodotObjectWrapper* pw = (GodotObjectWrapper*)lua_touserdata(pL, 2);
-                if (pw && pw->node_ptr) {
-                    Node3D* target = Object::cast_to<Node3D>(pw->node_ptr);
+                if (pw && gow_node(pw)) {
+                    Node3D* target = Object::cast_to<Node3D>(gow_node(pw));
                     Node* parent = h->get_parent();
                     Node3D* body3d = parent ? Object::cast_to<Node3D>(parent) : nullptr;
                     if (target && body3d) {
@@ -1130,7 +1202,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 h->add_died_callback(main_L, ref);
-                return 0;
+                _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1153,7 +1225,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 h->add_health_changed_callback(main_L, ref);
-                return 0;
+                _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1176,7 +1248,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 h->add_state_changed_callback(main_L, ref);
-                return 0;
+                _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1206,7 +1278,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "TakeDamage") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid2D* h = w2 ? Object::cast_to<Humanoid2D>(w2->node_ptr) : nullptr;
+                Humanoid2D* h = w2 ? Object::cast_to<Humanoid2D>(gow_node(w2)) : nullptr;
                 if (h) h->take_damage((float)luaL_checknumber(pL, 2));
                 return 0;
             }, "TakeDamage");
@@ -1215,7 +1287,7 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "Heal") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                Humanoid2D* h = w2 ? Object::cast_to<Humanoid2D>(w2->node_ptr) : nullptr;
+                Humanoid2D* h = w2 ? Object::cast_to<Humanoid2D>(gow_node(w2)) : nullptr;
                 if (h) h->heal((float)luaL_checknumber(pL, 2));
                 return 0;
             }, "Heal");
@@ -1413,7 +1485,7 @@ static int godot_object_index(lua_State* L) {
                 if (lua_isfunction(L, 2)) {
                     lua_pushvalue(L, 2);
                     int ref = lua_ref(L, -1);
-                    int64_t ptr_L = (int64_t)L;
+                    int64_t ptr_L = (int64_t)gl_main_of(L);
                     if (target && target->has_signal(StringName(sig))) {
                         target->connect(StringName(sig),
                             Callable(target, "_on_luau_part_touched").bind(ref, ptr_L));
@@ -1557,7 +1629,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 rev->add_server_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, rev, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1580,7 +1652,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 rev->add_client_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, rev, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1644,7 +1716,7 @@ static int godot_object_index(lua_State* L) {
                 int ref = lua_ref(pL, -1);
                 lua_pop(pL, 1);
                 bev->add_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, bev, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1796,7 +1868,7 @@ static int godot_object_index(lua_State* L) {
                 lua_pushvalue(pL, fn_pos);
                 int ref = lua_ref(pL, -1); lua_pop(pL,1);
                 btn->add_click_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1815,7 +1887,7 @@ static int godot_object_index(lua_State* L) {
                 lua_pushvalue(pL, fn_pos);
                 int ref = lua_ref(pL, -1); lua_pop(pL,1);
                 btn->add_enter_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1842,7 +1914,7 @@ static int godot_object_index(lua_State* L) {
                 lua_pushvalue(pL, fn_pos);
                 int ref = lua_ref(pL, -1); lua_pop(pL,1);
                 tb->add_focus_lost_cb(mL, ref);
-                return 0;
+                _gl_push_connection(pL, tb, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
             return 1;
@@ -1904,10 +1976,11 @@ static int godot_object_index(lua_State* L) {
             lua_pushlightuserdata(L,(void*)atrack);
             lua_pushlightuserdata(L,(void*)&cbs);
             lua_pushcclosure(L,[](lua_State* LL)->int{
+                AnimationTrack* d=(AnimationTrack*)lua_touserdata(LL,lua_upvalueindex(1));
                 auto* c=(std::vector<AnimationTrack::LuaCallback>*)lua_touserdata(LL,lua_upvalueindex(2));
                 if(!c||!lua_isfunction(LL,2)){lua_pushnil(LL);return 1;}
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                c->push_back({LL,ref,true}); lua_pushnil(LL); return 1;
+                c->push_back({gl_main_of(LL),ref,true}); _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
             lua_setfield(L,-2,"Connect"); return 1;
         };
@@ -1977,7 +2050,7 @@ static int godot_object_index(lua_State* L) {
                 if (!ts) { lua_pushnil(LL); return 1; }
                 // args: (instance, tweenInfo_table, goals_table)
                 GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(LL, 1);
-                Node* target_node = (w && w->node_ptr) ? w->node_ptr : nullptr;
+                Node* target_node = (w && gow_node(w)) ? gow_node(w) : nullptr;
 
                 // Parse TweenInfo table (arg 2)
                 TweenInfo tinfo;
@@ -2035,7 +2108,7 @@ static int godot_object_index(lua_State* L) {
 
                 // Return Tween object
                 GodotObjectWrapper* tw_wrap = (GodotObjectWrapper*)lua_newuserdata(LL, sizeof(GodotObjectWrapper));
-                tw_wrap->node_ptr = tw;
+                gow_set(tw_wrap, tw);
                 luaL_getmetatable(LL, "GodotObject");
                 lua_setmetatable(LL, -2);
                 return 1;
@@ -2065,8 +2138,8 @@ static int godot_object_index(lua_State* L) {
                 RobloxTween* t=(RobloxTween*)lua_touserdata(LL,lua_upvalueindex(1));
                 if (!t || !lua_isfunction(LL,2)) { lua_pushnil(LL); return 1; }
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                t->add_completed_cb(LL, ref);
-                lua_pushnil(LL); return 1;
+                t->add_completed_cb(gl_main_of(LL), ref);
+                _gl_push_connection(LL, t, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect"); return 1;
         }
@@ -2091,8 +2164,8 @@ static int godot_object_index(lua_State* L) {
                 auto* c=(std::vector<ClickDetector::LuaCallback>*)lua_touserdata(LL,lua_upvalueindex(2));
                 if (!d || !c || !lua_isfunction(LL,2)) { lua_pushnil(LL); return 1; }
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                c->push_back({LL, ref, true});
-                lua_pushnil(LL); return 1;
+                c->push_back({gl_main_of(LL), ref, true});
+                _gl_push_connection(LL, d, ref); return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect"); return 1;
         };
@@ -2114,11 +2187,12 @@ static int godot_object_index(lua_State* L) {
             lua_pushlightuserdata(L, (void*)pp);
             lua_pushlightuserdata(L, (void*)&cbs);
             lua_pushcclosure(L, [](lua_State* LL)->int{
+                ProximityPrompt* d=(ProximityPrompt*)lua_touserdata(LL,lua_upvalueindex(1));
                 auto* c=(std::vector<ProximityPrompt::LuaCallback>*)lua_touserdata(LL,lua_upvalueindex(2));
                 if (!c || !lua_isfunction(LL,2)) { lua_pushnil(LL); return 1; }
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                c->push_back({LL, ref, true});
-                lua_pushnil(LL); return 1;
+                c->push_back({gl_main_of(LL), ref, true});
+                _gl_push_connection(LL, d, ref); return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect"); return 1;
         };
@@ -2175,11 +2249,12 @@ static int godot_object_index(lua_State* L) {
             lua_pushlightuserdata(L,(void*)rtool);
             lua_pushlightuserdata(L,(void*)&cbs);
             lua_pushcclosure(L,[](lua_State* LL)->int{
+                RobloxTool* d=(RobloxTool*)lua_touserdata(LL,lua_upvalueindex(1));
                 auto* c=(std::vector<RobloxTool::LuaCallback>*)lua_touserdata(LL,lua_upvalueindex(2));
                 if (!c || !lua_isfunction(LL,2)){lua_pushnil(LL);return 1;}
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                c->push_back({LL,ref,true});
-                lua_pushnil(LL); return 1;
+                c->push_back({gl_main_of(LL),ref,true});
+                _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
             lua_setfield(L,-2,"Connect"); return 1;
         };
@@ -2242,10 +2317,11 @@ static int godot_object_index(lua_State* L) {
             lua_pushlightuserdata(L,(void*)uis);
             lua_pushlightuserdata(L,(void*)&cbs);
             lua_pushcclosure(L,[](lua_State* LL)->int{
+                UserInputService* d=(UserInputService*)lua_touserdata(LL,lua_upvalueindex(1));
                 auto* c=(std::vector<UserInputService::LuaCallback>*)lua_touserdata(LL,lua_upvalueindex(2));
                 if(!c||!lua_isfunction(LL,2)){lua_pushnil(LL);return 1;}
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
-                c->push_back({LL,ref,true}); lua_pushnil(LL); return 1;
+                c->push_back({gl_main_of(LL),ref,true}); _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
             lua_setfield(L,-2,"Connect"); return 1;
         };
@@ -2263,7 +2339,7 @@ static int godot_object_index(lua_State* L) {
                 CollectionService* c=(CollectionService*)lua_touserdata(LL,lua_upvalueindex(1));
                 GodotObjectWrapper* w=(GodotObjectWrapper*)lua_touserdata(LL,2);
                 const char* tag=luaL_checkstring(LL,3);
-                if(c&&w&&w->node_ptr) c->add_tag(w->node_ptr,String(tag));
+                if(c&&w&&gow_node(w)) c->add_tag(gow_node(w),String(tag));
                 return 0;
             },"AddTag",1); return 1;
         }
@@ -2273,7 +2349,7 @@ static int godot_object_index(lua_State* L) {
                 CollectionService* c=(CollectionService*)lua_touserdata(LL,lua_upvalueindex(1));
                 GodotObjectWrapper* w=(GodotObjectWrapper*)lua_touserdata(LL,2);
                 const char* tag=luaL_checkstring(LL,3);
-                if(c&&w&&w->node_ptr) c->remove_tag(w->node_ptr,String(tag));
+                if(c&&w&&gow_node(w)) c->remove_tag(gow_node(w),String(tag));
                 return 0;
             },"RemoveTag",1); return 1;
         }
@@ -2284,7 +2360,7 @@ static int godot_object_index(lua_State* L) {
                 GodotObjectWrapper* w=(GodotObjectWrapper*)lua_touserdata(LL,2);
                 const char* tag=luaL_checkstring(LL,3);
                 bool r=false;
-                if(c&&w&&w->node_ptr) r=c->has_tag(w->node_ptr,String(tag));
+                if(c&&w&&gow_node(w)) r=c->has_tag(gow_node(w),String(tag));
                 lua_pushboolean(LL,r?1:0); return 1;
             },"HasTag",1); return 1;
         }
@@ -2300,7 +2376,7 @@ static int godot_object_index(lua_State* L) {
                     Node* nd=Object::cast_to<Node>(arr[i]);
                     if(nd){ lua_pushlightuserdata(LL,(void*)nd);
                         GodotObjectWrapper* wr=(GodotObjectWrapper*)lua_newuserdata(LL,sizeof(GodotObjectWrapper));
-                        wr->node_ptr=nd;
+                        gow_set(wr, nd);
                         luaL_getmetatable(LL,"GodotObject"); lua_setmetatable(LL,-2);
                         lua_rawseti(LL,-3,i+1);
                     } else { lua_pop(LL,1); }
@@ -2314,8 +2390,8 @@ static int godot_object_index(lua_State* L) {
                 CollectionService* c=(CollectionService*)lua_touserdata(LL,lua_upvalueindex(1));
                 GodotObjectWrapper* w=(GodotObjectWrapper*)lua_touserdata(LL,2);
                 lua_newtable(LL);
-                if(!c||!w||!w->node_ptr) return 1;
-                PackedStringArray tags=c->get_tags(w->node_ptr);
+                if(!c||!w||!gow_node(w)) return 1;
+                PackedStringArray tags=c->get_tags(gow_node(w));
                 for(int i=0;i<tags.size();i++){
                     lua_pushstring(LL,tags[i].utf8().get_data());
                     lua_rawseti(LL,-2,i+1);
@@ -2339,8 +2415,8 @@ static int godot_object_index(lua_State* L) {
 static int godot_object_newindex(lua_State* L) {
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
-    if (!wrapper || !wrapper->node_ptr) return 0;
-    Node* n = wrapper->node_ptr;
+    if (!wrapper || !gow_node(wrapper)) return 0;
+    Node* n = gow_node(wrapper);
 
     if (strcmp(key, "Name") == 0) {
         n->set_name(luaL_checkstring(L, 3));
@@ -2352,9 +2428,9 @@ static int godot_object_newindex(lua_State* L) {
             if (n->get_parent()) n->get_parent()->remove_child(n);
         } else {
             GodotObjectWrapper* p_wrap = (GodotObjectWrapper*)lua_touserdata(L, 3);
-            if (p_wrap && p_wrap->node_ptr && p_wrap->node_ptr != n) {
+            if (p_wrap && gow_node(p_wrap) && gow_node(p_wrap) != n) {
                 if (n->get_parent()) n->get_parent()->remove_child(n);
-                p_wrap->node_ptr->add_child(n);
+                gow_node(p_wrap)->add_child(n);
                 // Set owner so the node is visible/saveable in the editor
                 if (n->is_inside_tree()) {
                     Node* scene_root = n->get_tree()->get_edited_scene_root();
@@ -2367,7 +2443,7 @@ static int godot_object_newindex(lua_State* L) {
     }
 
     if (strcmp(key, "Position") == 0) {
-        LuauVector3* vec = (LuauVector3*)lua_touserdata(L, 3);
+        LuauVector3* vec = check_vector3(L, 3);
         Node3D* n3d = Object::cast_to<Node3D>(n);
         if (vec && n3d) {
             if (n3d->is_inside_tree()) n3d->set_global_position(Vector3(vec->x, vec->y, vec->z));
@@ -2377,7 +2453,7 @@ static int godot_object_newindex(lua_State* L) {
     }
 
     if (strcmp(key, "Rotation") == 0) {
-        LuauVector3* vec = (LuauVector3*)lua_touserdata(L, 3);
+        LuauVector3* vec = check_vector3(L, 3);
         Node3D* n3d = Object::cast_to<Node3D>(n);
         if (vec && n3d) {
             if (n3d->is_inside_tree()) n3d->set_global_rotation_degrees(Vector3(vec->x, vec->y, vec->z));
@@ -2494,32 +2570,32 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "LeftSurface")      == 0) { part->set_left_surface((int)luaL_checknumber(L,3));          return 0; }
         if (strcmp(key, "RightSurface")     == 0) { part->set_right_surface((int)luaL_checknumber(L,3));         return 0; }
         if (strcmp(key, "Color") == 0 || strcmp(key, "BrickColor") == 0) {
-            LuauColor3* col = (LuauColor3*)lua_touserdata(L, 3);
+            LuauColor3* col = check_color3(L, 3);
             if (col) part->set_color(Color(col->r, col->g, col->b));
             return 0;
         }
         if (strcmp(key, "Size") == 0) {
-            LuauVector3* vec = (LuauVector3*)lua_touserdata(L, 3);
+            LuauVector3* vec = check_vector3(L, 3);
             if (vec) part->set_size(Vector3(vec->x, vec->y, vec->z));
             return 0;
         }
         if (strcmp(key, "Position") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) part->set_global_position(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key, "Orientation") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) part->set_rotation_degrees(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key, "Velocity") == 0 || strcmp(key, "AssemblyLinearVelocity") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) part->set_linear_velocity(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key, "AngularVelocity") == 0 || strcmp(key, "AssemblyAngularVelocity") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L, 3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) part->set_angular_velocity(Vector3(v->x, v->y, v->z));
             return 0;
         }
@@ -2546,7 +2622,7 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "DevComputerMovementMode") == 0) { rp_w->set_dev_computer_movement_mode((int)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key, "DevTouchMovementMode")    == 0) { rp_w->set_dev_touch_movement_mode((int)luaL_checknumber(L,3));    return 0; }
         if (strcmp(key, "TeamColor") == 0) {
-            LuauColor3* col = (LuauColor3*)lua_touserdata(L, 3);
+            LuauColor3* col = check_color3(L, 3);
             if (col) rp_w->set_team_color(Color(col->r, col->g, col->b));
             return 0;
         }
@@ -2566,11 +2642,11 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key, "EnvironmentDiffuseScale")  == 0) { light->set_env_diffuse_scale((float)luaL_checknumber(L,3));  return 0; }
         if (strcmp(key, "EnvironmentSpecularScale") == 0) { light->set_env_specular_scale((float)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key, "Technology")               == 0) { light->set_technology((int)luaL_checknumber(L,3)); return 0; }
-        if (strcmp(key, "Ambient")                  == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_ambient(Color(c->r,c->g,c->b)); return 0; }
-        if (strcmp(key, "OutdoorAmbient")           == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_outdoor_ambient(Color(c->r,c->g,c->b)); return 0; }
-        if (strcmp(key, "FogColor")                 == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_fog_color(Color(c->r,c->g,c->b)); return 0; }
-        if (strcmp(key, "ColorShift_Top")           == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_top(Color(c->r,c->g,c->b)); return 0; }
-        if (strcmp(key, "ColorShift_Bottom")        == 0) { LuauColor3* c = (LuauColor3*)lua_touserdata(L,3); if(c) light->set_color_shift_bottom(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "Ambient")                  == 0) { LuauColor3* c = check_color3(L, 3); if(c) light->set_ambient(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "OutdoorAmbient")           == 0) { LuauColor3* c = check_color3(L, 3); if(c) light->set_outdoor_ambient(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "FogColor")                 == 0) { LuauColor3* c = check_color3(L, 3); if(c) light->set_fog_color(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "ColorShift_Top")           == 0) { LuauColor3* c = check_color3(L, 3); if(c) light->set_color_shift_top(Color(c->r,c->g,c->b)); return 0; }
+        if (strcmp(key, "ColorShift_Bottom")        == 0) { LuauColor3* c = check_color3(L, 3); if(c) light->set_color_shift_bottom(Color(c->r,c->g,c->b)); return 0; }
         if (strcmp(key, "TimeOfDay")                == 0) { light->set_time_of_day(String(luaL_checkstring(L,3)));         return 0; }
         if (strcmp(key, "DayNightCycle")            == 0) { light->set_day_night_cycle(lua_toboolean(L,3) != 0);           return 0; }
         if (strcmp(key, "DayLengthMinutes")         == 0) { light->set_day_length_minutes((float)luaL_checknumber(L,3));   return 0; }
@@ -2580,12 +2656,12 @@ static int godot_object_newindex(lua_State* L) {
     BodyVelocity* bv_w = Object::cast_to<BodyVelocity>(n);
     if (bv_w) {
         if (strcmp(key,"Velocity") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bv_w->set_velocity(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key,"MaxForce") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bv_w->set_max_force(Vector3(v->x, v->y, v->z));
             return 0;
         }
@@ -2594,12 +2670,12 @@ static int godot_object_newindex(lua_State* L) {
     BodyPosition* bpos_w = Object::cast_to<BodyPosition>(n);
     if (bpos_w) {
         if (strcmp(key,"Position") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bpos_w->set_position_val(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key,"MaxForce") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bpos_w->set_max_force(Vector3(v->x, v->y, v->z));
             return 0;
         }
@@ -2609,7 +2685,7 @@ static int godot_object_newindex(lua_State* L) {
     BodyForce* bf_w = Object::cast_to<BodyForce>(n);
     if (bf_w) {
         if (strcmp(key,"Force") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bf_w->set_force(Vector3(v->x, v->y, v->z));
             return 0;
         }
@@ -2618,12 +2694,12 @@ static int godot_object_newindex(lua_State* L) {
     BodyAngularVelocity* bav_w = Object::cast_to<BodyAngularVelocity>(n);
     if (bav_w) {
         if (strcmp(key,"AngularVelocity") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bav_w->set_angular_velocity(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key,"MaxTorque") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bav_w->set_max_torque(Vector3(v->x, v->y, v->z));
             return 0;
         }
@@ -2632,22 +2708,30 @@ static int godot_object_newindex(lua_State* L) {
     BodyGyro* bgyro_w = Object::cast_to<BodyGyro>(n);
     if (bgyro_w) {
         if (strcmp(key,"MaxTorque") == 0) {
-            LuauVector3* v = (LuauVector3*)lua_touserdata(L,3);
+            LuauVector3* v = check_vector3(L, 3);
             if (v) bgyro_w->set_max_torque(Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key,"P") == 0) { bgyro_w->set_p((float)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key,"D") == 0) { bgyro_w->set_d((float)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key,"CFrame") == 0) {
-            // Acepta un LuauCFrame (Transform3D) o un Node3D (usa su transform global)
-            LuauCFrame* cf = lua_isuserdata(L,3) ? (LuauCFrame*)lua_touserdata(L,3) : nullptr;
-            if (cf) bgyro_w->set_cframe(cf->transform);
-            else {
-                GodotObjectWrapper* wr = lua_isuserdata(L,3) ? (GodotObjectWrapper*)lua_touserdata(L,3) : nullptr;
-                if (wr && wr->node_ptr) {
-                    Node3D* n3d = Object::cast_to<Node3D>(wr->node_ptr);
-                    if (n3d) bgyro_w->set_cframe(n3d->get_global_transform());
-                }
+            // CFrame es una TABLA en este motor (no userdata). Aceptamos:
+            //  - un nodo (GodotObject) → usa su transform global
+            //  - una tabla CFrame con componentes m00..m22 + X/Y/Z
+            if (_gl_has_metatable(L, 3, "GodotObject")) {
+                GodotObjectWrapper* wr = (GodotObjectWrapper*)lua_touserdata(L, 3);
+                Node3D* n3d = Object::cast_to<Node3D>(gow_node(wr));
+                if (n3d) bgyro_w->set_cframe(n3d->get_global_transform());
+            } else if (lua_istable(L, 3)) {
+                auto gf = [&](const char* k) -> float {
+                    lua_getfield(L, 3, k); float r = (float)lua_tonumber(L, -1); lua_pop(L, 1); return r;
+                };
+                Transform3D t;
+                t.origin = Vector3(gf("X"), gf("Y"), gf("Z"));
+                t.basis.rows[0] = Vector3(gf("m00"), gf("m01"), gf("m02"));
+                t.basis.rows[1] = Vector3(gf("m10"), gf("m11"), gf("m12"));
+                t.basis.rows[2] = Vector3(gf("m20"), gf("m21"), gf("m22"));
+                bgyro_w->set_cframe(t);
             }
             return 0;
         }
@@ -2658,12 +2742,12 @@ static int godot_object_newindex(lua_State* L) {
     if (weld_w) {
         if (strcmp(key,"Part0") == 0) {
             GodotObjectWrapper* pw = (GodotObjectWrapper*)lua_touserdata(L,3);
-            if (pw) weld_w->set_part0(pw->node_ptr);
+            if (pw) weld_w->set_part0(gow_node(pw));
             return 0;
         }
         if (strcmp(key,"Part1") == 0) {
             GodotObjectWrapper* pw = (GodotObjectWrapper*)lua_touserdata(L,3);
-            if (pw) weld_w->set_part1(pw->node_ptr);
+            if (pw) weld_w->set_part1(gow_node(pw));
             return 0;
         }
         if (strcmp(key,"Enabled") == 0) { weld_w->set_enabled(lua_toboolean(L,3)!=0); return 0; }
@@ -2677,15 +2761,15 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key,"MotorEnabled")        == 0) { hinge_w->set_motor_enabled(lua_toboolean(L,3)!=0);         return 0; }
         if (strcmp(key,"MotorMaxTorque")      == 0) { hinge_w->set_motor_max_torque((float)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key,"MotorTargetVelocity") == 0) { hinge_w->set_motor_target_velocity((float)luaL_checknumber(L,3)); return 0; }
-        if (strcmp(key,"Part0") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) hinge_w->set_part0(pw->node_ptr); return 0; }
-        if (strcmp(key,"Part1") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) hinge_w->set_part1(pw->node_ptr); return 0; }
+        if (strcmp(key,"Part0") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) hinge_w->set_part0(gow_node(pw)); return 0; }
+        if (strcmp(key,"Part1") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) hinge_w->set_part1(gow_node(pw)); return 0; }
     }
     RodConstraint* rod_w = Object::cast_to<RodConstraint>(n);
     if (rod_w) {
         if (strcmp(key,"Enabled") == 0) { rod_w->set_enabled(lua_toboolean(L,3)!=0);          return 0; }
         if (strcmp(key,"Length")  == 0) { rod_w->set_length((float)luaL_checknumber(L,3));    return 0; }
-        if (strcmp(key,"Part0")   == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) rod_w->set_part0(pw->node_ptr); return 0; }
-        if (strcmp(key,"Part1")   == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) rod_w->set_part1(pw->node_ptr); return 0; }
+        if (strcmp(key,"Part0")   == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) rod_w->set_part0(gow_node(pw)); return 0; }
+        if (strcmp(key,"Part1")   == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) rod_w->set_part1(gow_node(pw)); return 0; }
     }
     SpringConstraint* spring_w = Object::cast_to<SpringConstraint>(n);
     if (spring_w) {
@@ -2693,8 +2777,8 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key,"FreeLength") == 0) { spring_w->set_free_length((float)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key,"Stiffness")  == 0) { spring_w->set_stiffness((float)luaL_checknumber(L,3));   return 0; }
         if (strcmp(key,"Damping")    == 0) { spring_w->set_damping((float)luaL_checknumber(L,3));     return 0; }
-        if (strcmp(key,"Part0") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) spring_w->set_part0(pw->node_ptr); return 0; }
-        if (strcmp(key,"Part1") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) spring_w->set_part1(pw->node_ptr); return 0; }
+        if (strcmp(key,"Part0") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) spring_w->set_part0(gow_node(pw)); return 0; }
+        if (strcmp(key,"Part1") == 0) { GodotObjectWrapper* pw=(GodotObjectWrapper*)lua_touserdata(L,3); if(pw) spring_w->set_part1(gow_node(pw)); return 0; }
     }
 
     // ── GUI — newindex ─────────────────────────────────────────────
@@ -2735,16 +2819,16 @@ static int godot_object_newindex(lua_State* L) {
                 lua_getfield(L,3,"Y"); float ay = lua_isnumber(L,-1)?(float)lua_tonumber(L,-1):0; lua_pop(L,1); \
                 var_name->set_anchor_point(ax,ay); return 0; \
             } \
-            if (strcmp(key,"BackgroundColor3")==0) { LuauColor3* c=(LuauColor3*)lua_touserdata(L,3); if(c) var_name->set_bg_color(c->r,c->g,c->b); return 0; } \
+            if (strcmp(key,"BackgroundColor3")==0) { LuauColor3* c=check_color3(L, 3); if(c) var_name->set_bg_color(c->r,c->g,c->b); return 0; } \
             if (strcmp(key,"BackgroundTransparency")==0) { var_name->set_bg_alpha((float)luaL_checknumber(L,3)); return 0; } \
-            if (strcmp(key,"BorderColor3")==0) { LuauColor3* c=(LuauColor3*)lua_touserdata(L,3); if(c) var_name->set_border_color(c->r,c->g,c->b); return 0; } \
+            if (strcmp(key,"BorderColor3")==0) { LuauColor3* c=check_color3(L, 3); if(c) var_name->set_border_color(c->r,c->g,c->b); return 0; } \
             if (strcmp(key,"BorderSizePixel")==0) { var_name->set_border_px((int)luaL_checknumber(L,3)); return 0; } \
         }
     GUI_NEWINDEX_COMMON(RobloxFrame, rframe_w)
     GUI_NEWINDEX_COMMON(RobloxTextLabel, rtlabel_w)
     if (rtlabel_w) {
         if (strcmp(key,"Text")==0)        { rtlabel_w->set_text(String(luaL_checkstring(L,3))); return 0; }
-        if (strcmp(key,"TextColor3")==0)  { LuauColor3* c=(LuauColor3*)lua_touserdata(L,3); if(c) rtlabel_w->set_text_color(c->r,c->g,c->b); return 0; }
+        if (strcmp(key,"TextColor3")==0)  { LuauColor3* c=check_color3(L, 3); if(c) rtlabel_w->set_text_color(c->r,c->g,c->b); return 0; }
         if (strcmp(key,"TextSize")==0)    { rtlabel_w->set_text_size((int)luaL_checknumber(L,3)); return 0; }
         if (strcmp(key,"TextScaled")==0)  { rtlabel_w->set_text_scaled(lua_toboolean(L,3)!=0); return 0; }
         if (strcmp(key,"TextXAlignment")==0) {
@@ -2761,7 +2845,7 @@ static int godot_object_newindex(lua_State* L) {
     GUI_NEWINDEX_COMMON(RobloxTextButton, rtbutton_w)
     if (rtbutton_w) {
         if (strcmp(key,"Text")==0)       { rtbutton_w->set_text(String(luaL_checkstring(L,3)));  return 0; }
-        if (strcmp(key,"TextColor3")==0) { LuauColor3* c=(LuauColor3*)lua_touserdata(L,3); if(c) rtbutton_w->set_text_color(c->r,c->g,c->b); return 0; }
+        if (strcmp(key,"TextColor3")==0) { LuauColor3* c=check_color3(L, 3); if(c) rtbutton_w->set_text_color(c->r,c->g,c->b); return 0; }
         if (strcmp(key,"TextSize")==0)   { rtbutton_w->set_text_size((int)luaL_checknumber(L,3)); return 0; }
     }
     GUI_NEWINDEX_COMMON(RobloxTextBox, rtbox_w)
@@ -2773,7 +2857,7 @@ static int godot_object_newindex(lua_State* L) {
     GUI_NEWINDEX_COMMON(RobloxImageLabel, rimage_w)
     if (rimage_w) {
         if (strcmp(key,"Image")==0)            { rimage_w->set_image(String(luaL_checkstring(L,3)));        return 0; }
-        if (strcmp(key,"ImageColor3")==0)      { LuauColor3* c=(LuauColor3*)lua_touserdata(L,3); if(c) rimage_w->set_image_color(c->r,c->g,c->b); return 0; }
+        if (strcmp(key,"ImageColor3")==0)      { LuauColor3* c=check_color3(L, 3); if(c) rimage_w->set_image_color(c->r,c->g,c->b); return 0; }
         if (strcmp(key,"ImageTransparency")==0){ rimage_w->set_image_transparency((float)luaL_checknumber(L,3)); return 0; }
     }
     GUI_NEWINDEX_COMMON(RobloxScrollingFrame, rscroll_w)
@@ -2850,12 +2934,12 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key,"Enabled")      == 0) { m6d_w->set_enabled(lua_toboolean(L,3)!=0);               return 0; }
         if (strcmp(key,"Part0") == 0) {
             GodotObjectWrapper* wr = (GodotObjectWrapper*)lua_touserdata(L,3);
-            if (wr && wr->node_ptr) m6d_w->set_part0(wr->node_ptr);
+            if (wr && gow_node(wr)) m6d_w->set_part0(gow_node(wr));
             return 0;
         }
         if (strcmp(key,"Part1") == 0) {
             GodotObjectWrapper* wr = (GodotObjectWrapper*)lua_touserdata(L,3);
-            if (wr && wr->node_ptr) m6d_w->set_part1(wr->node_ptr);
+            if (wr && gow_node(wr)) m6d_w->set_part1(gow_node(wr));
             return 0;
         }
         if (strcmp(key,"C0") == 0 && lua_istable(L,3)) {
@@ -2942,14 +3026,16 @@ static int godot_instance_new(lua_State* L) {
 
         if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
             GodotObjectWrapper* p_wrap = (GodotObjectWrapper*)lua_touserdata(L, 2);
-            if (p_wrap && p_wrap->node_ptr && p_wrap->node_ptr != nn) {
-                p_wrap->node_ptr->add_child(nn);
+            if (p_wrap && gow_node(p_wrap) && gow_node(p_wrap) != nn) {
+                gow_node(p_wrap)->add_child(nn);
             }
         }
         return 1;
     }
 
-    UtilityFunctions::print("[GodotLuau] Instance.new: clase desconocida: '", cls, "'");
+    // Clase no mapeada aquí: devolvemos nil SIN avisar. La capa Lua de stdlib
+    // intenta luego _InstanceNew con el mapeo completo y, si tampoco existe,
+    // emite un único warning. (Antes esto ensuciaba la consola con clases válidas.)
     lua_pushnil(L);
     return 1;
 }
@@ -2967,7 +3053,7 @@ static int godot_vector3_new(lua_State* L) {
 }
 
 static int godot_vector3_index(lua_State* L) {
-    LuauVector3* vec = (LuauVector3*)lua_touserdata(L, 1);
+    LuauVector3* vec = check_vector3(L, 1);
     const char* key  = luaL_checkstring(L, 2);
     if (!vec) { lua_pushnil(L); return 1; }
 
@@ -2987,7 +3073,7 @@ static int godot_vector3_index(lua_State* L) {
         lua_pushlightuserdata(L, vec);
         lua_pushcclosure(L, [](lua_State* pL) -> int {
             LuauVector3* self = (LuauVector3*)lua_touserdata(pL, lua_upvalueindex(1));
-            LuauVector3* goal = (LuauVector3*)lua_touserdata(pL, 1);
+            LuauVector3* goal = check_vector3(pL, 1);
             float alpha = (float)luaL_checknumber(pL, 2);
             if (!self || !goal) { lua_pushnil(pL); return 1; }
             LuauVector3 r = self->lerp(*goal, alpha);
@@ -3001,7 +3087,7 @@ static int godot_vector3_index(lua_State* L) {
         lua_pushlightuserdata(L, vec);
         lua_pushcclosure(L, [](lua_State* pL) -> int {
             LuauVector3* self = (LuauVector3*)lua_touserdata(pL, lua_upvalueindex(1));
-            LuauVector3* other = (LuauVector3*)lua_touserdata(pL, 1);
+            LuauVector3* other = check_vector3(pL, 1);
             if (!self || !other) { lua_pushnumber(pL, 0); return 1; }
             lua_pushnumber(pL, self->dot(*other));
             return 1;
@@ -3013,7 +3099,7 @@ static int godot_vector3_index(lua_State* L) {
         lua_pushlightuserdata(L, vec);
         lua_pushcclosure(L, [](lua_State* pL) -> int {
             LuauVector3* self = (LuauVector3*)lua_touserdata(pL, lua_upvalueindex(1));
-            LuauVector3* other = (LuauVector3*)lua_touserdata(pL, 1);
+            LuauVector3* other = check_vector3(pL, 1);
             if (!self || !other) { lua_pushnil(pL); return 1; }
             LuauVector3 c = self->cross(*other);
             push_vector3(pL, c.x, c.y, c.z);
@@ -3026,15 +3112,15 @@ static int godot_vector3_index(lua_State* L) {
 }
 
 static int godot_vector3_add(lua_State* L) {
-    LuauVector3* a = (LuauVector3*)lua_touserdata(L, 1);
-    LuauVector3* b = (LuauVector3*)lua_touserdata(L, 2);
+    LuauVector3* a = check_vector3(L, 1);
+    LuauVector3* b = check_vector3(L, 2);
     if (a && b) { push_vector3(L, a->x+b->x, a->y+b->y, a->z+b->z); return 1; }
     lua_pushnil(L); return 1;
 }
 
 static int godot_vector3_sub(lua_State* L) {
-    LuauVector3* a = (LuauVector3*)lua_touserdata(L, 1);
-    LuauVector3* b = (LuauVector3*)lua_touserdata(L, 2);
+    LuauVector3* a = check_vector3(L, 1);
+    LuauVector3* b = check_vector3(L, 2);
     if (a && b) { push_vector3(L, a->x-b->x, a->y-b->y, a->z-b->z); return 1; }
     lua_pushnil(L); return 1;
 }
@@ -3042,15 +3128,15 @@ static int godot_vector3_sub(lua_State* L) {
 static int godot_vector3_mul(lua_State* L) {
     if (lua_isnumber(L, 1)) {
         float s = (float)lua_tonumber(L, 1);
-        LuauVector3* v = (LuauVector3*)lua_touserdata(L, 2);
+        LuauVector3* v = check_vector3(L, 2);
         if (v) { push_vector3(L, v->x*s, v->y*s, v->z*s); return 1; }
     } else {
-        LuauVector3* v = (LuauVector3*)lua_touserdata(L, 1);
+        LuauVector3* v = check_vector3(L, 1);
         if (lua_isnumber(L, 2)) {
             float s = (float)lua_tonumber(L, 2);
             if (v) { push_vector3(L, v->x*s, v->y*s, v->z*s); return 1; }
         } else {
-            LuauVector3* b = (LuauVector3*)lua_touserdata(L, 2);
+            LuauVector3* b = check_vector3(L, 2);
             if (v && b) { push_vector3(L, v->x*b->x, v->y*b->y, v->z*b->z); return 1; }
         }
     }
@@ -3058,13 +3144,33 @@ static int godot_vector3_mul(lua_State* L) {
 }
 
 static int godot_vector3_unm(lua_State* L) {
-    LuauVector3* v = (LuauVector3*)lua_touserdata(L, 1);
+    LuauVector3* v = check_vector3(L, 1);
     if (v) { push_vector3(L, -v->x, -v->y, -v->z); return 1; }
     lua_pushnil(L); return 1;
 }
 
+// Vector3 / number  ó  Vector3 / Vector3 (componente a componente), como Roblox
+static int godot_vector3_div(lua_State* L) {
+    LuauVector3* a = check_vector3(L, 1);
+    if (a && lua_isnumber(L, 2)) {
+        float s = (float)lua_tonumber(L, 2);
+        push_vector3(L, a->x/s, a->y/s, a->z/s); return 1;
+    }
+    LuauVector3* b = check_vector3(L, 2);
+    if (a && b) { push_vector3(L, a->x/b->x, a->y/b->y, a->z/b->z); return 1; }
+    lua_pushnil(L); return 1;
+}
+
+// Vector3 == Vector3 por valor (sin esto, == comparaba identidad de userdata)
+static int godot_vector3_eq(lua_State* L) {
+    LuauVector3* a = check_vector3(L, 1);
+    LuauVector3* b = check_vector3(L, 2);
+    lua_pushboolean(L, (a && b && a->x == b->x && a->y == b->y && a->z == b->z) ? 1 : 0);
+    return 1;
+}
+
 static int godot_vector3_tostring(lua_State* L) {
-    LuauVector3* v = (LuauVector3*)lua_touserdata(L, 1);
+    LuauVector3* v = check_vector3(L, 1);
     if (v) {
         char buf[64];
         snprintf(buf, sizeof(buf), "%.3f, %.3f, %.3f", v->x, v->y, v->z);
@@ -3095,7 +3201,7 @@ static int godot_color3_from_rgb(lua_State* L) {
 }
 
 static int godot_color3_index(lua_State* L) {
-    LuauColor3* col = (LuauColor3*)lua_touserdata(L, 1);
+    LuauColor3* col = check_color3(L, 1);
     const char* key = luaL_checkstring(L, 2);
     if (!col) { lua_pushnil(L); return 1; }
     if (strcmp(key, "R") == 0 || strcmp(key, "r") == 0) { lua_pushnumber(L, col->r); return 1; }

@@ -55,6 +55,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -244,7 +245,7 @@ struct GuiLuaCallback {
 static void _fire_gui_cbs(std::vector<GuiLuaCallback>& cbs) {
     for (int i = (int)cbs.size() - 1; i >= 0; i--) {
         auto& cb = cbs[i];
-        if (!cb.active) { cbs.erase(cbs.begin() + i); continue; }
+        if (!cb.active || !gl_state_alive(cb.main_L)) { cbs.erase(cbs.begin() + i); continue; }
         lua_State* th = lua_newthread(cb.main_L);
         lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
         if (lua_isfunction(cb.main_L, -1)) {
@@ -371,6 +372,7 @@ class RobloxTextButton : public Button {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect","ref"), &RobloxTextButton::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("_on_parent_resized"), &RobloxTextButton::_on_parent_resized);
         ClassDB::bind_method(D_METHOD("_on_pressed"),        &RobloxTextButton::_on_pressed);
         ClassDB::bind_method(D_METHOD("_on_mouse_enter"),    &RobloxTextButton::_on_mouse_enter);
@@ -406,6 +408,11 @@ public:
     void add_click_cb(lua_State* L, int ref)  { _click_cbs.push_back({L, ref, true}); }
     void add_enter_cb(lua_State* L, int ref)  { _enter_cbs.push_back({L, ref, true}); }
     void add_leave_cb(lua_State* L, int ref)  { _leave_cbs.push_back({L, ref, true}); }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : _click_cbs) if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _enter_cbs) if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _leave_cbs) if (cb.ref==ref) cb.active=false;
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -446,6 +453,7 @@ class RobloxTextBox : public LineEdit {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect","ref"), &RobloxTextBox::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("_on_parent_resized"), &RobloxTextBox::_on_parent_resized);
         ClassDB::bind_method(D_METHOD("_on_focus_lost"),     &RobloxTextBox::_on_focus_lost);
         ClassDB::bind_method(D_METHOD("_on_focus_gained"),   &RobloxTextBox::_on_focus_gained);
@@ -478,6 +486,11 @@ public:
 
     void add_focus_lost_cb(lua_State* L, int ref)   { _focus_lost_cbs.push_back({L, ref, true}); }
     void add_focus_gained_cb(lua_State* L, int ref) { _focus_gained_cbs.push_back({L, ref, true}); }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : _focus_lost_cbs)   if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _focus_gained_cbs) if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _changed_cbs)      if (cb.ref==ref) cb.active=false;
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────

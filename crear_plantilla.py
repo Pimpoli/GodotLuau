@@ -57,15 +57,15 @@ PROJECT_GODOT = textwrap.dedent("""\
 """)
 
 
-def generar_gdextension(dll_path: str) -> str:
+def generar_gdextension(dll_debug: str, dll_release: str) -> str:
     return textwrap.dedent(f"""\
         [configuration]
         entry_symbol = "luau_extension_init"
         compatibility_minimum = "4.3"
 
         [libraries]
-        windows.debug.x86_64   = "{dll_path}"
-        windows.release.x86_64 = "{dll_path.replace('template_debug', 'template_release')}"
+        windows.debug.x86_64   = "{dll_debug}"
+        windows.release.x86_64 = "{dll_release}"
     """)
 
 
@@ -75,15 +75,22 @@ def empaquetar_plantilla():
     print("  GodotLuau — Empaquetando plantilla de proyecto")
     print("=" * 54)
 
-    # 1. Buscar la DLL compilada
+    # 1. Buscar la DLL compilada (debug y release por separado, sin depender del orden)
     dlls = glob.glob("bin/*.dll")
     if not dlls:
         print("⚠  No se encontró DLL en 'bin/'. Compila primero con: python -m SCons platform=windows target=template_debug")
         return
-    dll_path = "res://" + dlls[0].replace("\\", "/")
-    print(f"✓  DLL encontrada: {dlls[0]}")
+    debug   = next((d for d in dlls if "template_debug"   in d), None)
+    release = next((d for d in dlls if "template_release" in d), None)
+    # Si solo existe una, se usa para ambas entradas
+    debug   = debug   or release or dlls[0]
+    release = release or debug
+    dll_debug   = "res://" + debug.replace("\\", "/")
+    dll_release = "res://" + release.replace("\\", "/")
+    print(f"✓  DLL debug:   {debug}")
+    print(f"✓  DLL release: {release}")
 
-    gdext_content = generar_gdextension(dll_path)
+    gdext_content = generar_gdextension(dll_debug, dll_release)
 
     try:
         with zipfile.ZipFile(nombre_zip, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -96,7 +103,7 @@ def empaquetar_plantilla():
 
             # ── DLL compilada ────────────────────────────────────────
             for dll in dlls:
-                zf.write(dll, arcname=dll)
+                zf.write(dll, arcname=dll.replace("\\", "/"))
                 print(f"✓  {dll}")
 
             # ── Addon (panel de config + updater) y Version ──────────
@@ -127,7 +134,9 @@ def empaquetar_plantilla():
                 for raiz, _, archivos in os.walk("icons"):
                     for archivo in archivos:
                         ruta = os.path.join(raiz, archivo)
-                        zf.write(ruta, arcname=ruta)
+                        # arcname con '/' (en Windows os.path.join usa '\\', que
+                        # produce rutas inválidas dentro del ZIP)
+                        zf.write(ruta, arcname=ruta.replace("\\", "/"))
                 print("✓  icons/")
 
         print()

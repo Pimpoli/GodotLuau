@@ -2,6 +2,20 @@
 
 env = SConscript("godot-cpp/SConstruct")
 
+# 0. Luau usa excepciones de C++ en su bucle de ejecucion (luau/VM/src/ldo.cpp).
+#    godot-cpp compila con -fno-exceptions por defecto, lo que impide construir
+#    Luau. Reactivamos las excepciones para TODA la extension para que el
+#    proyecto compile sin tener que pasar flags extra en la linea de comandos.
+def _enable_exceptions(e):
+    for key in ("CCFLAGS", "CXXFLAGS", "CFLAGS"):
+        if key in e:
+            e[key] = [f for f in e[key] if str(f) != "-fno-exceptions"]
+    if e.get("is_msvc", False):
+        e.Append(CXXFLAGS=["/EHsc"])
+    else:
+        e.Append(CXXFLAGS=["-fexceptions"])
+_enable_exceptions(env)
+
 # 1. Rutas de inclusion para que SCons encuentre los encabezados
 env.Append(CPPPATH=[
     "src/",

@@ -11,6 +11,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
@@ -249,6 +250,13 @@ public:
     std::vector<LuaCallback> activated_cbs;
     std::vector<LuaCallback> deactivated_cbs;
 
+    void _gl_disconnect(int ref) {
+        for (auto& cb : equipped_cbs)    if (cb.ref==ref) cb.active=false;
+        for (auto& cb : unequipped_cbs)  if (cb.ref==ref) cb.active=false;
+        for (auto& cb : activated_cbs)   if (cb.ref==ref) cb.active=false;
+        for (auto& cb : deactivated_cbs) if (cb.ref==ref) cb.active=false;
+    }
+
 private:
     String  tool_tip         = "";
     bool    requires_handle  = true;
@@ -258,6 +266,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"),      &RobloxTool::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("set_tool_tip", "v"),           &RobloxTool::set_tool_tip);
         ClassDB::bind_method(D_METHOD("get_tool_tip"),                  &RobloxTool::get_tool_tip);
         ClassDB::bind_method(D_METHOD("set_can_be_dropped", "v"),     &RobloxTool::set_can_be_dropped);
@@ -312,12 +321,16 @@ private:
     void _fire(std::vector<LuaCallback>& list, Node* arg) {
         for (int i=(int)list.size()-1; i>=0; --i) {
             auto& cb=list[i];
-            if (!cb.active){list.erase(list.begin()+i);continue;}
+            if (!cb.active || !gl_state_alive(cb.main_L)){list.erase(list.begin()+i);continue;}
             lua_State* th=lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L,LUA_REGISTRYINDEX,cb.ref);
             if(lua_isfunction(cb.main_L,-1)){
                 lua_xmove(cb.main_L,th,1);
-                if(arg) lua_pushlightuserdata(th,(void*)arg); else lua_pushnil(th);
+                if(arg){
+                    GodotObjectWrapper* w=(GodotObjectWrapper*)lua_newuserdata(th,sizeof(GodotObjectWrapper));
+                    gow_set(w,arg);
+                    luaL_getmetatable(th,"GodotObject"); lua_setmetatable(th,-2);
+                } else lua_pushnil(th);
                 lua_resume(th,nullptr,1);
             } else lua_pop(cb.main_L,1);
             lua_pop(cb.main_L,1);
@@ -326,7 +339,7 @@ private:
     void _fire_noarg(std::vector<LuaCallback>& list) {
         for (int i=(int)list.size()-1; i>=0; --i) {
             auto& cb=list[i];
-            if (!cb.active){list.erase(list.begin()+i);continue;}
+            if (!cb.active || !gl_state_alive(cb.main_L)){list.erase(list.begin()+i);continue;}
             lua_State* th=lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L,LUA_REGISTRYINDEX,cb.ref);
             if(lua_isfunction(cb.main_L,-1)){lua_xmove(cb.main_L,th,1);lua_resume(th,nullptr,0);}

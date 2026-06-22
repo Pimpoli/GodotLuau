@@ -15,6 +15,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -200,6 +201,7 @@ public:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &RobloxTween::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("play"),   &RobloxTween::play);
         ClassDB::bind_method(D_METHOD("pause"),  &RobloxTween::pause);
         ClassDB::bind_method(D_METHOD("cancel"), &RobloxTween::cancel);
@@ -224,6 +226,9 @@ public:
 
     void add_completed_cb(lua_State* L, int ref) {
         completed_cbs.push_back({L, ref, true});
+    }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : completed_cbs) if (cb.ref == ref) cb.active = false;
     }
 
     void _process(double delta) override {
@@ -266,7 +271,7 @@ public:
 
     void _fire_completed() {
         for (auto& cb : completed_cbs) {
-            if (!cb.active) continue;
+            if (!cb.active || !gl_state_alive(cb.main_L)) continue;
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {

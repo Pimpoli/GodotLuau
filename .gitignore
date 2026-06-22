@@ -3,6 +3,7 @@
 
 # Archivos de compilación de SCons y C++
 *.obj
+*.obj.import
 *.o
 *.a
 *.lib
@@ -15,8 +16,11 @@
 
 # Ignorar las librerías compiladas (opcional, pero recomendado para el source code)
 bin/*.dll
+bin/*.so
+bin/*.dylib
 bin/*.lib
 bin/*.exp
+bin/*.old
 
 # Caché de editores
 .vs/

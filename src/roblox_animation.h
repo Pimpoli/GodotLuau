@@ -13,6 +13,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -56,6 +57,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &AnimationTrack::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("play"),  &AnimationTrack::play);
         ClassDB::bind_method(D_METHOD("stop"),  &AnimationTrack::stop);
         ClassDB::bind_method(D_METHOD("is_playing"), &AnimationTrack::is_playing);
@@ -142,6 +144,10 @@ public:
         for (auto& cb : ended_cbs)   if (cb.main_L==L) cb.active=false;
         for (auto& cb : stopped_cbs) if (cb.main_L==L) cb.active=false;
     }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : ended_cbs)   if (cb.ref==ref) cb.active=false;
+        for (auto& cb : stopped_cbs) if (cb.ref==ref) cb.active=false;
+    }
 
 private:
     void _update_loop() {
@@ -163,7 +169,7 @@ private:
     void _fire_noarg(std::vector<LuaCallback>& list) {
         for (int i=(int)list.size()-1; i>=0; --i) {
             auto& cb=list[i];
-            if (!cb.active){list.erase(list.begin()+i);continue;}
+            if (!cb.active || !gl_state_alive(cb.main_L)){list.erase(list.begin()+i);continue;}
             lua_State* th=lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L,LUA_REGISTRYINDEX,cb.ref);
             if(lua_isfunction(cb.main_L,-1)){lua_xmove(cb.main_L,th,1);lua_resume(th,nullptr,0);}

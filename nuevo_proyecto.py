@@ -335,7 +335,10 @@ if __name__ == "__main__":
     destino = os.path.join(destino_base, nombre.replace(" ", "_"))
 
     # Verificar si ya existe
-    if os.path.exists(destino) and os.listdir(destino):
+    if os.path.isfile(destino):
+        print(f"\n  ERROR: '{destino}' existe y es un archivo, no una carpeta.")
+        sys.exit(1)
+    if os.path.isdir(destino) and os.listdir(destino):
         resp = input(f"\n  La carpeta ya existe y tiene archivos. ¿Sobreescribir? (s/n): ").strip().lower()
         if resp != "s":
             print("  Cancelado.")

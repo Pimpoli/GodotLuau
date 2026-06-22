@@ -21,6 +21,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -50,6 +51,7 @@ public:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &ClickDetector::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("set_max_distance", "d"), &ClickDetector::set_max_distance);
         ClassDB::bind_method(D_METHOD("get_max_distance"),      &ClickDetector::get_max_distance);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "MaxActivationDistance", PROPERTY_HINT_RANGE, "0,1000,0.1"),
@@ -78,6 +80,11 @@ public:
         for (auto& cb : hover_enter_cbs) if (cb.main_L == L) cb.active = false;
         for (auto& cb : hover_leave_cbs) if (cb.main_L == L) cb.active = false;
     }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : mouse_click_cbs) if (cb.ref == ref) cb.active = false;
+        for (auto& cb : hover_enter_cbs) if (cb.ref == ref) cb.active = false;
+        for (auto& cb : hover_leave_cbs) if (cb.ref == ref) cb.active = false;
+    }
 
     void fire_click(Node* player = nullptr) {
         emit_signal("MouseClick", player);
@@ -98,13 +105,16 @@ private:
     void _fire_list(std::vector<LuaCallback>& list, Node* player) {
         for (int i = (int)list.size() - 1; i >= 0; --i) {
             auto& cb = list[i];
-            if (!cb.active) { list.erase(list.begin() + i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { list.erase(list.begin() + i); continue; }
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
                 lua_xmove(cb.main_L, th, 1);
-                if (player) lua_pushlightuserdata(th, (void*)player);
-                else        lua_pushnil(th);
+                if (player) {
+                    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
+                    gow_set(w, player);
+                    luaL_getmetatable(th, "GodotObject"); lua_setmetatable(th, -2);
+                } else lua_pushnil(th);
                 lua_resume(th, nullptr, 1);
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);
@@ -201,6 +211,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"),  &ProximityPrompt::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("set_action_text", "t"),   &ProximityPrompt::set_action_text);
         ClassDB::bind_method(D_METHOD("get_action_text"),         &ProximityPrompt::get_action_text);
         ClassDB::bind_method(D_METHOD("set_max_distance", "d"),   &ProximityPrompt::set_max_distance);
@@ -251,6 +262,11 @@ public:
         for (auto& cb : hold_began_cbs) if (cb.main_L == L) cb.active = false;
         for (auto& cb : hold_ended_cbs) if (cb.main_L == L) cb.active = false;
     }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : triggered_cbs)  if (cb.ref == ref) cb.active = false;
+        for (auto& cb : hold_began_cbs) if (cb.ref == ref) cb.active = false;
+        for (auto& cb : hold_ended_cbs) if (cb.ref == ref) cb.active = false;
+    }
 
     void trigger(Node* player = nullptr) {
         if (!enabled) return;
@@ -262,13 +278,16 @@ private:
     void _fire_list(std::vector<LuaCallback>& list, Node* player) {
         for (int i = (int)list.size() - 1; i >= 0; --i) {
             auto& cb = list[i];
-            if (!cb.active) { list.erase(list.begin() + i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { list.erase(list.begin() + i); continue; }
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
                 lua_xmove(cb.main_L, th, 1);
-                if (player) lua_pushlightuserdata(th, (void*)player);
-                else        lua_pushnil(th);
+                if (player) {
+                    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
+                    gow_set(w, player);
+                    luaL_getmetatable(th, "GodotObject"); lua_setmetatable(th, -2);
+                } else lua_pushnil(th);
                 lua_resume(th, nullptr, 1);
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);

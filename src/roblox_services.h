@@ -19,6 +19,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -250,6 +251,7 @@ protected:
         if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
     }
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &Players::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("get_local_player"),     &Players::get_local_player);
         ClassDB::bind_method(D_METHOD("get_players"),          &Players::get_players);
         ClassDB::bind_method(D_METHOD("get_max_players"),      &Players::get_max_players);
@@ -266,6 +268,10 @@ public:
 
     void add_player_added_cb(lua_State* L, int ref)    { player_added_cbs.push_back({L,ref,true}); }
     void add_player_removing_cb(lua_State* L, int ref) { player_removing_cbs.push_back({L,ref,true}); }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : player_added_cbs)    if (cb.ref == ref) cb.active = false;
+        for (auto& cb : player_removing_cbs) if (cb.ref == ref) cb.active = false;
+    }
 
     void fire_player_added(Node* player)    { _fire_player_event(player_added_cbs, player); }
     void fire_player_removing(Node* player) { _fire_player_event(player_removing_cbs, player); }
@@ -295,18 +301,17 @@ public:
     }
 
 private:
-    struct _GOW { Node* node_ptr; };
     void _fire_player_event(std::vector<LuaCallback>& list, Node* player) {
         for (int i = (int)list.size()-1; i >= 0; --i) {
             auto& cb = list[i];
-            if (!cb.active) { list.erase(list.begin()+i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { list.erase(list.begin()+i); continue; }
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
                 lua_xmove(cb.main_L, th, 1);
                 if (player) {
-                    _GOW* w = (_GOW*)lua_newuserdata(th, sizeof(_GOW));
-                    w->node_ptr = player;
+                    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
+                    gow_set(w, player);
                     luaL_getmetatable(th, "GodotObject");
                     lua_setmetatable(th, -2);
                 } else {
@@ -982,7 +987,7 @@ protected:
     static void fire_list(std::vector<LuaCallback>& list, double delta) {
         for (int i = (int)list.size() - 1; i >= 0; --i) {
             auto& cb = list[i];
-            if (!cb.active) {
+            if (!cb.active || !gl_state_alive(cb.main_L)) {
                 list.erase(list.begin() + i);
                 continue;
             }
@@ -1007,7 +1012,8 @@ protected:
     static void fire_wait_list(std::vector<WaitCallback>& list, double delta) {
         for (int i = (int)list.size() - 1; i >= 0; --i) {
             auto& wc = list[i];
-            get_pending_resumes().push_back({wc.thread, wc.main_L, delta, nullptr});
+            if (gl_state_alive(wc.main_L))
+                get_pending_resumes().push_back({wc.thread, wc.main_L, delta, nullptr});
             list.erase(list.begin() + i);
         }
     }

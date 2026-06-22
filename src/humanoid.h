@@ -16,6 +16,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"   // gl_state_alive
 
 using namespace godot;
 
@@ -76,11 +77,16 @@ public:
         for (auto& cb : health_changed_cbs) if (cb.main_L == L) cb.active = false;
         for (auto& cb : state_changed_cbs)  if (cb.main_L == L) cb.active = false;
     }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : died_cbs)           if (cb.ref == ref) cb.active = false;
+        for (auto& cb : health_changed_cbs) if (cb.ref == ref) cb.active = false;
+        for (auto& cb : state_changed_cbs)  if (cb.ref == ref) cb.active = false;
+    }
 
     static void fire_lua_died(std::vector<LuaCallback>& cbs) {
         for (int i = (int)cbs.size() - 1; i >= 0; i--) {
             auto& cb = cbs[i];
-            if (!cb.active) { cbs.erase(cbs.begin() + i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { cbs.erase(cbs.begin() + i); continue; }
             lua_State* thread = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
@@ -95,7 +101,7 @@ public:
     static void fire_lua_state_changed(std::vector<LuaCallback>& cbs, int new_state, int old_state) {
         for (int i = (int)cbs.size() - 1; i >= 0; i--) {
             auto& cb = cbs[i];
-            if (!cb.active) { cbs.erase(cbs.begin() + i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { cbs.erase(cbs.begin() + i); continue; }
             lua_State* thread = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
@@ -113,7 +119,7 @@ public:
     static void fire_lua_health_changed(std::vector<LuaCallback>& cbs, float new_hp, float old_hp) {
         for (int i = (int)cbs.size() - 1; i >= 0; i--) {
             auto& cb = cbs[i];
-            if (!cb.active) { cbs.erase(cbs.begin() + i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { cbs.erase(cbs.begin() + i); continue; }
             lua_State* thread = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
@@ -162,6 +168,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &Humanoid::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("set_health", "h"),       &Humanoid::set_health);
         ClassDB::bind_method(D_METHOD("get_health"),             &Humanoid::get_health);
         ClassDB::bind_method(D_METHOD("set_max_health", "h"),   &Humanoid::set_max_health);

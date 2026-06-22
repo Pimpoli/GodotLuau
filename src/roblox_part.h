@@ -20,6 +20,8 @@
 #include "lua.h"
 #include "lualib.h"
 
+#include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
+
 using namespace godot;
 
 class RobloxPart : public RigidBody3D {
@@ -392,12 +394,12 @@ public:
 
     void _on_luau_part_touched(Node* p_hit, int p_ref, int64_t ptr_L) {
         lua_State* L = (lua_State*)ptr_L;
-        if (!L || !p_hit) return;
+        // El estado Luau puede haberse cerrado (script destruido/recargado): no usarlo.
+        if (!gl_state_alive(L) || !p_hit) return;
         lua_getref(L, p_ref);
         if (lua_isfunction(L, -1)) {
-            struct GodotObjectWrapper { Node* node_ptr; };
             GodotObjectWrapper* wrap = (GodotObjectWrapper*)lua_newuserdata(L, sizeof(GodotObjectWrapper));
-            wrap->node_ptr = p_hit;
+            gow_set(wrap, p_hit);
             luaL_getmetatable(L, "GodotObject");
             lua_setmetatable(L, -2);
             if (lua_pcall(L, 1, 0, 0) != LUA_OK) {

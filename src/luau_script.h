@@ -747,6 +747,8 @@ public:
         lua_State* L;
         int        ref;
         double     timer;
+        int        start_args = 0;     // args en la pila del hilo a pasar en el 1er resume (task.delay/defer)
+        bool       started    = true;  // false hasta el 1er resume (delay/defer aún no arrancados)
     };
 
     // Coroutine waiting for a child to appear in the tree
@@ -755,7 +757,7 @@ public:
         lua_State* thread;
         lua_State* main_L;
         int        ref;
-        Node*      parent;
+        uint64_t   parent_id;   // ObjectID del padre (no Node* crudo: el padre puede morir mientras se espera)
         String     child_name;
         double     timeout;   // -1 = sin timeout
         double     elapsed;
@@ -778,7 +780,8 @@ public:
     // Called by WaitForChild closures in luau_api.h (or the local __index override)
     void add_waiting_child(lua_State* th, lua_State* mL, int ref,
                            Node* parent, const String& name, double timeout) {
-        waiting_children.push_back({th, mL, ref, parent, name, timeout, 0.0});
+        uint64_t pid = parent ? (uint64_t)parent->get_instance_id() : 0;
+        waiting_children.push_back({th, mL, ref, pid, name, timeout, 0.0});
         // Suspend the coroutine so _process won't auto-resume it via timer
         if (th == L_thread) {
             is_external_wait = true;
@@ -846,6 +849,8 @@ protected:
         ClassDB::bind_method(D_METHOD("iniciar_corrutina"), &ScriptNodeBase::iniciar_corrutina);
         ClassDB::bind_method(D_METHOD("set_script_id", "id"), &ScriptNodeBase::set_script_id);
         ClassDB::bind_method(D_METHOD("get_script_id"), &ScriptNodeBase::get_script_id);
+        // Relay de ChildAdded/ChildRemoved: Godot lo invoca con el hijo + el ref guardado.
+        ClassDB::bind_method(D_METHOD("_gl_child_event", "child", "ref"), &ScriptNodeBase::_gl_child_event);
 
         ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "codigo_luau", PROPERTY_HINT_RESOURCE_TYPE, "LuauScript"),
                      "set_codigo_luau", "get_codigo_luau");
@@ -1032,6 +1037,7 @@ protected:
                 spawned_threads.clear();
 
                 if (L_main) {
+                    gl_unregister_state(L_main);   // baja del registro ANTES de cerrar la VM
                     lua_close(L_main);
                     L_main = nullptr;
                     L_thread = nullptr;
@@ -1046,6 +1052,7 @@ public:
     ScriptNodeBase() {}
     ~ScriptNodeBase() {
         if (L_main) {
+            gl_unregister_state(L_main);
             lua_close(L_main);
             L_main = nullptr;
         }
@@ -1070,6 +1077,7 @@ public:
         }
 
         L_main = luaL_newstate();
+        gl_register_state(L_main);   // marca esta VM como viva (guard anti use-after-free)
         luaL_openlibs(L_main);
 
         // Guardar referencias al main state y al ScriptNodeBase en el registro
@@ -1092,22 +1100,22 @@ public:
             GodotObjectWrapper* ptr = (GodotObjectWrapper*)lua_touserdata(L, 1);
             String key = luaL_checkstring(L, 2);
 
-            if (ptr && ptr->node_ptr) {
-                Node* node = ptr->node_ptr;
+            if (ptr && gow_node(ptr)) {
+                Node* node = gow_node(ptr);
 
                 if (key == "FindFirstChild") {
                     lua_pushcfunction(L, [](lua_State* pL) -> int {
                         GodotObjectWrapper* pptr = (GodotObjectWrapper*)lua_touserdata(pL, 1);
-                        if (!pptr || !pptr->node_ptr) { lua_pushnil(pL); return 1; }
+                        if (!pptr || !gow_node(pptr)) { lua_pushnil(pL); return 1; }
                         const char* cname = luaL_checkstring(pL, 2);
                         bool recursive = lua_isboolean(pL, 3) && lua_toboolean(pL, 3);
                         if (!recursive) {
-                            for (int i = 0; i < pptr->node_ptr->get_child_count(); i++) {
-                                Node* ch = pptr->node_ptr->get_child(i);
+                            for (int i = 0; i < gow_node(pptr)->get_child_count(); i++) {
+                                Node* ch = gow_node(pptr)->get_child(i);
                                 if (ch && ch->get_name() == StringName(cname)) { wrap_node(pL, ch); return 1; }
                             }
                         } else {
-                            Node* t = pptr->node_ptr->find_child(String(cname), true, false);
+                            Node* t = gow_node(pptr)->find_child(String(cname), true, false);
                             if (t) { wrap_node(pL, t); return 1; }
                         }
                         lua_pushnil(pL); return 1;
@@ -1149,8 +1157,8 @@ public:
                     lua_pushcfunction(L, [](lua_State* pL) -> int {
                         GodotObjectWrapper* pptr = (GodotObjectWrapper*)lua_touserdata(pL, 1);
                         lua_newtable(pL);
-                        if (pptr && pptr->node_ptr) {
-                            TypedArray<Node> children = pptr->node_ptr->get_children();
+                        if (pptr && gow_node(pptr)) {
+                            TypedArray<Node> children = gow_node(pptr)->get_children();
                             for (int i = 0; i < children.size(); i++) {
                                 wrap_node(pL, Object::cast_to<Node>(children[i]));
                                 lua_rawseti(pL, -2, i + 1);
@@ -1180,7 +1188,9 @@ public:
         lua_pushcfunction(L_main, godot_vector3_add,   "__add");     lua_setfield(L_main, -2, "__add");
         lua_pushcfunction(L_main, godot_vector3_sub,   "__sub");     lua_setfield(L_main, -2, "__sub");
         lua_pushcfunction(L_main, godot_vector3_mul,   "__mul");     lua_setfield(L_main, -2, "__mul");
+        lua_pushcfunction(L_main, godot_vector3_div,   "__div");     lua_setfield(L_main, -2, "__div");
         lua_pushcfunction(L_main, godot_vector3_unm,   "__unm");     lua_setfield(L_main, -2, "__unm");
+        lua_pushcfunction(L_main, godot_vector3_eq,    "__eq");      lua_setfield(L_main, -2, "__eq");
         lua_pushcfunction(L_main, godot_vector3_tostring, "__tostring"); lua_setfield(L_main, -2, "__tostring");
         lua_pop(L_main, 1);
 
@@ -1256,53 +1266,43 @@ public:
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
             double sec = luaL_optnumber(L, 1, 0.0);
             lua_pushnumber(L, sec);
-            lua_yield(L, 1);
-            return 0;
+            return lua_yield(L, 1);   // Luau: hay que DEVOLVER lua_yield para que ceda de verdad
         }, "wait");
         lua_setfield(L_main, -2, "wait");
 
+        // task.spawn(f, ...) — corre f(...) YA en un hilo; devuelve el hilo (como Roblox)
         lua_pushlightuserdata(L_main, (void*)this);
         lua_pushcclosure(L_main, [](lua_State* L) -> int {
             ScriptNodeBase* self = static_cast<ScriptNodeBase*>(lua_touserdata(L, lua_upvalueindex(1)));
             if (!self || !lua_isfunction(L, 1)) return 0;
 
-            lua_State* NL = lua_newthread(L);
-            lua_pushvalue(L, 1);
-            lua_xmove(L, NL, 1);
-
-            int n_args = lua_gettop(L) - 2; 
-            if (n_args > 0) {
-                for (int i = 2; i <= n_args + 1; i++) lua_pushvalue(L, i);
-                lua_xmove(L, NL, n_args);
-            }
+            int base = lua_gettop(L);                 // [func(1), args(2..base)]
+            lua_State* NL = lua_newthread(L);          // NL en la cima
+            int nl_idx = lua_gettop(L);
+            lua_pushvalue(L, 1); lua_xmove(L, NL, 1);  // función → hilo
+            int n_args = base - 1;
+            for (int i = 2; i <= base; i++) lua_pushvalue(L, i);
+            if (n_args > 0) lua_xmove(L, NL, n_args);
 
             int status = lua_resume(NL, nullptr, n_args);
+            int thread_ref = lua_ref(L, nl_idx);       // ref DESPUES del resume (sin sacarlo de la pila)
 
             if (status == LUA_YIELD) {
-                int thread_ref = lua_ref(L, lua_gettop(L));
-                lua_pop(L, 1); 
-
                 double wait_time = 0.0;
-                if (lua_gettop(NL) > 0 && lua_isnumber(NL, -1)) {
-                    wait_time = lua_tonumber(NL, -1);
-                    lua_pop(NL, 1);
-                }
-
-                SpawnedThread st;
-                st.L = NL;
-                st.ref = thread_ref;
-                st.timer = wait_time;
+                if (lua_gettop(NL) > 0 && lua_isnumber(NL, -1)) { wait_time = lua_tonumber(NL, -1); lua_pop(NL, 1); }
+                SpawnedThread st; st.L = NL; st.ref = thread_ref; st.timer = wait_time; st.started = true;
                 self->spawned_threads.push_back(st);
             } else {
-                if (status != LUA_OK) {
+                if (status != LUA_OK)
                     UtilityFunctions::push_error("[GodotLuau task.spawn] ", lua_tostring(NL, -1));
-                }
-                lua_pop(L, 1); 
+                if (self->L_main) lua_unref(self->L_main, thread_ref);
             }
-            return 0;
+            lua_settop(L, nl_idx);                     // devolver el hilo
+            return 1;
         }, "spawn", 1);
         lua_setfield(L_main, -2, "spawn");
 
+        // task.delay(n, f, ...) — corre f(...) tras n segundos; devuelve el hilo
         lua_pushlightuserdata(L_main, (void*)this);
         lua_pushcclosure(L_main, [](lua_State* L) -> int {
             ScriptNodeBase* self = static_cast<ScriptNodeBase*>(lua_touserdata(L, lua_upvalueindex(1)));
@@ -1310,21 +1310,45 @@ public:
             double delay_time = luaL_checknumber(L, 1);
             if (!lua_isfunction(L, 2)) return 0;
 
+            int base = lua_gettop(L);                 // [delay(1), func(2), args(3..base)]
             lua_State* NL = lua_newthread(L);
-            lua_pushvalue(L, 2);
-            lua_xmove(L, NL, 1);
+            int nl_idx = lua_gettop(L);
+            lua_pushvalue(L, 2); lua_xmove(L, NL, 1);  // función → hilo
+            int n_args = base - 2;
+            for (int i = 3; i <= base; i++) lua_pushvalue(L, i);
+            if (n_args > 0) lua_xmove(L, NL, n_args);
 
-            int thread_ref = lua_ref(L, lua_gettop(L));
-            lua_pop(L, 1);
-
-            SpawnedThread st;
-            st.L = NL;
-            st.ref = thread_ref;
-            st.timer = delay_time;
+            int thread_ref = lua_ref(L, nl_idx);
+            SpawnedThread st; st.L = NL; st.ref = thread_ref; st.timer = delay_time;
+            st.start_args = n_args; st.started = false;
             self->spawned_threads.push_back(st);
-            return 0;
+            lua_settop(L, nl_idx);
+            return 1;
         }, "delay", 1);
         lua_setfield(L_main, -2, "delay");
+
+        // task.defer(f, ...) — encola f(...) para el final del frame actual; devuelve el hilo
+        lua_pushlightuserdata(L_main, (void*)this);
+        lua_pushcclosure(L_main, [](lua_State* L) -> int {
+            ScriptNodeBase* self = static_cast<ScriptNodeBase*>(lua_touserdata(L, lua_upvalueindex(1)));
+            if (!self || !lua_isfunction(L, 1)) return 0;
+
+            int base = lua_gettop(L);                 // [func(1), args(2..base)]
+            lua_State* NL = lua_newthread(L);
+            int nl_idx = lua_gettop(L);
+            lua_pushvalue(L, 1); lua_xmove(L, NL, 1);
+            int n_args = base - 1;
+            for (int i = 2; i <= base; i++) lua_pushvalue(L, i);
+            if (n_args > 0) lua_xmove(L, NL, n_args);
+
+            int thread_ref = lua_ref(L, nl_idx);
+            SpawnedThread st; st.L = NL; st.ref = thread_ref; st.timer = 0.0;  // 0 → próximo _process
+            st.start_args = n_args; st.started = false;
+            self->spawned_threads.push_back(st);
+            lua_settop(L, nl_idx);
+            return 1;
+        }, "defer", 1);
+        lua_setfield(L_main, -2, "defer");
 
         // task.cancel(thread) — cancela una corrutina spawneada
         lua_pushlightuserdata(L_main, (void*)this);
@@ -1429,8 +1453,7 @@ public:
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
             double sec = luaL_optnumber(L, 1, 0.0);
             lua_pushnumber(L, sec);
-            lua_yield(L, 1);
-            return 0;
+            return lua_yield(L, 1);   // Luau: hay que DEVOLVER lua_yield para que ceda de verdad
         }, "wait");
         lua_setglobal(L_main, "wait");
 
@@ -1464,6 +1487,13 @@ public:
                 lua_pop(L, 2);
                 lua_pushstring(L, "userdata"); return 1;
             }
+            // Tipos basados en tabla (Vector2, UDim2, CFrame, TweenInfo...) llevan
+            // un campo __type en su metatable (lo pone la stdlib) → como Roblox.
+            if (t == LUA_TTABLE && lua_getmetatable(L, 1)) {
+                lua_getfield(L, -1, "__type");
+                if (lua_isstring(L, -1)) { const char* tn = lua_tostring(L, -1); lua_pushstring(L, tn); return 1; }
+                lua_pop(L, 2);
+            }
             lua_pushstring(L, lua_typename(L, t));
             return 1;
         }, "typeof");
@@ -1473,19 +1503,34 @@ public:
         // El pcall nativo de Luau ya funciona correctamente, solo lo dejamos.
 
         // ── tostring / tonumber ───────────────────────────────────────────────
+        // luaL_tolstring respeta __tostring y SIEMPRE deja un string en la cima
+        // (el lua_tostring anterior devolvía la tabla/nil tal cual para no-strings).
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            lua_tostring(L, 1); 
+            luaL_tolstring(L, 1, nullptr);
             return 1;
         }, "tostring");
         lua_setglobal(L_main, "tostring");
 
+        // tonumber(v, [base]) — soporta base (2..36) y hex 0x; rechaza basura final.
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            if (!lua_isnoneornil(L, 2)) {
+                int base = (int)luaL_checkinteger(L, 2);
+                const char* s = luaL_checkstring(L, 1);
+                if (base < 2 || base > 36) { lua_pushnil(L); return 1; }
+                char* endp = nullptr;
+                long val = strtol(s, &endp, base);
+                // saltar espacios finales
+                while (endp && (*endp == ' ' || *endp == '\t' || *endp == '\n')) endp++;
+                if (endp && *endp == '\0' && endp != s) { lua_pushnumber(L, (double)val); return 1; }
+                lua_pushnil(L); return 1;
+            }
             if (lua_type(L, 1) == LUA_TNUMBER) { lua_pushvalue(L, 1); return 1; }
             if (lua_type(L, 1) == LUA_TSTRING) {
-                double n = 0;
-                if (sscanf(luaL_checkstring(L, 1), "%lf", &n) == 1) {
-                    lua_pushnumber(L, n); return 1;
-                }
+                const char* s = luaL_checkstring(L, 1);
+                char* endp = nullptr;
+                double n = strtod(s, &endp);
+                while (endp && (*endp == ' ' || *endp == '\t' || *endp == '\n')) endp++;
+                if (endp && *endp == '\0' && endp != s) { lua_pushnumber(L, n); return 1; }
             }
             lua_pushnil(L); return 1;
         }, "tonumber");
@@ -1601,6 +1646,20 @@ public:
         }, "GetMouseDelta");
         lua_setfield(L_main, -2, "GetMouseDelta");
 
+        // Un ServerScript no puede leer entrada de hardware (igual que Roblox):
+        // sustituimos la tabla por un proxy que lanza un error claro al usarse.
+        if (get_class() == "ServerScript") {
+            lua_pop(L_main, 1);  // descartar la tabla real de UserInputService
+            lua_newtable(L_main);
+            lua_newtable(L_main);  // metatable
+            lua_pushcfunction(L_main, [](lua_State* L) -> int {
+                luaL_error(L, "UserInputService no esta disponible en un ServerScript: "
+                              "la entrada (teclado/raton/tactil) solo existe en el cliente (LocalScript).");
+                return 0;
+            }, "__index");
+            lua_setfield(L_main, -2, "__index");
+            lua_setmetatable(L_main, -2);
+        }
         lua_setglobal(L_main, "UserInputService");
 
         // ── require ───────────────────────────────────────────────────────────
@@ -1702,7 +1761,7 @@ public:
     void setup_require_system(lua_State* L) {
         lua_pushcfunction(L, [](lua_State* L) -> int {
             GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
-            if (!wrapper || !wrapper->node_ptr) {
+            if (!wrapper || !gow_node(wrapper)) {
                 UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
                     "require() needs a valid ModuleScript.",
                     "require() requiere un ModuleScript válido.",
@@ -1710,7 +1769,7 @@ public:
                 return 0;
             }
 
-            Node* mod_node = wrapper->node_ptr;
+            Node* mod_node = gow_node(wrapper);
             if (mod_node->get_class() != "ModuleScript") {
                 UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
                     "require() only accepts ModuleScripts.",
@@ -1801,6 +1860,24 @@ public:
         }
     }
 
+    // Relay de ChildAdded/ChildRemoved. Godot lo conecta a child_entered_tree /
+    // child_exiting_tree del nodo objetivo y lo desconecta solo al liberar
+    // cualquiera de los dos extremos (sin fugas ni use-after-free). El ref es la
+    // función Luau conectada, guardada en el registro de esta VM.
+    void _gl_child_event(Node* child, int ref) {
+        if (!gl_state_alive(L_main) || !child) return;
+        lua_State* th = lua_newthread(L_main);
+        lua_rawgeti(L_main, LUA_REGISTRYINDEX, ref);
+        if (lua_isfunction(L_main, -1)) {
+            lua_xmove(L_main, th, 1);
+            wrap_node(th, child);
+            lua_resume(th, nullptr, 1);
+        } else {
+            lua_pop(L_main, 1);
+        }
+        lua_pop(L_main, 1);
+    }
+
     void _process(double delta) override {
         // ── 1. Main thread timer ────────────────────────────────────────
         if (!script_finished && is_waiting && !is_external_wait) {
@@ -1818,7 +1895,10 @@ public:
             st.timer -= delta;
 
             if (st.timer <= 0.0) {
-                int status = lua_resume(st.L, nullptr, 0);
+                // 1er resume de task.delay/defer: pasar sus args; despues, 0.
+                int na = st.started ? 0 : st.start_args;
+                st.started = true;
+                int status = lua_resume(st.L, nullptr, na);
 
                 if (status == LUA_YIELD) {
                     if (lua_gettop(st.L) > 0) {
@@ -1846,13 +1926,17 @@ public:
             WaitingChild& wc = waiting_children[i];
             wc.elapsed += delta;
             Node* found = nullptr;
-            if (wc.parent && wc.parent->is_inside_tree()) {
-                for (int ci = 0; ci < wc.parent->get_child_count(); ci++) {
-                    Node* ch = wc.parent->get_child(ci);
+            // Resolver el padre por ObjectID: nullptr si fue destruido (sin UAF).
+            Node* parent = Object::cast_to<Node>(ObjectDB::get_instance(wc.parent_id));
+            bool parent_gone = (wc.parent_id != 0 && parent == nullptr);
+            if (parent && parent->is_inside_tree()) {
+                for (int ci = 0; ci < parent->get_child_count(); ci++) {
+                    Node* ch = parent->get_child(ci);
                     if (ch && ch->get_name() == StringName(wc.child_name)) { found = ch; break; }
                 }
             }
-            bool timed_out = (wc.timeout > 0 && wc.elapsed >= wc.timeout);
+            // Si el padre desaparece, no dejamos la corrutina colgada para siempre.
+            bool timed_out = (wc.timeout > 0 && wc.elapsed >= wc.timeout) || parent_gone;
             if (found || timed_out) {
                 if (found) { wrap_node(wc.thread, found); resume_external_thread(wc.thread, 1); }
                 else       { lua_pushnil(wc.thread);       resume_external_thread(wc.thread, 1); }

@@ -998,6 +998,7 @@ _G["__SVC_ScriptContext"] = ScriptContext
 -- ══════════════════════════════════════════════════════════════════════
 Vector2 = {}
 Vector2.__index = Vector2
+Vector2.__type = "Vector2"   -- para que typeof(v) devuelva "Vector2"
 
 function Vector2.new(x, y)
     return setmetatable({ X = x or 0, Y = y or 0, x = x or 0, y = y or 0 }, Vector2)
@@ -1009,6 +1010,12 @@ function Vector2.__mul(a, b)
     if type(b) == "number" then return Vector2.new(a.X * b, a.Y * b) end
     return Vector2.new(a.X * b.X, a.Y * b.Y)
 end
+function Vector2.__div(a, b)
+    if type(b) == "number" then return Vector2.new(a.X / b, a.Y / b) end
+    return Vector2.new(a.X / b.X, a.Y / b.Y)
+end
+function Vector2.__unm(a)    return Vector2.new(-a.X, -a.Y) end
+function Vector2.__eq(a, b)  return a.X == b.X and a.Y == b.Y end
 function Vector2:magnitude()  return math.sqrt(self.X * self.X + self.Y * self.Y) end
 function Vector2:normalized() local m = self:magnitude(); if m < 0.0001 then return Vector2.new(0,0) end; return Vector2.new(self.X/m, self.Y/m) end
 function Vector2:dot(v2)      return self.X * v2.X + self.Y * v2.Y end
@@ -1023,6 +1030,7 @@ Vector2.one  = Vector2.new(1, 1)
 -- ══════════════════════════════════════════════════════════════════════
 UDim = {}
 UDim.__index = UDim
+UDim.__type = "UDim"
 function UDim.new(scale, offset)
     return setmetatable({ Scale = scale or 0, Offset = offset or 0 }, UDim)
 end
@@ -1042,6 +1050,7 @@ end
 -- ══════════════════════════════════════════════════════════════════════
 UDim2 = {}
 UDim2.__index = UDim2
+UDim2.__type = "UDim2"
 
 function UDim2.new(xScale, xOffset, yScale, yOffset)
     local t = {
@@ -1121,6 +1130,7 @@ end
 R"LUAU(
 CFrame = {}
 CFrame.__index = CFrame
+CFrame.__type = "CFrame"
 
 local function _cf_raw(x,y,z, m00,m01,m02, m10,m11,m12, m20,m21,m22)
     local cf = {

@@ -18,6 +18,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -134,6 +135,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"),    &UserInputService::_gl_disconnect);
         ClassDB::bind_method(D_METHOD("is_key_down", "keycode"),   &UserInputService::is_key_down);
         ClassDB::bind_method(D_METHOD("get_mouse_location"),       &UserInputService::get_mouse_location_v);
         ClassDB::bind_method(D_METHOD("get_mouse_delta"),          &UserInputService::get_mouse_delta_v);
@@ -154,6 +156,11 @@ public:
         for (auto& cb : input_began_cbs)   if (cb.main_L==L) cb.active=false;
         for (auto& cb : input_ended_cbs)   if (cb.main_L==L) cb.active=false;
         for (auto& cb : input_changed_cbs) if (cb.main_L==L) cb.active=false;
+    }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : input_began_cbs)   if (cb.ref==ref) cb.active=false;
+        for (auto& cb : input_ended_cbs)   if (cb.ref==ref) cb.active=false;
+        for (auto& cb : input_changed_cbs) if (cb.ref==ref) cb.active=false;
     }
 
     bool is_key_down(int keycode) const {
@@ -230,7 +237,7 @@ private:
     void _fire_input_list(std::vector<LuaCallback>& list, int input_type, int key_code, bool game_proc) {
         for (int i=(int)list.size()-1; i>=0; --i) {
             auto& cb = list[i];
-            if (!cb.active) { list.erase(list.begin()+i); continue; }
+            if (!cb.active || !gl_state_alive(cb.main_L)) { list.erase(list.begin()+i); continue; }
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
