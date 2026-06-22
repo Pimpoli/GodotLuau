@@ -58,6 +58,8 @@ const TR := {
 		"debug_title":           "Script output (print / warn)",
 		"debug_desc":            "Shows print() and warn() messages from YOUR Luau scripts in the Output panel.\nEnabled by default — turn OFF for a clean Output.",
 		"dbg_title":             "Debug Mode (system scripts)",
+		"anim_title":            "Test character animation",
+		"anim_desc":             "TEST ONLY: plays a placeholder code animation (idle/walk bob) on the default character. Off by default; real animations come from rigged models.",
 		"dbg_desc":              "Shows internal output from built-in scripts (PlayerModule, Health, Chat...)\nand engine messages. Only the GodotLuau banner is shown when OFF.",
 		"notif_outdated_title":  "Notify outdated version in Output",
 		"notif_outdated_desc":   "Prints a warning in the Output panel when running an outdated GodotLuau version.",
@@ -141,6 +143,8 @@ const TR := {
 		"debug_title":           "Salida de scripts (print / warn)",
 		"debug_desc":            "Muestra los print() y warn() de TUS scripts Luau en el panel Output.\nActivado por defecto — desactívalo para mantener el Output limpio.",
 		"dbg_title":             "Modo Debug (scripts del sistema)",
+		"anim_title":            "Animación de prueba del personaje",
+		"anim_desc":             "SOLO PRUEBA: reproduce una animación por código (rebote al estar quieto/caminar) en el personaje por defecto. Apagado por defecto; las animaciones reales vienen de modelos riggeados.",
 		"dbg_desc":              "Muestra la salida interna de los scripts integrados (PlayerModule, Health, Chat...)\ny mensajes del motor. Desactivado solo se ve el banner de GodotLuau.",
 		"notif_outdated_title":  "Notificar versión desactualizada en Output",
 		"notif_outdated_desc":   "Imprime una advertencia en el panel Output cuando se ejecuta una versión desactualizada de GodotLuau.",
@@ -224,6 +228,8 @@ const TR := {
 		"debug_title":           "Saída de scripts (print / warn)",
 		"debug_desc":            "Exibe os print() e warn() dos SEUS scripts Luau no painel Output.\nAtivado por padrão — desative para manter o Output limpo.",
 		"dbg_title":             "Modo Debug (scripts do sistema)",
+		"anim_title":            "Animação de teste do personagem",
+		"anim_desc":             "SÓ TESTE: reproduz uma animação por código (quicar parado/andando) no personagem padrão. Desligado por padrão; as animações reais vêm de modelos com esqueleto.",
 		"dbg_desc":              "Exibe a saída interna dos scripts integrados (PlayerModule, Health, Chat...)\ne mensagens do motor. Desativado, apenas o banner do GodotLuau aparece.",
 		"notif_outdated_title":  "Notificar versão desatualizada no Output",
 		"notif_outdated_desc":   "Exibe um aviso no painel Output quando uma versão desatualizada do GodotLuau está em uso.",
@@ -603,6 +609,8 @@ func _register_settings() -> void:
 		"Show print() and warn() output from your Luau scripts in the Output panel.")
 	_add_bool("godot_luau/debug_mode",                 false,
 		"Debug Mode — show internal output from built-in system scripts and engine messages.")
+	_add_bool("godot_luau/debug_test_animation",       false,
+		"TEST: play a placeholder code animation on the default character (idle/walk bob). For testing only, until real rigged animations are added.")
 	_add_bool("godot_luau/notify_outdated_version",    true,
 		"Print a warning in Output when running an outdated GodotLuau version.")
 	_add_bool("godot_luau/instant_autocomplete",       true,
@@ -1053,6 +1061,9 @@ func _build_panel_contents() -> void:
 
 	dbg_vb.add_child(_make_row(_t("dbg_title"), _t("dbg_desc"),
 		"godot_luau/debug_mode", false))
+
+	dbg_vb.add_child(_make_row(_t("anim_title"), _t("anim_desc"),
+		"godot_luau/debug_test_animation", false))
 
 	dbg_vb.add_child(_make_row(_t("notif_outdated_title"), _t("notif_outdated_desc"),
 		"godot_luau/notify_outdated_version", true))

@@ -9,6 +9,8 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -486,6 +488,44 @@ public:
             }
             was_on_floor = on_floor;
         }
+
+        // Animacion de PRUEBA por codigo (placeholder): SOLO si el toggle de
+        // Debug 'debug_test_animation' esta activo. Anima la malla visual, no
+        // la fisica; sirve para ver el muñeco "vivo" sin animaciones reales aun.
+        _test_animate(body, velocity, delta);
+    }
+
+    // ── Animacion de prueba: como el avatar es una malla unica sin huesos,
+    //    animamos su transform (rebote al estar quieto/caminar + giro hacia
+    //    la direccion de movimiento). Se restaura sola al apagar el toggle.
+    float anim_time     = 0.0f;
+    float anim_base_y   = 0.0f;
+    bool  anim_base_set = false;
+
+    void _test_animate(CharacterBody3D* body, const Vector3& velocity, double delta) {
+        Node3D* mesh = body ? Object::cast_to<Node3D>(body->get_node_or_null(NodePath("Mesh"))) : nullptr;
+        if (!mesh) return;
+        bool on = (bool)ProjectSettings::get_singleton()->get_setting("godot_luau/debug_test_animation", false);
+        if (!on) {
+            if (anim_base_set) {
+                Vector3 p = mesh->get_position(); p.y = anim_base_y;
+                mesh->set_position(p); mesh->set_rotation(Vector3());
+                anim_base_set = false;
+            }
+            return;
+        }
+        if (!anim_base_set) { anim_base_y = mesh->get_position().y; anim_base_set = true; }
+        anim_time += (float)delta;
+        Vector3 horiz(velocity.x, 0.0f, velocity.z);
+        bool moving = horiz.length() > 0.5f;
+        float freq = moving ? 9.0f : 2.2f;
+        float amp  = moving ? 0.12f : 0.04f;
+        Vector3 p = mesh->get_position();
+        p.y = anim_base_y + Math::abs(Math::sin(anim_time * freq)) * amp;
+        mesh->set_position(p);
+        float yaw  = moving ? Math::atan2(velocity.x, velocity.z) : mesh->get_rotation().y;
+        float sway = moving ? Math::sin(anim_time * freq) * 0.08f : 0.0f;
+        mesh->set_rotation(Vector3(0.0f, yaw, sway));
     }
 };
 
