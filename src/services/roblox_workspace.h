@@ -15,6 +15,7 @@
 #include <godot_cpp/classes/capsule_shape3d.hpp>   // <-- INDISPENSABLE
 #include <godot_cpp/classes/resource_loader.hpp>   // malla de avatar por defecto
 #include <godot_cpp/classes/mesh.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/world_environment.hpp>
@@ -112,13 +113,16 @@ protected:
                 
                 sky_mat->set_sky_top_color(Color(0.15, 0.55, 0.95)); 
                 sky_mat->set_sky_horizon_color(Color(0.7, 0.85, 0.95)); 
-                sky_mat->set_ground_bottom_color(Color(0.1, 0.1, 0.1));
+                sky_mat->set_ground_bottom_color(Color(0.35, 0.36, 0.40));
                 sky_mat->set_ground_horizon_color(Color(0.7, 0.85, 0.95));
 
                 sky->set_material(sky_mat);
                 env->set_sky(sky);
                 env->set_background(Environment::BG_SKY);
                 env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+                // Mas relleno ambiental para que los lados en sombra (p.ej. el
+                // personaje) no salgan casi negros.
+                env->set_ambient_light_energy(1.15);
                 
                 env_node->set_environment(env);
                 add_child(env_node);
@@ -263,6 +267,24 @@ public:
             } else {
                 Ref<CapsuleMesh> cm; cm.instantiate();
                 m->set_mesh(cm);
+            }
+            // Material limpio: el material del .obj venia oscuro (textura como
+            // opacidad + base ~0.2) y el personaje salia negro. Usamos la textura
+            // gris del avatar como albedo, o un gris de respaldo.
+            {
+                Ref<StandardMaterial3D> mat; mat.instantiate();
+                mat->set_roughness(0.95);
+                mat->set_metallic(0.0);
+                Ref<Texture2D> tex;
+                ResourceLoader* rl2 = ResourceLoader::get_singleton();
+                const String texp = "res://assets/avatars/Rig1_diff.png";
+                if (avatar_mesh.is_valid() && rl2 && rl2->exists(texp)) {
+                    Ref<Resource> texr = rl2->load(texp);
+                    tex = Ref<Texture2D>(Object::cast_to<Texture2D>(texr.ptr()));
+                }
+                if (tex.is_valid()) mat->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, tex);
+                else mat->set_albedo(Color(0.55, 0.55, 0.55));
+                m->set_material_override(mat);
             }
             p->add_child(m);
 
