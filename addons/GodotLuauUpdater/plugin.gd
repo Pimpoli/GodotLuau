@@ -440,12 +440,9 @@ func _detect_editor_lang() -> void:
 		if saved in ["en", "es", "pt"]:
 			_lang = saved
 			return
-	var locale : String = "en"
-	if es.has_setting("interface/editor/editor_language"):
-		locale = str(es.get_setting("interface/editor/editor_language"))
-	if   locale.begins_with("es"): _lang = "es"
-	elif locale.begins_with("pt"): _lang = "pt"
-	else:                          _lang = "en"
+	# Por defecto: ingles (internacional). El usuario puede cambiar a es/pt
+	# desde el selector del panel y queda guardado en godot_luau/lang.
+	_lang = "en"
 
 func _t(key: String) -> String:
 	var d : Dictionary = TR.get(_lang, TR["en"])

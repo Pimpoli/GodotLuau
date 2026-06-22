@@ -1,111 +1,109 @@
 # GodotLuau
 
-**Sistema Roblox para Godot 4** — una GDExtension escrita en C++ que integra el intérprete [Luau](https://luau.org/) dentro de Godot y reproduce la arquitectura de Roblox: `game`, servicios (`Workspace`, `Players`, `Lighting`, `ReplicatedStorage`…), `LocalScript` / `ServerScript` / `ModuleScript`, `Humanoid`, la librería `task`, `RunService.Heartbeat`, GUI estilo Roblox, constraints, BodyMovers y mucho más. Escribes tu juego en **Luau**, igual que en Roblox Studio, pero corre sobre el motor de Godot.
+**Roblox-style system for Godot 4** — a C++ GDExtension that embeds the [Luau](https://luau.org/) interpreter inside Godot and mirrors the Roblox architecture: `game`, services (`Workspace`, `Players`, `Lighting`, `ReplicatedStorage`…), `LocalScript` / `ServerScript` / `ModuleScript`, `Humanoid`, the `task` library, `RunService.Heartbeat`, Roblox-style GUI, constraints, BodyMovers and much more. You write your game in **Luau**, just like in Roblox Studio, but it runs on the Godot engine.
 
-*Roblox System for Godot 4 — a C++ GDExtension that embeds the Luau interpreter in Godot and mirrors the full Roblox architecture.*
-
-**Autor:** PimpoliDev · **Repo:** https://github.com/Pimpoli/GodotLuau · **Versión:** v1.7.0
+**Author:** PimpoliDev · **Repo:** https://github.com/Pimpoli/GodotLuau · **Version:** v1.7.0
 
 ---
 
-## Índice
+## Table of contents
 
-- [¿Qué es GodotLuau?](#qué-es-godotluau)
-- [Características](#características)
-- [Empezar a usar](#empezar-a-usar)
-- [Cómo funciona (arquitectura)](#cómo-funciona-arquitectura)
-  - [El intérprete Luau embebido](#1-el-intérprete-luau-embebido)
-  - [Tipos de script y cómo se ejecutan](#2-tipos-de-script-y-cómo-se-ejecutan)
-  - [El árbol de servicios estilo Roblox](#3-el-árbol-de-servicios-estilo-roblox)
-  - [La API de Luau disponible](#4-la-api-de-luau-disponible)
-  - [Capa de seguridad de vida](#5-capa-de-seguridad-de-vida)
-  - [Scripts con ID persistente y papelera](#6-scripts-con-id-persistente-y-papelera)
-- [Catálogo de nodos y clases](#catálogo-de-nodos-y-clases)
-- [Sistemas de jugador en Luau](#sistemas-de-jugador-en-luau)
-- [Iluminación estilo Roblox](#iluminación-estilo-roblox)
-- [Autocompletado e IA](#autocompletado-e-ia)
-- [Panel de configuración](#panel-de-configuración)
-- [Compilar desde el código fuente](#compilar-desde-el-código-fuente)
-- [Estructura del repositorio](#estructura-del-repositorio)
-- [Herramientas incluidas](#herramientas-incluidas)
-- [Limitaciones conocidas](#limitaciones-conocidas)
-- [Publicar una release (mantenedor)](#publicar-una-release-mantenedor)
-- [Licencia y créditos](#licencia-y-créditos)
+- [What is GodotLuau?](#what-is-godotluau)
+- [Features](#features)
+- [Getting started](#getting-started)
+- [How it works (architecture)](#how-it-works-architecture)
+  - [The embedded Luau interpreter](#1-the-embedded-luau-interpreter)
+  - [Script types and how they run](#2-script-types-and-how-they-run)
+  - [The Roblox-style service tree](#3-the-roblox-style-service-tree)
+  - [The available Luau API](#4-the-available-luau-api)
+  - [Lifetime safety layer](#5-lifetime-safety-layer)
+  - [Persistent script IDs and trash](#6-persistent-script-ids-and-trash)
+- [Node and class catalog](#node-and-class-catalog)
+- [Player systems in Luau](#player-systems-in-luau)
+- [Roblox-style lighting](#roblox-style-lighting)
+- [Autocomplete and AI](#autocomplete-and-ai)
+- [Configuration panel](#configuration-panel)
+- [Building from source](#building-from-source)
+- [Repository structure](#repository-structure)
+- [Included tools](#included-tools)
+- [Known limitations](#known-limitations)
+- [Publishing a release (maintainer)](#publishing-a-release-maintainer)
+- [License and credits](#license-and-credits)
 
 ---
 
-## ¿Qué es GodotLuau?
+## What is GodotLuau?
 
-GodotLuau hace que Godot 4 hable **Luau** (el dialecto de Lua que usa Roblox) y trae consigo la jerarquía, los nodos y la API con los que ya trabaja cualquier desarrollador de Roblox. La idea es que puedas escribir lógica de juego con la mentalidad de Roblox —`game.Players.PlayerAdded`, `workspace.Parte.Touched`, `RemoteEvent:FireServer()`, `task.wait()`— pero aprovechando el motor, el renderizado y la exportación de Godot.
+GodotLuau makes Godot 4 speak **Luau** (the Lua dialect used by Roblox) and brings along the hierarchy, nodes and API any Roblox developer already knows. The idea is that you can write game logic with a Roblox mindset —`game.Players.PlayerAdded`, `workspace.Part.Touched`, `RemoteEvent:FireServer()`, `task.wait()`— while taking advantage of Godot's engine, rendering and export pipeline.
 
-No es un emulador de Roblox ni se conecta a sus servidores: es una **reimplementación independiente** de su API más común sobre tecnología abierta (Godot + Luau, ambos de código abierto).
+It is **not** a Roblox emulator and it does not connect to Roblox servers: it is an **independent reimplementation** of its most common API on top of open technology (Godot + Luau, both open source).
 
-## Características
+## Features
 
-- **API de Roblox en Luau de verdad**, interpretada por el motor oficial Luau compilado dentro de la extensión.
-- **Jerarquía de servicios automática:** al abrir una escena `RobloxGame` se construye sola toda la estructura (`Workspace`, `Players`, `Lighting`, `StarterPlayer/StarterPlayerScripts`, etc.).
-- **Tres tipos de script** con el comportamiento de Roblox: `LocalScript` (cliente), `ServerScript` (servidor) y `ModuleScript` (`require`).
-- **Autocompletado consciente de la escena** (como Roblox Studio), documentación al pasar el cursor y resaltado de errores de sintaxis, directamente en el editor de Godot.
-- **Autocompletado con IA** opcional mediante modelos n-gram propios (familia *LuauIA*).
-- **Iluminación fiel a Roblox** con `ClockTime`, ciclo día/noche, presets y calidad gráfica configurable.
-- **Sistemas de jugador listos y editables** en Luau (movimiento, cámara, sprint, estamina, vida con regeneración, anti-exploit).
-- **Capa de seguridad de memoria** que evita los *crashes* clásicos al destruir objetos en tiempo de ejecución.
-- **Auto-updater** integrado que descarga e instala nuevas versiones desde GitHub con verificación SHA-256.
-- **Multilingüe** (English / Español / Português) en todo el panel y los mensajes.
+- **Real Roblox API in Luau**, interpreted by the official Luau engine compiled inside the extension.
+- **Automatic service hierarchy:** opening a `RobloxGame` scene builds the whole structure for you (`Workspace`, `Players`, `Lighting`, `StarterPlayer/StarterPlayerScripts`, etc.).
+- **Three script types** with Roblox behavior: `LocalScript` (client), `ServerScript` (server) and `ModuleScript` (`require`).
+- **Scene-aware autocomplete** (like Roblox Studio), hover documentation and syntax-error highlighting, right in the Godot editor.
+- **Optional AI autocomplete** powered by custom n-gram models (the *LuauIA* family).
+- **Roblox-faithful lighting** with `ClockTime`, day/night cycle, presets and configurable graphics quality.
+- **Ready-made, editable player systems** in Luau (movement, camera, sprint, stamina, health regeneration, anti-exploit).
+- **Memory-safety layer** that prevents the classic crashes when objects are destroyed at runtime.
+- **Built-in auto-updater** that downloads and installs new versions from GitHub with SHA-256 verification.
+- **Multilingual** UI (English / Español / Português), English by default.
 
-## Empezar a usar
+## Getting started
 
-> **Requisitos:** Godot **4.3 o superior** · Windows x86_64 (las DLLs precompiladas incluidas son solo de Windows; para otras plataformas, ver [Compilar desde el código fuente](#compilar-desde-el-código-fuente)).
+> **Requirements:** Godot **4.3 or newer** · Windows x86_64 (the precompiled DLLs included are Windows-only; for other platforms see [Building from source](#building-from-source)).
 
-La forma más fácil de crear un juego nuevo es el asistente:
+The easiest way to create a new game is the wizard:
 
 ```bash
-python nuevo_proyecto.py
+python tools/nuevo_proyecto.py
 ```
 
-Te pregunta nombre, modo (3D o 2D) y carpeta, y genera un proyecto Godot completo y listo para abrir, con:
+It asks for a name, a mode (3D or 2D) and a folder, and generates a complete Godot project ready to open, with:
 
-- La extensión compilada (`bin/`) y su archivo `godot_luau.gdextension`.
-- Los iconos estilo Roblox para que los nodos se vean como en Studio.
-- El addon **GodotLuau Config** (panel de ajustes + auto-updater) ya habilitado.
-- Una escena raíz `RobloxGame` que **auto-genera toda la jerarquía de servicios al abrirla**.
+- The compiled extension (`bin/`) and its `godot_luau.gdextension` file.
+- The Roblox-style icons so nodes look like they do in Studio.
+- The **GodotLuau Config** addon (settings panel + auto-updater) already enabled.
+- A root `RobloxGame` scene that **auto-generates the entire service hierarchy when opened**.
 
-Al abrir el proyecto verás la estructura familiar (`Workspace`, `Players`, `StarterPlayer/StarterPlayerScripts` con `PlayerModule`, `ControlModule`, `CameraModule`…) y podrás editar los `.lua` directamente en Godot. Pulsa **F5** para jugar.
+When you open the project you'll see the familiar structure (`Workspace`, `Players`, `StarterPlayer/StarterPlayerScripts` with `PlayerModule`, `ControlModule`, `CameraModule`…) and you can edit the `.lua` files directly in Godot. Press **F5** to play.
 
-## Cómo funciona (arquitectura)
+## How it works (architecture)
 
-GodotLuau es una **GDExtension** (una librería nativa en C++ que Godot carga al arrancar). Por dentro está organizada como un conjunto de cabeceras incluidas por dos unidades de compilación; todo el código vive en `src/`. Esto es lo que ocurre paso a paso.
+GodotLuau is a **GDExtension** (a native C++ library that Godot loads at startup). Internally it is organized as a set of headers included by two translation units; all the code lives under `src/`. Here is what happens, step by step.
 
-### 1. El intérprete Luau embebido
+### 1. The embedded Luau interpreter
 
-Al iniciar, la extensión hace dos cosas (en `src/register_types.cpp`):
+On startup the extension does two things (in `src/core/register_types.cpp`):
 
-1. **Registra Luau como lenguaje de script** dentro de Godot (`Engine::register_script_language`), junto a un **cargador y guardador de archivos `.lua`** (`LuauLoader` / `LuauSaver`). Por eso Godot sabe abrir, editar y guardar `.lua` de forma nativa.
-2. **Registra todas las clases** (nodos y servicios) estilo Roblox, cada una con su icono.
+1. **Registers Luau as a scripting language** inside Godot (`Engine::register_script_language`), along with a **`.lua` file loader and saver** (`LuauLoader` / `LuauSaver`). That's why Godot can open, edit and save `.lua` files natively.
+2. **Registers all the classes** (nodes and services) in the Roblox style, each with its icon.
 
-El intérprete es el **Luau oficial** (de luau-lang) compilado dentro de la propia DLL: la extensión incluye la VM, el compilador y el AST de Luau.
+The interpreter is the **official Luau** (from luau-lang) compiled into the DLL itself: the extension bundles the Luau VM, compiler and AST.
 
-### 2. Tipos de script y cómo se ejecutan
+### 2. Script types and how they run
 
-Hay tres nodos de script, con el mismo significado que en Roblox:
+There are three script nodes, with the same meaning as in Roblox:
 
-| Nodo | Color | Contexto | Cuándo se ejecuta |
+| Node | Color | Context | When it runs |
 |---|---|---|---|
-| `LocalScript` | Azul | **Cliente** (`LocalPlayer`, `UserInputService` disponibles) | Solo, al iniciar el juego |
-| `ServerScript` | Naranja | **Servidor** (`UserInputService` bloqueado, `LocalPlayer` nil) | Solo, al iniciar el juego |
-| `ModuleScript` | Morado | Neutro | **No corre solo**: se carga con `require()` y devuelve su valor |
+| `LocalScript` | Blue | **Client** (`LocalPlayer`, `UserInputService` available) | On its own, when the game starts |
+| `ServerScript` | Orange | **Server** (`UserInputService` blocked, `LocalPlayer` is nil) | On its own, when the game starts |
+| `ModuleScript` | Purple | Neutral | **Does not run on its own**: loaded via `require()` and returns its value |
 
-Cuando empieza el juego (no en el editor), cada `LocalScript` y `ServerScript` **crea su propia máquina virtual de Luau** (`luaL_newstate` + librerías estándar). El cuerpo del archivo `.lua` **se ejecuta de arriba a abajo directamente**, al estilo de Roblox — **no** se usan callbacks `_ready` / `_process` como en GDScript. Para lógica continua se usan `RunService.Heartbeat:Connect(...)` o bucles con `task.wait()`.
+When the game starts (not in the editor), each `LocalScript` and `ServerScript` **creates its own Luau virtual machine** (`luaL_newstate` + standard libraries). The body of the `.lua` file **runs top to bottom directly**, Roblox-style — there are **no** `_ready` / `_process` callbacks like in GDScript. For continuous logic you use `RunService.Heartbeat:Connect(...)` or loops with `task.wait()`.
 
-Un `ModuleScript` no se ejecuta por su cuenta: cuando otro script hace `require(...)`, su código corre una vez y se devuelve (y cachea) el valor que retorne — normalmente una tabla con funciones.
+A `ModuleScript` does not run by itself: when another script calls `require(...)`, its code runs once and the value it returns (typically a table of functions) is returned and cached.
 
-### 3. El árbol de servicios estilo Roblox
+### 3. The Roblox-style service tree
 
-El nodo raíz (`RobloxGame3D` o `RobloxGame2D`) **auto-construye** la jerarquía completa de servicios la primera vez que se abre la escena, de modo que `game` y sus servicios existen tal y como esperas:
+The root node (`RobloxGame3D` or `RobloxGame2D`) **auto-builds** the full service hierarchy the first time the scene is opened, so `game` and its services exist exactly as you expect:
 
 ```
 game (RobloxGame3D)
-├── Workspace            (mundo 3D; contiene SpawnLocation y RunService oculto)
+├── Workspace            (3D world; contains SpawnLocation and a hidden RunService)
 ├── Players
 ├── Lighting
 ├── ReplicatedFirst
@@ -121,96 +119,96 @@ game (RobloxGame3D)
 └── SoundService
 ```
 
-Desde Luau accedes a ellos con `game:GetService("Players")` o directamente (`game.Workspace`, `workspace`, etc.), y navegas el árbol con `FindFirstChild`, `WaitForChild`, `GetChildren` o por nombre (`workspace.MiParte`).
+From Luau you access them with `game:GetService("Players")` or directly (`game.Workspace`, `workspace`, etc.), and you navigate the tree with `FindFirstChild`, `WaitForChild`, `GetChildren` or by name (`workspace.MyPart`).
 
-### 4. La API de Luau disponible
+### 4. The available Luau API
 
-Dentro de un script tienes el entorno habitual de Roblox:
+Inside a script you get the usual Roblox environment:
 
-- **Globales:** `game`, `workspace`, `script`, `require`, `shared`, además de las librerías estándar de Luau (`math`, `string`, `table`, `coroutine`, `os`, `utf8`, `bit32`…).
-- **Salida:** `print(...)`, `warn(...)`.
-- **Programación temporal:** `task.spawn`, `task.delay`, `task.defer`, `task.wait`, `task.cancel`, y los globales clásicos `wait`, `spawn`, `delay`, `tick`, `time`. Los hilos (corrutinas) los gestiona el nodo, así que `task.wait()` pausa de verdad y reanuda en su momento.
-- **Tipos de dato** con sus operadores y `typeof` correcto: `Vector3`, `Vector2`, `CFrame`, `Color3`, `UDim`, `UDim2`, `BrickColor`, además de `Enum` e `Instance`.
-- **Señales estilo Roblox:** `:Connect()`, `:Disconnect()`, `.Connected`, `:Wait()` en todo lo que emite eventos (`RunService.Heartbeat`, eventos de `Humanoid`, `ClickDetector`, `ProximityPrompt`, `UserInputService`, GUI, etc.).
-- **Comunicación:** `RemoteEvent` (`FireServer`/`FireClient`/`OnServerEvent`/`OnClientEvent`), `RemoteFunction` y `BindableEvent`.
-- **Identidad de clase:** `Instance.ClassName` y `:IsA(...)` fieles a la jerarquía de Roblox.
+- **Globals:** `game`, `workspace`, `script`, `require`, `shared`, plus the Luau standard libraries (`math`, `string`, `table`, `coroutine`, `os`, `utf8`, `bit32`…).
+- **Output:** `print(...)`, `warn(...)`.
+- **Scheduling:** `task.spawn`, `task.delay`, `task.defer`, `task.wait`, `task.cancel`, and the classic globals `wait`, `spawn`, `delay`, `tick`, `time`. Threads (coroutines) are managed by the node, so `task.wait()` actually pauses and resumes at the right time.
+- **Data types** with their operators and correct `typeof`: `Vector3`, `Vector2`, `CFrame`, `Color3`, `UDim`, `UDim2`, `BrickColor`, plus `Enum` and `Instance`.
+- **Roblox-style signals:** `:Connect()`, `:Disconnect()`, `.Connected`, `:Wait()` on everything that emits events (`RunService.Heartbeat`, `Humanoid` events, `ClickDetector`, `ProximityPrompt`, `UserInputService`, GUI, etc.).
+- **Communication:** `RemoteEvent` (`FireServer`/`FireClient`/`OnServerEvent`/`OnClientEvent`), `RemoteFunction` and `BindableEvent`.
+- **Class identity:** `Instance.ClassName` and `:IsA(...)` faithful to the Roblox hierarchy.
 
-> El cuerpo del script corre con la mentalidad de Roblox. **No** se expone la API cruda de Godot (`Node.new`, `:add_child`, `:queue_free`, `get_tree()`…): se trabaja siempre por el lado Roblox.
+> The script body runs with a Roblox mindset. The raw Godot API (`Node.new`, `:add_child`, `:queue_free`, `get_tree()`…) is **not** exposed: you always work the Roblox way.
 
-### 5. Capa de seguridad de vida
+### 5. Lifetime safety layer
 
-Mezclar un lenguaje con recolección de basura (Luau) y objetos de motor que pueden destruirse en cualquier momento (nodos de Godot) es la receta clásica de los *use-after-free* (acceder a memoria ya liberada → *crash*). GodotLuau lo evita con una capa dedicada (`src/gl_runtime.h`):
+Mixing a garbage-collected language (Luau) with engine objects that can be destroyed at any time (Godot nodes) is the classic recipe for *use-after-free* (accessing freed memory → crash). GodotLuau avoids this with a dedicated layer (`src/core/gl_runtime.h`):
 
-- Los objetos de Luau **no guardan punteros crudos** a los nodos, sino su **`ObjectID`**. Al usarlos se resuelve el ID contra la base de objetos viva: si el nodo ya no existe, obtienes `nil` en vez de un *crash*.
-- Hay un **registro de las VMs de Luau vivas**: antes de invocar cualquier *callback* se comprueba que su VM sigue activa, de modo que nunca se ejecuta código sobre un intérprete ya cerrado.
+- Luau objects **do not hold raw pointers** to nodes; they hold their **`ObjectID`**. When used, the ID is resolved against the live object database: if the node no longer exists you get `nil` instead of a crash.
+- There is a **registry of live Luau VMs**: before invoking any callback it checks that its VM is still active, so code is never run on an already-closed interpreter.
 
-### 6. Scripts con ID persistente y papelera
+### 6. Persistent script IDs and trash
 
-Cada `LocalScript` / `ServerScript` / `ModuleScript` recibe un **`script_id` inmutable** (p. ej. `ServerScript_ID_3`) que da nombre a su archivo `.lua`. Esto permite un flujo cómodo y seguro:
+Every `LocalScript` / `ServerScript` / `ModuleScript` gets an **immutable `script_id`** (e.g. `ServerScript_ID_3`) that names its `.lua` file. This enables a convenient, safe workflow:
 
-- Al **borrar el nodo**, su `.lua` no se pierde: se mueve a la papelera `res://.luau_trash/`.
-- Con **Ctrl+Z** vuelven a la vez el nodo y su script.
-- La papelera **se purga sola a los 7 días**.
+- When you **delete the node**, its `.lua` is not lost: it is moved to the `res://.luau_trash/` folder.
+- **Ctrl+Z** brings back both the node and its script at once.
+- The trash **auto-purges after 7 days**.
 
-## Catálogo de nodos y clases
+## Node and class catalog
 
-Todas estas clases se registran en el editor con su icono estilo Roblox (ver `src/register_types.cpp`):
+All these classes are registered in the editor with their Roblox-style icon (see `src/core/register_types.cpp`):
 
 - **Scripts:** `LocalScript`, `ServerScript`, `ModuleScript`.
-- **Raíces de juego:** `RobloxGame3D`, `RobloxGame2D`, `RobloxTemplate`.
-- **Personajes y física 3D:** `Humanoid`, `RobloxWorkspace`, `RobloxPlayer`, `RobloxPart`.
-- **Personajes y física 2D:** `Humanoid2D`, `RobloxWorkspace2D`, `RobloxPlayer2D`.
-- **Servicios:** `Players`, `Lighting`, `MaterialService`, `ReplicatedStorage`, `ReplicatedFirst`, `ServerStorage`, `ServerScriptService`, `StarterPlayer`, `StarterPlayerScripts`, `StarterCharacterScripts`, `StarterGui`, `StarterPack`, `Teams`, `SoundService`, `RunService`, `TextChatService`, `NetworkClient`, `CollectionService`, `UserInputService`, `TweenService`, `Folder`.
-- **Comunicación:** `RemoteEventNode`, `RemoteFunctionNode`, `BindableEventNode`.
+- **Game roots:** `RobloxGame3D`, `RobloxGame2D`, `RobloxTemplate`.
+- **3D characters and physics:** `Humanoid`, `RobloxWorkspace`, `RobloxPlayer`, `RobloxPart`.
+- **2D characters and physics:** `Humanoid2D`, `RobloxWorkspace2D`, `RobloxPlayer2D`.
+- **Services:** `Players`, `Lighting`, `MaterialService`, `ReplicatedStorage`, `ReplicatedFirst`, `ServerStorage`, `ServerScriptService`, `StarterPlayer`, `StarterPlayerScripts`, `StarterCharacterScripts`, `StarterGui`, `StarterPack`, `Teams`, `SoundService`, `RunService`, `TextChatService`, `NetworkClient`, `CollectionService`, `UserInputService`, `TweenService`, `Folder`.
+- **Communication:** `RemoteEventNode`, `RemoteFunctionNode`, `BindableEventNode`.
 - **BodyMovers:** `BodyVelocity`, `BodyPosition`, `BodyForce`, `BodyAngularVelocity`, `BodyGyro`.
 - **Constraints:** `WeldConstraint`, `HingeConstraint`, `BallSocketConstraint`, `RodConstraint`, `SpringConstraint`, `Motor6D`.
 - **GUI:** `ScreenGui`, `RobloxFrame`, `RobloxTextLabel`, `RobloxTextButton`, `RobloxTextBox`, `RobloxImageLabel`, `RobloxScrollingFrame`, `BillboardGui`, `SurfaceGui`.
-- **Iluminación / efectos:** `AtmosphereNode`, `LightingSkyNode`, `SunRaysNode`, `BloomEffect`, `BlurEffect`, `ColorCorrectionEffect`, `DepthOfFieldEffect`.
-- **Interacción / herramientas:** `ClickDetector`, `ProximityPrompt`, `SpawnLocation`, `RobloxTool`, `Backpack`.
-- **Sonido:** `RobloxSound`, `RobloxSoundGroup`.
-- **Animación:** `AnimationTrack`, `AnimationObject`.
+- **Lighting / effects:** `AtmosphereNode`, `LightingSkyNode`, `SunRaysNode`, `BloomEffect`, `BlurEffect`, `ColorCorrectionEffect`, `DepthOfFieldEffect`.
+- **Interaction / tools:** `ClickDetector`, `ProximityPrompt`, `SpawnLocation`, `RobloxTool`, `Backpack`.
+- **Sound:** `RobloxSound`, `RobloxSoundGroup`.
+- **Animation:** `AnimationTrack`, `AnimationObject`.
 - **Chat:** `RobloxChat`.
 
-## Sistemas de jugador en Luau
+## Player systems in Luau
 
-Los proyectos nuevos incluyen controladores de jugador **escritos en Luau y totalmente editables** (`DefaultScripts/PlayerController3D.lua` y `PlayerController2D.lua`), pensados para que los abras y los toquetees:
+New projects include player controllers **written in Luau and fully editable** (`DefaultScripts/PlayerController3D.lua` and `PlayerController2D.lua`), meant for you to open and tweak:
 
-- Movimiento y cámara (modo fijo o suavizado).
-- **Sprint** con aceleración suave y **estamina** opcional.
-- Módulos por plataforma (PC / móvil / consola).
-- **Vida** con regeneración fiel a Roblox (se reinicia al recibir daño).
-- Un `GameManager` con `PlayerAdded` y validación anti-exploit.
+- Movement and camera (fixed or smoothed mode).
+- **Sprint** with smooth acceleration and optional **stamina**.
+- Per-platform modules (PC / mobile / console).
+- **Health** with Roblox-faithful regeneration (resets when taking damage).
+- A `GameManager` with `PlayerAdded` and anti-exploit validation.
 
-## Iluminación estilo Roblox
+## Roblox-style lighting
 
-El servicio `Lighting` reproduce el comportamiento de Roblox:
+The `Lighting` service mirrors Roblox behavior:
 
-- `ClockTime`, `TimeOfDay` (`"18:30:00"`), `Brightness`, `Ambient` / `OutdoorAmbient`, niebla, `ColorShift_Top/Bottom`.
+- `ClockTime`, `TimeOfDay` (`"18:30:00"`), `Brightness`, `Ambient` / `OutdoorAmbient`, fog, `ColorShift_Top/Bottom`.
 - `SetMinutesAfterMidnight()` / `GetMinutesAfterMidnight()`.
-- **Ciclo día/noche automático** (`DayNightCycle` + `DayLengthMinutes`).
+- **Automatic day/night cycle** (`DayNightCycle` + `DayLengthMinutes`).
 - **Presets** (Realistic, Cartoon, Anime, Sunset, Night…).
-- `Technology` ajusta la calidad gráfica real de Godot: *Compatibility/Legacy* (rendimiento), *ShadowMap* (equilibrado), *Future* (SSAO + SSIL + Glow), *Voxel* (iluminación global).
+- `Technology` adjusts Godot's real graphics quality: *Compatibility/Legacy* (performance), *ShadowMap* (balanced), *Future* (SSAO + SSIL + Glow), *Voxel* (global illumination).
 
-## Autocompletado e IA
+## Autocomplete and AI
 
-El editor de scripts ofrece sugerencias **conscientes del árbol de la escena** (como Roblox Studio): al escribir `workspace.` o `FindFirstChild("` aparecen los hijos *reales* de la escena con su clase, y las propiedades se resuelven según la clase real de cada nodo. La base de tipos proviene de las definiciones de la API de Roblox (`Scripts/globalTypes.d.luau`, `Scripts/DataTypes.json`).
+The script editor offers **scene-aware** suggestions (like Roblox Studio): typing `workspace.` or `FindFirstChild("` shows the *real* children of the scene with their class, and properties are resolved by each node's actual class. The type base comes from the Roblox API definitions (`Scripts/globalTypes.d.luau`, `Scripts/DataTypes.json`).
 
-Además, de forma opcional, hay **autocompletado con IA**: una familia de modelos n-gram propios llamada **LuauIA** (niveles *Mini / Medium / High / HighPRO*, de más rápido a más inteligente). Se entrenan con `entrenar_modelo.py` a partir del corpus en `corpus/` y se pueden descargar desde el panel.
+In addition, there is an optional **AI autocomplete**: a family of custom n-gram models called **LuauIA** (levels *Mini / Medium / High / HighPRO*, from fastest to smartest). They are trained with `tools/entrenar_modelo.py` from the corpus in `corpus/` and can be downloaded from the panel.
 
-## Panel de configuración
+## Configuration panel
 
-En la barra inferior del editor aparece **GodotLuau Config** (English / Español / Português), organizado en zonas: **Actualizaciones**, **IA y Autocompletado**, **Datos**, **Debug** y **Apariencia** (con control deslizante de tamaño de texto 0–100).
+At the bottom of the editor you'll find **GodotLuau Config** (English / Español / Português, **English by default**), organized into zones: **Updates**, **AI & Autocomplete**, **Data**, **Debug** and **Appearance** (with a 0–100 text-size slider).
 
-- **Salida de scripts (`print`/`warn`):** activada por defecto; desactívala para tener un Output limpio.
-- **Autocompletado instantáneo** y **autocompletado personalizado** desde un JSON local o una URL.
-- **Modo Debug:** muestra la salida interna de los scripts del sistema (PlayerModule, Health, Chat…) y mensajes del motor.
-- **Actualizaciones:** comprueba la versión en GitHub, descarga la nueva DLL (verificando su **SHA-256**) y reinicia el editor.
+- **Script output (`print`/`warn`):** on by default; turn it off for a clean Output.
+- **Instant autocomplete** and **custom autocomplete** from a local JSON or a URL.
+- **Debug mode:** shows internal output from system scripts (PlayerModule, Health, Chat…) and engine messages.
+- **Updates:** checks the version on GitHub, downloads the new DLL (verifying its **SHA-256**) and restarts the editor.
 
-## Compilar desde el código fuente
+## Building from source
 
-Solo necesitas compilar si quieres modificar la extensión o generar binarios para Linux/macOS.
+You only need to build if you want to modify the extension or produce binaries for Linux/macOS.
 
-Las dependencias `godot-cpp` y `luau` van como **submódulos de git** fijados a commits exactos. Ya hay un `.gitmodules`, así que basta con inicializarlos:
+The `godot-cpp` and `luau` dependencies are **git submodules** pinned to exact commits. A `.gitmodules` is already provided, so initializing them is enough:
 
 ```bash
 git clone https://github.com/Pimpoli/GodotLuau.git
@@ -218,66 +216,76 @@ cd GodotLuau
 git submodule update --init --recursive
 ```
 
-> Los submódulos quedan fijados a `godot-cpp` en el commit `d5cc777…` (rama 4.3) y `luau` en `9e2984f…` (release/712), que son los compatibles.
+> The submodules are pinned to `godot-cpp` at commit `d5cc777…` (branch 4.3) and `luau` at `9e2984f…` (release/712), which are the compatible ones.
 
-**Requisitos de build:** Python 3, [SCons](https://scons.org/) (`pip install scons`) y un compilador de C++ (MSVC en Windows; GCC/Clang en Linux/macOS).
+**Build requirements:** Python 3, [SCons](https://scons.org/) (`pip install scons`) and a C++ compiler (MSVC on Windows; GCC/Clang on Linux/macOS).
 
 ```bash
 scons platform=windows target=template_debug
 scons platform=windows target=template_release
 ```
 
-Las librerías quedan en `bin/`. En Linux/macOS usa `platform=linux` / `platform=macos` y añade las entradas correspondientes (`linux.debug.x86_64`, etc.) en `godot_luau.gdextension`.
+The libraries land in `bin/`. On Linux/macOS use `platform=linux` / `platform=macos` and add the matching entries (`linux.debug.x86_64`, etc.) in `godot_luau.gdextension`.
 
-> El `SConstruct` reactiva las excepciones de C++ (`-fexceptions` / `/EHsc`), porque godot-cpp las desactiva por defecto y la VM de Luau las necesita para compilar. No tienes que pasar nada extra: ya está contemplado.
+> The `SConstruct` re-enables C++ exceptions (`-fexceptions` / `/EHsc`), because godot-cpp disables them by default and the Luau VM needs them to compile. You don't have to pass anything extra: it's already handled.
 
-## Estructura del repositorio
+## Repository structure
 
 ```
-src/                       Código C++ de la extensión (la VM, los nodos y la API)
-addons/GodotLuauUpdater/   Panel de configuración + auto-updater (GDScript)
-DefaultScripts/            Controladores de jugador de ejemplo (Luau)
-Scripts/                   Definiciones de tipos para el autocompletado
-corpus/                    Corpus de entrenamiento de los modelos de IA
-models/                    Modelos de IA LuauIA (los descarga el updater)
-icons/                     Iconos SVG estilo Roblox
-bin/                       Librerías compiladas (DLL)
-godot-cpp/, luau/          Dependencias (submódulos; ver arriba)
+src/                       Extension C++ code, organized by area:
+  core/                      Luau VM integration, language, registration, runtime safety
+  editor/                    Autocomplete + type database (editor-only)
+  services/                  game, services, workspace, folders
+  characters/                players, humanoids, parts, physics, body movers, constraints
+  gameplay/                  remotes, input, interaction, animation, tween, sound
+  ui/                        GUI, billboards, chat, lighting effects
+addons/GodotLuauUpdater/   Settings panel + auto-updater (GDScript)
+assets/                    Project assets (avatar models, branding)
+tools/                     Python helper scripts
+DefaultScripts/            Example player controllers (Luau)
+Scripts/                   Type definitions for autocomplete
+corpus/                    Training corpus for the AI models
+models/                    LuauIA AI models (downloaded by the updater)
+icons/                     Roblox-style SVG icons
+bin/                       Compiled libraries (DLL)
+godot-cpp/, luau/          Dependencies (submodules; see above)
 ```
 
-## Herramientas incluidas
+## Included tools
 
-| Script | Para qué sirve |
+| Script | What it does |
 |---|---|
-| `nuevo_proyecto.py` | Crea un proyecto de juego nuevo listo para usar (3D o 2D) |
-| `crear_plantilla.py` | Empaqueta `RobloxTemplate.zip` importable desde el Project Manager de Godot |
-| `generar_release.py` | Regenera `GodotLuau.zip` + `GodotLuau.zip.sha256` para el auto-updater |
-| `entrenar_modelo.py` | Entrena la familia `models/LuauIA-*.json` (modelos del Autocompletado con IA) |
+| `tools/nuevo_proyecto.py` | Creates a ready-to-use new game project (3D or 2D) |
+| `tools/crear_plantilla.py` | Packages `RobloxTemplate.zip`, importable from Godot's Project Manager |
+| `tools/generar_release.py` | Regenerates `GodotLuau.zip` + `GodotLuau.zip.sha256` for the auto-updater |
+| `tools/entrenar_modelo.py` | Trains the `models/LuauIA-*.json` family (the AI autocomplete models) |
 
-## Limitaciones conocidas
+> Run the tools from the repository root, e.g. `python tools/nuevo_proyecto.py`.
 
-GodotLuau implementa la *experiencia* de programar como en Roblox, pero no es Roblox. Ten en cuenta:
+## Known limitations
 
-- **Sin replicación de red real:** `RemoteEvent`/`RemoteFunction`/`BindableEvent` funcionan dentro de **una sola máquina** (cliente y servidor conviven en el mismo proceso). `Players:GetPlayers()` devuelve un único jugador.
-- **Cada script tiene su propia VM:** un `ModuleScript` requerido por dos scripts distintos **no comparte memoria** entre ellos (cada script lo carga en su propio intérprete).
-- **`Destroy`** saca el nodo del árbol al instante, pero el objeto C++ puede no liberarse de inmediato en estos nodos creados por la extensión (no es un *crash* ni una fuga visible).
-- **Plataformas:** las DLLs incluidas son solo de **Windows x86_64**. Para otras plataformas hay que compilar (ver arriba).
+GodotLuau implements the *experience* of programming like in Roblox, but it is not Roblox. Keep in mind:
 
-## Publicar una release (mantenedor)
+- **No real network replication (yet):** `RemoteEvent`/`RemoteFunction`/`BindableEvent` work within a **single machine** (client and server live in the same process). `Players:GetPlayers()` returns a single player.
+- **Each script has its own VM:** a `ModuleScript` required by two different scripts **does not share memory** between them (each script loads it in its own interpreter).
+- **`Destroy`** removes the node from the tree immediately, but the C++ object may not be freed right away for these extension-created nodes (not a crash or a visible leak).
+- **Platforms:** the included DLLs are **Windows x86_64** only. For other platforms you have to build (see above).
 
-1. Recompila ambas DLLs (debug y release).
-2. Actualiza el archivo `Version` (p. ej. `v1.7.0`) y la versión en `addons/GodotLuauUpdater/plugin.cfg`. El banner lee la versión de `res://Version` en tiempo de ejecución, así que no hay que tocar C++.
-3. Regenera el paquete del updater y su hash:
+## Publishing a release (maintainer)
+
+1. Rebuild both DLLs (debug and release).
+2. Update the `Version` file (e.g. `v1.7.0`) and the version in `addons/GodotLuauUpdater/plugin.cfg`. The banner reads the version from `res://Version` at runtime, so no C++ change is needed.
+3. Regenerate the updater package and its hash:
    ```bash
-   python generar_release.py
+   python tools/generar_release.py
    ```
-4. Haz commit y push de `Version`, `GodotLuau.zip` **y** `GodotLuau.zip.sha256` juntos.
+4. Commit and push `Version`, `GodotLuau.zip` **and** `GodotLuau.zip.sha256` together.
 
-El auto-updater de los usuarios compara `Version`, descarga el ZIP y verifica el SHA-256 antes de instalar.
+The users' auto-updater compares `Version`, downloads the ZIP and verifies the SHA-256 before installing.
 
-## Licencia y créditos
+## License and credits
 
-- **GodotLuau** — © PimpoliDev. *(El repositorio aún no incluye un archivo `LICENSE`; si vas a distribuir o contribuir, conviene añadir uno para dejar claros los términos de uso.)*
-- **[Luau](https://github.com/luau-lang/luau)** — el intérprete embebido, licencia MIT (Roblox Corporation).
-- **[godot-cpp](https://github.com/godotengine/godot-cpp)** — los bindings de C++ para Godot, licencia MIT.
-- **[Godot Engine](https://godotengine.org/)** — el motor sobre el que corre todo, licencia MIT.
+- **GodotLuau** — © PimpoliDev. *(The repository does not yet include a `LICENSE` file; if you plan to distribute or contribute, adding one is recommended to make the terms of use clear.)*
+- **[Luau](https://github.com/luau-lang/luau)** — the embedded interpreter, MIT license (Roblox Corporation).
+- **[godot-cpp](https://github.com/godotengine/godot-cpp)** — the C++ bindings for Godot, MIT license.
+- **[Godot Engine](https://godotengine.org/)** — the engine everything runs on, MIT license.
