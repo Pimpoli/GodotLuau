@@ -10,7 +10,6 @@
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
-#include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -496,53 +495,37 @@ public:
         _test_animate(body, velocity, delta);
     }
 
-    // ── Animacion de PRUEBA sobre los huesos del esqueleto R15 (.glb) ──────────
-    //    Idle sutil quieto; al caminar balancea piernas y brazos. Es placeholder
-    //    hasta tener animaciones reales; se resetea al apagar el toggle.
-    float anim_time   = 0.0f;
-    bool  anim_active = false;
-    bool  bi_set      = false;
-    int   bi[6] = {-1,-1,-1,-1,-1,-1}; // 0 LUpperLeg 1 RUpperLeg 2 LLowerLeg 3 RLowerLeg 4 LUpperArm 5 RUpperArm
-
-    void _set_pitch(Skeleton3D* sk, int idx, float ang) {
-        if (idx >= 0) sk->set_bone_pose_rotation(idx, Quaternion(Vector3(1, 0, 0), ang));
-    }
+    // ── Animacion de prueba: como el avatar es una malla unica sin huesos,
+    //    animamos su transform (rebote al estar quieto/caminar + giro hacia
+    //    la direccion de movimiento). Se restaura sola al apagar el toggle.
+    float anim_time     = 0.0f;
+    float anim_base_y   = 0.0f;
+    bool  anim_base_set = false;
 
     void _test_animate(CharacterBody3D* body, const Vector3& velocity, double delta) {
-        if (!body) return;
-        Skeleton3D* sk = Object::cast_to<Skeleton3D>(body->find_child("Skeleton3D", true, false));
-        if (!sk) return; // capsula de respaldo: sin esqueleto, sin animacion de huesos
-        if (!bi_set) {
-            bi[0] = sk->find_bone("LeftUpperLeg");  bi[1] = sk->find_bone("RightUpperLeg");
-            bi[2] = sk->find_bone("LeftLowerLeg");  bi[3] = sk->find_bone("RightLowerLeg");
-            bi[4] = sk->find_bone("LeftUpperArm");  bi[5] = sk->find_bone("RightUpperArm");
-            bi_set = true;
-        }
+        Node3D* mesh = body ? Object::cast_to<Node3D>(body->get_node_or_null(NodePath("Mesh"))) : nullptr;
+        if (!mesh) return;
         bool on = (bool)ProjectSettings::get_singleton()->get_setting("godot_luau/debug_test_animation", false);
         if (!on) {
-            if (anim_active) {
-                for (int i = 0; i < 6; i++) _set_pitch(sk, bi[i], 0.0f);
-                anim_active = false;
+            if (anim_base_set) {
+                Vector3 p = mesh->get_position(); p.y = anim_base_y;
+                mesh->set_position(p); mesh->set_rotation(Vector3());
+                anim_base_set = false;
             }
             return;
         }
-        anim_active = true;
+        if (!anim_base_set) { anim_base_y = mesh->get_position().y; anim_base_set = true; }
         anim_time += (float)delta;
         Vector3 horiz(velocity.x, 0.0f, velocity.z);
-        if (horiz.length() > 0.5f) {
-            float s = Math::sin(anim_time * 8.0f) * 0.5f;     // balanceo (radianes)
-            _set_pitch(sk, bi[0],  s); _set_pitch(sk, bi[1], -s);          // piernas opuestas
-            _set_pitch(sk, bi[2], -Math::min(s, 0.0f) * 0.9f);            // rodilla dobla atras
-            _set_pitch(sk, bi[3],  Math::max(s, 0.0f) * 0.9f);
-            _set_pitch(sk, bi[4], -s * 0.6f); _set_pitch(sk, bi[5], s * 0.6f); // brazos opuestos
-            Node3D* ch = Object::cast_to<Node3D>(body->get_node_or_null(NodePath("Character")));
-            if (ch) ch->set_rotation(Vector3(0, Math::atan2(velocity.x, velocity.z), 0));
-        } else {
-            float s = Math::sin(anim_time * 2.0f) * 0.05f;    // idle sutil
-            _set_pitch(sk, bi[4], s); _set_pitch(sk, bi[5], s);
-            _set_pitch(sk, bi[0], 0); _set_pitch(sk, bi[1], 0);
-            _set_pitch(sk, bi[2], 0); _set_pitch(sk, bi[3], 0);
-        }
+        bool moving = horiz.length() > 0.5f;
+        float freq = moving ? 9.0f : 2.2f;
+        float amp  = moving ? 0.12f : 0.04f;
+        Vector3 p = mesh->get_position();
+        p.y = anim_base_y + Math::abs(Math::sin(anim_time * freq)) * amp;
+        mesh->set_position(p);
+        float yaw  = moving ? Math::atan2(velocity.x, velocity.z) : mesh->get_rotation().y;
+        float sway = moving ? Math::sin(anim_time * freq) * 0.08f : 0.0f;
+        mesh->set_rotation(Vector3(0.0f, yaw, sway));
     }
 };
 
