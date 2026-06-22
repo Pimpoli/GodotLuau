@@ -16,6 +16,7 @@
 #include <godot_cpp/classes/resource_loader.hpp>   // malla de avatar por defecto
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/packed_scene.hpp>      // personaje del usuario (.glb cara arreglada)
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/world_environment.hpp>
@@ -241,52 +242,37 @@ public:
         // ── 3. Default capsule character (same as Roblox) ──────────────────────
         //// ── 3. Personaje cápsula predeterminado (igual que Roblox) ──────────────────
         {
-            MeshInstance3D* m = memnew(MeshInstance3D);
-            m->set_name("Mesh");
-            // Default character mesh: use the R15 avatar if the project has it,
-            // else fall back to a capsule (Roblox's default look).
-            Ref<Mesh> avatar_mesh;
-            {
-                ResourceLoader* rl = ResourceLoader::get_singleton();
-                const String avatar_path = "res://assets/avatars/AvatarR15.obj";
-                if (rl && rl->exists(avatar_path)) {
-                    Ref<Resource> res = rl->load(avatar_path);
-                    avatar_mesh = Ref<Mesh>(Object::cast_to<Mesh>(res.ptr()));
-                }
+            // Visual: el MODELO DEL USUARIO con la cara arreglada
+            // (AvatarR15_face.glb: misma forma, cuerpo gris limpio + cara en la
+            // cabeza). Si falta, capsula gris. La FISICA sigue siendo la capsula.
+            ResourceLoader* rl = ResourceLoader::get_singleton();
+            const String glb_path = "res://assets/avatars/AvatarR15_face.glb";
+            Node3D* character = nullptr;
+            if (rl && rl->exists(glb_path)) {
+                Ref<Resource> res = rl->load(glb_path);
+                Ref<PackedScene> scene = Ref<PackedScene>(Object::cast_to<PackedScene>(res.ptr()));
+                if (scene.is_valid())
+                    character = Object::cast_to<Node3D>(scene->instantiate());
             }
-            if (avatar_mesh.is_valid()) {
-                m->set_mesh(avatar_mesh);
-                // El .obj viene en una escala desconocida: lo normalizamos a ~2
-                // unidades de alto y dejamos los pies en la base de la capsula (y=-1).
-                AABB box = avatar_mesh->get_aabb();
-                if (box.size.y > 0.0001f) {
-                    float s = 2.0f / box.size.y;
-                    m->set_scale(Vector3(s, s, s));
-                    m->set_position(Vector3(0, -1.0f - box.position.y * s, 0));
-                }
+            if (character) {
+                character->set_name("Character");
+                // El modelo mide ~5.19 de alto con los pies en y=-3: lo escalamos
+                // a ~2 (altura de la capsula) y dejamos los pies en y=-1.
+                float s = 2.0f / 5.187f;
+                character->set_scale(Vector3(s, s, s));
+                character->set_position(Vector3(0, -1.0f + 3.0f * s, 0));
+                p->add_child(character);
             } else {
+                MeshInstance3D* m = memnew(MeshInstance3D);
+                m->set_name("Mesh");
                 Ref<CapsuleMesh> cm; cm.instantiate();
                 m->set_mesh(cm);
-            }
-            // Material limpio: el material del .obj venia oscuro (textura como
-            // opacidad + base ~0.2) y el personaje salia negro. Usamos la textura
-            // gris del avatar como albedo, o un gris de respaldo.
-            {
                 Ref<StandardMaterial3D> mat; mat.instantiate();
+                mat->set_albedo(Color(0.55, 0.55, 0.55));
                 mat->set_roughness(0.95);
-                mat->set_metallic(0.0);
-                Ref<Texture2D> tex;
-                ResourceLoader* rl2 = ResourceLoader::get_singleton();
-                const String texp = "res://assets/avatars/Rig1_diff.png";
-                if (avatar_mesh.is_valid() && rl2 && rl2->exists(texp)) {
-                    Ref<Resource> texr = rl2->load(texp);
-                    tex = Ref<Texture2D>(Object::cast_to<Texture2D>(texr.ptr()));
-                }
-                if (tex.is_valid()) mat->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, tex);
-                else mat->set_albedo(Color(0.55, 0.55, 0.55));
                 m->set_material_override(mat);
+                p->add_child(m);
             }
-            p->add_child(m);
 
             CollisionShape3D* c = memnew(CollisionShape3D);
             Ref<CapsuleShape3D> cs; cs.instantiate();

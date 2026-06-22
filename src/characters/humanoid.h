@@ -503,7 +503,7 @@ public:
     bool  anim_base_set = false;
 
     void _test_animate(CharacterBody3D* body, const Vector3& velocity, double delta) {
-        Node3D* mesh = body ? Object::cast_to<Node3D>(body->get_node_or_null(NodePath("Mesh"))) : nullptr;
+        Node3D* mesh = body ? Object::cast_to<Node3D>(body->get_node_or_null(NodePath("Character"))) : nullptr;
         if (!mesh) return;
         bool on = (bool)ProjectSettings::get_singleton()->get_setting("godot_luau/debug_test_animation", false);
         if (!on) {
