@@ -16,17 +16,26 @@ def _enable_exceptions(e):
         e.Append(CXXFLAGS=["-fexceptions"])
 _enable_exceptions(env)
 
-# 1. Rutas de inclusion para que SCons encuentre los encabezados
+# 1. Rutas de inclusion para que SCons encuentre los encabezados.
+#    src/ esta organizado en subcarpetas (core/editor/services/characters/
+#    gameplay/ui); las anadimos todas al CPPPATH para que los #include "x.h"
+#    (sin ruta) sigan resolviendo sin tener que reescribirlos.
 env.Append(CPPPATH=[
     "src/",
+    "src/core",
+    "src/editor",
+    "src/services",
+    "src/characters",
+    "src/gameplay",
+    "src/ui",
     "luau/VM/include",
     "luau/Compiler/include",
     "luau/Ast/include",
     "luau/Common/include"
 ])
 
-# 2. Archivos de nuestra extensión (Tus scripts)
-sources = Glob("src/*.cpp")
+# 2. Archivos de nuestra extensión (los .cpp viven en src/core/)
+sources = Glob("src/core/*.cpp")
 
 # 3. Archivos del "Cerebro" de Luau (Agregamos la carpeta src de Common)
 sources += Glob("luau/VM/src/*.cpp")

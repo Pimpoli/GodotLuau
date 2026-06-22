@@ -21,7 +21,9 @@ import shutil
 import random
 import string
 
-ORIGEN = os.path.dirname(os.path.abspath(__file__))
+# Este script vive en tools/; ORIGEN es la raiz del repo (carpeta padre),
+# que es donde estan bin/, DefaultScripts/, icons/, etc.
+ORIGEN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ─── Banner ────────────────────────────────────────────────────────
 BANNER = """

@@ -207,15 +207,12 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
             Ref<FileAccess> ver_f = FileAccess::open("res://Version", FileAccess::READ);
             if (ver_f.is_valid()) version = ver_f->get_line().strip_edges();
 
-            String locale = OS::get_singleton()->get_locale().left(2);
-            String line2 = String("[GodotLuau]   Luau System for Godot [Active]");
-            if (locale == "es") line2 = String("[GodotLuau]   Sistema Luau para Godot [Activado]");
-            else if (locale == "pt") line2 = String("[GodotLuau]   Sistema Luau para Godot [Ativado]");
-            // ASCII puro: las consolas con otra codificación no lo deforman
+            // User-facing banner: English only (international).
+            // ASCII puro: las consolas con otra codificación no lo deforman.
             UtilityFunctions::print(
                 String("[GodotLuau] ////////////////////////////////////////////////////\n")
                 + "[GodotLuau]   GodotLuau " + version + " - by PimpoliDev\n"
-                + line2 + "\n"
+                + "[GodotLuau]   Luau System for Godot [Active]\n"
                 + "[GodotLuau] ////////////////////////////////////////////////////"
             );
 

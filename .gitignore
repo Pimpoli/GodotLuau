@@ -2,8 +2,9 @@
 .godot/
 
 # Archivos de compilación de SCons y C++
-*.obj
-*.obj.import
+# (acotado a src/ para no ignorar modelos Wavefront .obj de assets/)
+src/**/*.obj
+src/**/*.obj.import
 *.o
 *.a
 *.lib
@@ -25,3 +26,7 @@ bin/*.old
 # Caché de editores
 .vs/
 .vscode/
+
+# Cache de Python (scripts de tools/)
+__pycache__/
+*.pyc
