@@ -165,6 +165,7 @@ private:
     int     forced_state  = -1;   // -1 = automatic / automático
     bool    was_on_floor  = true;
     float   landed_timer  = 0.0f;
+    bool    body_configured = false;   // config del CharacterBody3D una sola vez
     Vector3 move_direction;
     Vector3 npc_move_dir;         // Non-zero = NPC/scripted movement, overrides player input
 
@@ -373,6 +374,16 @@ public:
         CharacterBody3D* body = Object::cast_to<CharacterBody3D>(get_parent());
         if (!body) return;
 
+        // Config del cuerpo una sola vez: pegado al suelo (no rebota en rampas/
+        // escalones) y angulo de suelo amplio, como un personaje de Roblox.
+        if (!body_configured) {
+            body->set_up_direction(Vector3(0, 1, 0));
+            body->set_floor_snap_length(0.5f);
+            body->set_floor_stop_on_slope_enabled(true);
+            body->set_floor_max_angle((float)Math::deg_to_rad(50.0));
+            body_configured = true;
+        }
+
         Input* input = Input::get_singleton();
         Vector3 velocity = body->get_velocity();
 
@@ -417,32 +428,29 @@ public:
                 move_dir.y = 0;
             }
 
+            // Velocidad horizontal OBJETIVO (0 si no hay input).
+            Vector3 target_h(0.0f, 0.0f, 0.0f);
             if (move_dir.length_squared() > 0.01f) {
                 move_dir = move_dir.normalized();
+                float speed_mult = input->is_key_pressed(KEY_SHIFT) ? 1.5f : 1.0f; // sprint
+                target_h = move_dir * (walk_speed * speed_mult);
 
-                // Sprint with Shift
-                //// Correr con Shift
-                float speed_mult = input->is_key_pressed(KEY_SHIFT) ? 1.5f : 1.0f;
-                velocity.x = move_dir.x * walk_speed * speed_mult;
-                velocity.z = move_dir.z * walk_speed * speed_mult;
-
-                // Rotate the body toward the movement direction
-                //// Rotar el cuerpo hacia la dirección del movimiento
+                // AutoRotate: girar el cuerpo hacia la direccion del movimiento.
                 if (auto_rotate) {
                     float target_angle = (float)Math::atan2((double)-move_dir.x, (double)-move_dir.z);
                     Vector3 cur_rot = body->get_rotation();
                     cur_rot.y = (float)Math::lerp_angle(
-                        (double)cur_rot.y, (double)target_angle, 12.0 * delta);
+                        (double)cur_rot.y, (double)target_angle, 16.0 * delta);
                     body->set_rotation(cur_rot);
                 }
-            } else {
-                // Smooth deceleration when keys are released
-                //// Desaceleración suave al soltar las teclas
-                velocity.x = (float)Math::move_toward(
-                    (double)velocity.x, 0.0, (double)walk_speed * 0.25);
-                velocity.z = (float)Math::move_toward(
-                    (double)velocity.z, 0.0, (double)walk_speed * 0.25);
             }
+
+            // Aceleracion/desaceleracion suave hacia la velocidad objetivo, estilo
+            // Roblox: arranque y frenada rapidos pero sin tirones, y DELTA-correcto
+            // (antes la frenada dependia de los FPS). Menos control en el aire.
+            float accel = body->is_on_floor() ? 110.0f : 45.0f;
+            velocity.x = (float)Math::move_toward((double)velocity.x, (double)target_h.x, (double)(accel * delta));
+            velocity.z = (float)Math::move_toward((double)velocity.z, (double)target_h.z, (double)(accel * delta));
         }
 
         body->set_velocity(velocity);
