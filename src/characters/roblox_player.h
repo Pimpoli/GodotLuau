@@ -11,8 +11,15 @@
 #include <godot_cpp/classes/spring_arm3d.hpp>
 #include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/input_event_screen_touch.hpp>
+#include <godot_cpp/classes/input_event_screen_drag.hpp>
+#include <godot_cpp/classes/canvas_layer.hpp>
+#include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include "gl_runtime.h"
 
 using namespace godot;
 
@@ -51,6 +58,14 @@ private:
     //// Para el modo 3: detectar si el jugador se está moviendo
     Vector3 last_position;
     float   idle_time = 0.0f;
+
+    // ── Controles tactiles (movil) ──────────────────────────────────
+    CanvasLayer* touch_ui    = nullptr;
+    Button*      jump_btn    = nullptr;
+    int          move_touch  = -1;     // indice del dedo del joystick de movimiento
+    Vector2      move_origin;          // punto donde se apoyo el dedo del joystick
+    int          look_touch  = -1;     // indice del dedo que rota la camara
+    float        touch_look_sensitivity = 0.005f;
 
     // ── Roblox-style player properties ─────────────────────────────
     //// ── Propiedades de jugador tipo Roblox ─────────────────────────
@@ -176,6 +191,33 @@ public:
         camera->set_name("Camera3D");
         camera->set_current(true);
         spring_arm->add_child(camera);
+
+        // ── Controles tactiles en pantalla (solo si hay pantalla tactil) ──
+        // Como el TouchGui de Roblox: aparecen solos en movil. Joystick =
+        // arrastrar en la mitad izquierda; mirar = arrastrar en la derecha;
+        // boton de salto abajo a la derecha.
+        if (DisplayServer::get_singleton()->is_touchscreen_available()) {
+            gl_mobile().active = true;
+            touch_ui = memnew(CanvasLayer);
+            touch_ui->set_name("TouchControls");
+            add_child(touch_ui);
+
+            jump_btn = memnew(Button);
+            jump_btn->set_name("JumpButton");
+            jump_btn->set_text("Jump");
+            // Ancla abajo-derecha con margen (boton de 120x120 px)
+            jump_btn->set_anchor(SIDE_LEFT,   1.0f);
+            jump_btn->set_anchor(SIDE_TOP,    1.0f);
+            jump_btn->set_anchor(SIDE_RIGHT,  1.0f);
+            jump_btn->set_anchor(SIDE_BOTTOM, 1.0f);
+            jump_btn->set_offset(SIDE_LEFT,   -160.0f);
+            jump_btn->set_offset(SIDE_TOP,    -160.0f);
+            jump_btn->set_offset(SIDE_RIGHT,   -40.0f);
+            jump_btn->set_offset(SIDE_BOTTOM,  -40.0f);
+            touch_ui->add_child(jump_btn);
+        } else {
+            gl_mobile().active = false;
+        }
     }
 
     // ── Input: Mouse ───────────────────────────────────────────────
@@ -185,6 +227,46 @@ public:
 
         Input* input = Input::get_singleton();
         bool is_first_person = target_zoom < 0.6f;
+
+        // ── Tactil: joystick de movimiento (mitad izquierda) + mirar (derecha) ─
+        Vector2 screen = get_viewport()->get_visible_rect().size;
+        Ref<InputEventScreenTouch> tt = p_event;
+        if (tt.is_valid()) {
+            Vector2 p = tt->get_position();
+            int idx = tt->get_index();
+            if (tt->is_pressed()) {
+                bool in_jump = (p.x > screen.x - 170.0f) && (p.y > screen.y - 170.0f);
+                if (p.x < screen.x * 0.5f && move_touch == -1) {
+                    move_touch = idx; move_origin = p;
+                } else if (!in_jump && look_touch == -1) {
+                    look_touch = idx;
+                }
+            } else {
+                if (idx == move_touch) { move_touch = -1; gl_mobile().move = Vector2(); }
+                if (idx == look_touch) { look_touch = -1; }
+            }
+            return;
+        }
+        Ref<InputEventScreenDrag> td = p_event;
+        if (td.is_valid()) {
+            int idx = td->get_index();
+            if (idx == move_touch) {
+                Vector2 d = td->get_position() - move_origin;
+                Vector2 v = d / 110.0f;                 // radio del joystick en px
+                if (v.length() > 1.0f) v = v.normalized();
+                gl_mobile().move = Vector2(v.x, -v.y);  // pantalla Y hacia abajo → adelante = -y
+            } else if (idx == look_touch) {
+                Vector2 rel = td->get_relative();
+                Vector3 rh = pivot_h->get_rotation();
+                rh.y -= rel.x * touch_look_sensitivity;
+                pivot_h->set_rotation(rh);
+                Vector3 rv = pivot_v->get_rotation();
+                rv.x -= rel.y * touch_look_sensitivity;
+                rv.x = Math::clamp(rv.x, -1.4f, 1.4f);
+                pivot_v->set_rotation(rv);
+            }
+            return;
+        }
 
         // Right button — capture mouse to rotate the camera
         //// Botón derecho — captura el mouse para rotar la cámara
@@ -238,6 +320,21 @@ public:
     void _process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (!pivot_h || !spring_arm) return;
+
+        // ── Gamepad: stick derecho rota la camara ──────────────────
+        Input* gp_input = Input::get_singleton();
+        if (pivot_v) {
+            Vector2 rs(gp_input->get_joy_axis(0, JOY_AXIS_RIGHT_X),
+                       gp_input->get_joy_axis(0, JOY_AXIS_RIGHT_Y));
+            if (rs.length() > 0.15f) {
+                float gp = 2.5f * (float)delta;
+                Vector3 rh = pivot_h->get_rotation(); rh.y -= rs.x * gp; pivot_h->set_rotation(rh);
+                Vector3 rv = pivot_v->get_rotation(); rv.x -= rs.y * gp;
+                rv.x = Math::clamp(rv.x, -1.4f, 1.4f); pivot_v->set_rotation(rv);
+            }
+        }
+        // Boton de salto tactil → estado compartido que lee el Humanoid
+        if (jump_btn) gl_mobile().jump = jump_btn->is_pressed();
 
         // Pivot height (at eye level)
         //// Altura del pivot (a la altura de los ojos)

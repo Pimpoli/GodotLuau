@@ -59,6 +59,7 @@ Enum = {
         Gamepad2 = 9, Keyboard = 10, Focus = 11, Accelerometer = 12,
         Gyro = 13, TextInput = 14,
     },
+    UserInputState = { Begin = 0, Change = 1, End = 2, Cancel = 3, None = 4 },
     KeyCode = {
         Unknown = 0, Backspace = 8, Tab = 9, Return = 13, Escape = 27,
         Space = 32, Quote = 39, Comma = 44, Minus = 45, Period = 46,

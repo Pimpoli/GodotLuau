@@ -2,7 +2,7 @@
 
 **Roblox-style system for Godot 4** — a C++ GDExtension that embeds the [Luau](https://luau.org/) interpreter inside Godot and mirrors the Roblox architecture: `game`, services (`Workspace`, `Players`, `Lighting`, `ReplicatedStorage`…), `LocalScript` / `ServerScript` / `ModuleScript`, `Humanoid`, the `task` library, `RunService.Heartbeat`, Roblox-style GUI, constraints, BodyMovers and much more. You write your game in **Luau**, just like in Roblox Studio, but it runs on the Godot engine.
 
-**Author:** PimpoliDev · **Repo:** https://github.com/Pimpoli/GodotLuau · **Version:** v1.8.0
+**Author:** PimpoliDev · **Repo:** https://github.com/Pimpoli/GodotLuau · **Version:** v1.8.1
 
 ---
 

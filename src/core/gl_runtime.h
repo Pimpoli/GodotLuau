@@ -19,6 +19,7 @@
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/core/object.hpp>
+#include <godot_cpp/variant/vector2.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -27,6 +28,19 @@
 #include <cstdint>
 
 using namespace godot;
+
+// ── Estado de input cross-device compartido ──────────────────────────────────
+//  La UI tactil (joystick + boton de salto, creada por RobloxPlayer cuando hay
+//  pantalla tactil) ESCRIBE aqui; el Humanoid LEE de aqui para mover el
+//  personaje. Asi el movimiento funciona en PC, movil y consola con un solo
+//  camino, igual que el moveVector del ControlModule de Roblox.
+//  `inline` (enlace externo) = una sola instancia compartida entre TUs.
+struct GLMobileInput {
+    Vector2 move;            // joystick virtual: x = derecha, y = adelante (-1..1)
+    bool    jump   = false;  // boton de salto en pantalla mantenido
+    bool    active = false;  // hay controles tactiles en pantalla
+};
+inline GLMobileInput& gl_mobile() { static GLMobileInput s; return s; }
 
 // ── Wrapper de instancia: ObjectID en lugar de Node* crudo ───────────────────
 struct GodotObjectWrapper {

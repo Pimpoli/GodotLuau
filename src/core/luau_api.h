@@ -2276,16 +2276,57 @@ static int godot_object_index(lua_State* L) {
     if (uis) {
         if (strcmp(key,"MouseEnabled")    == 0) { lua_pushboolean(L, true); return 1; }
         if (strcmp(key,"KeyboardEnabled") == 0) { lua_pushboolean(L, true); return 1; }
-        if (strcmp(key,"TouchEnabled")    == 0) { lua_pushboolean(L, false); return 1; }
-        if (strcmp(key,"GamepadEnabled")  == 0) { lua_pushboolean(L, false); return 1; }
+        if (strcmp(key,"TouchEnabled")    == 0) { lua_pushboolean(L, uis->get_touch_enabled()?1:0); return 1; }
+        if (strcmp(key,"GamepadEnabled")  == 0) { lua_pushboolean(L, uis->get_gamepad_connected()?1:0); return 1; }
         if (strcmp(key,"IsKeyDown") == 0 || strcmp(key,"IsKeyboardKeyDown") == 0) {
             lua_pushlightuserdata(L,(void*)uis);
             lua_pushcclosure(L,[](lua_State* LL)->int{
                 UserInputService* u=(UserInputService*)lua_touserdata(LL,lua_upvalueindex(1));
-                if (!u || !lua_isnumber(LL,2)){ lua_pushboolean(LL,0); return 1; }
-                int kc=(int)lua_tonumber(LL,2);
-                lua_pushboolean(LL, u->is_key_down(kc)?1:0); return 1;
+                if (!u){ lua_pushboolean(LL,0); return 1; }
+                int kc = 0;
+                if (lua_isnumber(LL,2)) {
+                    kc = (int)lua_tonumber(LL,2);
+                } else if (lua_isstring(LL,2)) {
+                    // Acepta tambien el nombre de la tecla ("W", "LeftShift"…)
+                    const char* s = lua_tostring(LL,2);
+                    if (strlen(s) == 1) { char c=s[0]; if(c>='a'&&c<='z') c-=32; kc=(int)c; }
+                    else if (!strcmp(s,"LeftShift")||!strcmp(s,"RightShift"))     kc=304;
+                    else if (!strcmp(s,"Space"))                                  kc=32;
+                    else if (!strcmp(s,"LeftControl")||!strcmp(s,"RightControl")) kc=306;
+                    else if (!strcmp(s,"LeftAlt")||!strcmp(s,"RightAlt"))         kc=308;
+                    else if (!strcmp(s,"Return")||!strcmp(s,"Enter"))            kc=13;
+                    else if (!strcmp(s,"Tab"))    kc=9;
+                    else if (!strcmp(s,"Escape")) kc=27;
+                    else if (!strcmp(s,"Up"))     kc=273;
+                    else if (!strcmp(s,"Down"))   kc=274;
+                    else if (!strcmp(s,"Left"))   kc=276;
+                    else if (!strcmp(s,"Right"))  kc=275;
+                }
+                lua_pushboolean(LL, (kc!=0 && u->is_key_down(kc))?1:0); return 1;
             },"IsKeyDown",1); return 1;
+        }
+        if (strcmp(key,"GetMouseDelta") == 0) {
+            lua_pushlightuserdata(L,(void*)uis);
+            lua_pushcclosure(L,[](lua_State* LL)->int{
+                UserInputService* u=(UserInputService*)lua_touserdata(LL,lua_upvalueindex(1));
+                Vector2 d = u ? u->get_mouse_delta_v() : Vector2();
+                push_vector3(LL, d.x, d.y, 0.0f); return 1;
+            },"GetMouseDelta",1); return 1;
+        }
+        if (strcmp(key,"IsGamepadButtonDown") == 0) {
+            lua_pushlightuserdata(L,(void*)uis);
+            lua_pushcclosure(L,[](lua_State* LL)->int{
+                UserInputService* u=(UserInputService*)lua_touserdata(LL,lua_upvalueindex(1));
+                int btn = lua_isnumber(LL,3) ? (int)lua_tonumber(LL,3) : 0;
+                lua_pushboolean(LL, (u && u->is_gamepad_button_down(0, btn))?1:0); return 1;
+            },"IsGamepadButtonDown",1); return 1;
+        }
+        if (strcmp(key,"GetLastInputType") == 0) {
+            lua_pushlightuserdata(L,(void*)uis);
+            lua_pushcclosure(L,[](lua_State* LL)->int{
+                UserInputService* u=(UserInputService*)lua_touserdata(LL,lua_upvalueindex(1));
+                lua_pushinteger(LL, u ? u->get_last_input_type() : 0); return 1;
+            },"GetLastInputType",1); return 1;
         }
         if (strcmp(key,"IsMouseButtonDown") == 0) {
             lua_pushlightuserdata(L,(void*)uis);
