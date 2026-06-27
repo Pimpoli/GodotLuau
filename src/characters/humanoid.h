@@ -147,6 +147,9 @@ private:
     float  gravity                = 45.0f;
     bool   is_dead                = false;
     bool   auto_rotate            = true;
+    // Suavidad del giro del cuerpo hacia la direccion de movimiento (AutoRotate).
+    // Mayor = gira mas rapido; menor = mas suave. Independiente de los FPS.
+    float  turn_speed             = 9.0f;
     bool   auto_jump_enabled      = true;
     float  name_display_distance  = 100.0f;
     float  health_display_distance= 100.0f;
@@ -460,12 +463,16 @@ public:
                 float speed_mult = sprint ? 1.5f : 1.0f;
                 target_h = move_dir * (walk_speed * speed_mult);
 
-                // AutoRotate: girar el cuerpo hacia la direccion del movimiento.
+                // AutoRotate: girar el cuerpo hacia la direccion del movimiento,
+                // como Roblox. Suavizado exponencial: independiente de los FPS y
+                // SIN sobre-girar (el factor nunca pasa de 1). Antes usaba
+                // 16*delta, que con FPS bajos podia pasar de 1 y "latigar".
                 if (auto_rotate) {
                     float target_angle = (float)Math::atan2((double)-move_dir.x, (double)-move_dir.z);
                     Vector3 cur_rot = body->get_rotation();
+                    float t = 1.0f - Math::exp(-turn_speed * (float)delta);
                     cur_rot.y = (float)Math::lerp_angle(
-                        (double)cur_rot.y, (double)target_angle, 16.0 * delta);
+                        (double)cur_rot.y, (double)target_angle, (double)t);
                     body->set_rotation(cur_rot);
                 }
             }
