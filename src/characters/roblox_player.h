@@ -47,7 +47,7 @@ private:
     SpringArm3D* spring_arm = nullptr; // Prevents camera clipping through walls / Evita que la cámara atraviese paredes
     Camera3D* camera     = nullptr;
 
-    float mouse_sensitivity = 0.003f;
+    float mouse_sensitivity = 0.0022f;   // v1.8.3: bajado de 0.003 (camara mas calmada)
     float target_zoom       = 10.0f;
 
     // ── Camera mode ────────────────────────────────────────────────
@@ -65,7 +65,7 @@ private:
     int          move_touch  = -1;     // indice del dedo del joystick de movimiento
     Vector2      move_origin;          // punto donde se apoyo el dedo del joystick
     int          look_touch  = -1;     // indice del dedo que rota la camara
-    float        touch_look_sensitivity = 0.005f;
+    float        touch_look_sensitivity = 0.0038f;  // v1.8.3: bajado de 0.005
 
     // ── Roblox-style player properties ─────────────────────────────
     //// ── Propiedades de jugador tipo Roblox ─────────────────────────
@@ -327,7 +327,7 @@ public:
             Vector2 rs(gp_input->get_joy_axis(0, JOY_AXIS_RIGHT_X),
                        gp_input->get_joy_axis(0, JOY_AXIS_RIGHT_Y));
             if (rs.length() > 0.15f) {
-                float gp = 2.5f * (float)delta;
+                float gp = 1.8f * (float)delta;   // v1.8.3: bajado de 2.5 (camara mas calmada)
                 Vector3 rh = pivot_h->get_rotation(); rh.y -= rs.x * gp; pivot_h->set_rotation(rh);
                 Vector3 rv = pivot_v->get_rotation(); rv.x -= rs.y * gp;
                 rv.x = Math::clamp(rv.x, -1.4f, 1.4f); pivot_v->set_rotation(rv);

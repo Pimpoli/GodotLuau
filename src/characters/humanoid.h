@@ -149,7 +149,8 @@ private:
     bool   auto_rotate            = true;
     // Suavidad del giro del cuerpo hacia la direccion de movimiento (AutoRotate).
     // Mayor = gira mas rapido; menor = mas suave. Independiente de los FPS.
-    float  turn_speed             = 9.0f;
+    // v1.8.3: bajado de 9 a 5 (giro claramente mas suave, no brusco).
+    float  turn_speed             = 5.0f;
     bool   auto_jump_enabled      = true;
     float  name_display_distance  = 100.0f;
     float  health_display_distance= 100.0f;
