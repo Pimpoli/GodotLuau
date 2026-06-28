@@ -18,6 +18,7 @@
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>      // personaje del usuario (.glb cara arreglada)
 #include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/world_environment.hpp>
 #include <godot_cpp/classes/environment.hpp>
@@ -61,8 +62,8 @@ private:
     //// Genera la textura de cuadros tipo Roblox
     Ref<ImageTexture> generar_textura_grid() {
         Ref<Image> img = Image::create(64, 64, false, Image::FORMAT_RGBA8);
-        Color color_fondo(0.2, 0.2, 0.2); 
-        Color color_linea(0.25, 0.25, 0.25); 
+        Color color_fondo(0.64, 0.635, 0.647);  // gris piedra medio de Roblox (RGB 163,162,165)
+        Color color_linea(0.5, 0.5, 0.52);       // lineas de stud, mas oscuras para que se vean
         
         img->fill(color_fondo);
         for (int i = 0; i < 64; i++) {
@@ -70,6 +71,47 @@ private:
             img->set_pixel(0, i, color_linea);
         }
         return ImageTexture::create_from_image(img);
+    }
+
+    // Aplica el look de iluminacion estilo Roblox "Future" a un Environment + sol:
+    // tonemapping filmico (antes era Linear plano), glow sutil (bloom real para
+    // Neon y brillos), SSAO (profundidad barata), luz ambiental del cielo y
+    // sombras suaves del sol (PCSS, Forward+). Idempotente: se llama al crear la
+    // escena en el editor Y en runtime sobre un Environment ya existente, asi el
+    // look mejora tambien en proyectos viejos sin recrear la escena.
+    void _apply_roblox_render(const Ref<Environment>& env, DirectionalLight3D* sun) {
+        if (env.is_valid()) {
+            env->set_tonemapper(Environment::TONE_MAPPER_ACES);
+            env->set_tonemap_white(6.0f);
+            env->set_tonemap_exposure(1.0f);
+
+            env->set_glow_enabled(true);
+            env->set_glow_blend_mode(Environment::GLOW_BLEND_MODE_SCREEN);
+            env->set_glow_intensity(0.5f);
+            env->set_glow_strength(1.0f);
+            env->set_glow_bloom(0.1f);
+            env->set_glow_hdr_bleed_threshold(0.95f);
+            env->set_glow_hdr_bleed_scale(2.0f);
+            env->set_glow_level(2, 0.6f);
+            env->set_glow_level(3, 0.4f);
+            env->set_glow_level(4, 0.2f);
+
+            env->set_ssao_enabled(true);
+            env->set_ssao_radius(1.0f);
+            env->set_ssao_intensity(1.5f);
+            env->set_ssao_power(1.5f);
+
+            env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+            env->set_ambient_light_sky_contribution(1.0f);
+            env->set_ambient_light_energy(1.0f);
+        }
+        if (sun) {
+            sun->set_shadow(true);
+            sun->set_param(Light3D::PARAM_ENERGY, 1.0f);
+            sun->set_param(Light3D::PARAM_SIZE, 1.5f);              // sombras suaves PCSS (Forward+)
+            sun->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f);
+            sun->set_param(Light3D::PARAM_SHADOW_NORMAL_BIAS, 2.0f);
+        }
     }
 
 protected:
@@ -112,10 +154,12 @@ protected:
                 Ref<Sky> sky; sky.instantiate();
                 Ref<ProceduralSkyMaterial> sky_mat; sky_mat.instantiate();
                 
-                sky_mat->set_sky_top_color(Color(0.15, 0.55, 0.95)); 
-                sky_mat->set_sky_horizon_color(Color(0.7, 0.85, 0.95)); 
-                sky_mat->set_ground_bottom_color(Color(0.35, 0.36, 0.40));
-                sky_mat->set_ground_horizon_color(Color(0.7, 0.85, 0.95));
+                // Colores del cielo clasico de Roblox (azul suave, no tan saturado):
+                // top RGB(78,150,205), horizonte RGB(170,205,230), suelo RGB(135,140,150)
+                sky_mat->set_sky_top_color(Color(0.306, 0.588, 0.804));
+                sky_mat->set_sky_horizon_color(Color(0.667, 0.804, 0.902));
+                sky_mat->set_ground_bottom_color(Color(0.529, 0.549, 0.588));
+                sky_mat->set_ground_horizon_color(Color(0.667, 0.804, 0.902));
 
                 sky->set_material(sky_mat);
                 env->set_sky(sky);
@@ -138,6 +182,9 @@ protected:
                 add_child(sol);
                 sol->set_owner(root);
 
+                // Look de iluminacion estilo Roblox "Future" sobre el entorno + sol
+                _apply_roblox_render(env, sol);
+
                 // 3. BASEPLATE WITH GRID
                 //// 3. BASEPLATE CON CUADRÍCULA
                 StaticBody3D* bp = memnew(StaticBody3D);
@@ -153,8 +200,11 @@ protected:
                 // Use the official set_texture method
                 //// Usamos el método oficial set_texture
                 mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, generar_textura_grid());
-                mat->set_uv1_scale(Vector3(100, 100, 1)); 
+                mat->set_uv1_scale(Vector3(100, 100, 1));
                 mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_NEAREST);
+                // Suelo MATE como Roblox (antes roughness 0.0 = suelo pulido/espejo)
+                mat->set_roughness(0.9f);
+                mat->set_metallic(0.0f);
                 
                 mesh->set_mesh(m);
                 mesh->set_material_override(mat);
@@ -211,6 +261,22 @@ public:
         if (Engine::get_singleton()->is_editor_hint()) return;
 
         _apply_gravity();
+
+        // Aplicar el look de iluminacion Roblox al entorno YA existente: las
+        // escenas viejas no se recrean (su WorldEnvironment se guardo con los
+        // ajustes antiguos), pero al jugar deben verse con tonemap/glow/SSAO/
+        // sombras suaves igual. Idempotente.
+        {
+            WorldEnvironment* we = nullptr;
+            DirectionalLight3D* sun = nullptr;
+            for (int i = 0; i < get_child_count(); i++) {
+                Node* c = get_child(i);
+                if (!we)  we  = Object::cast_to<WorldEnvironment>(c);
+                if (!sun) sun = Object::cast_to<DirectionalLight3D>(c);
+            }
+            Ref<Environment> env = we ? we->get_environment() : Ref<Environment>();
+            if (env.is_valid() || sun) _apply_roblox_render(env, sun);
+        }
 
         // ── RunService oculto: como en Roblox, existe pero no se ve en el editor ──
         if (get_parent() && !get_parent()->get_node_or_null("RunService")) {

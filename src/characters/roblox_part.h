@@ -87,15 +87,18 @@ private:
         if (!material.is_valid()) return;
         // Reset to neutral
         material->set_metallic(0.0f);
-        material->set_roughness(0.8f);
+        material->set_roughness(0.55f);
         // FIX 1: Use set_feature to disable emission in Godot 4
         //// CORRECCIÓN 1: Usar set_feature para deshabilitar la emisión en Godot 4
         material->set_feature(BaseMaterial3D::FEATURE_EMISSION, false);
-        material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+        // Opaco por defecto: solo las piezas realmente translucidas usan alpha.
+        // Antes TODA pieza usaba TRANSPARENCY_ALPHA, lo que rompe el orden de
+        // dibujado y desactiva efectos (SSAO/sombras) en piezas opacas.
+        material->set_transparency(BaseMaterial3D::TRANSPARENCY_DISABLED);
 
         switch (roblox_material) {
-            case 0:  material->set_roughness(0.8f);  break; // Plastic
-            case 1:  material->set_roughness(0.25f); break; // SmoothPlastic
+            case 0:  material->set_roughness(0.55f); break; // Plastic (Roblox: ligero brillo, no super mate)
+            case 1:  material->set_roughness(0.30f); break; // SmoothPlastic
             case 2:  // Neon — self-illuminated
                 // FIX 2: Use set_feature to enable emission
                 //// CORRECCIÓN 2: Usar set_feature para habilitar la emisión
@@ -148,9 +151,17 @@ private:
             case 20: material->set_roughness(0.90f); break; // Snow
             case 21: material->set_roughness(0.95f); break; // Cobblestone
             case 22: material->set_roughness(0.85f); break; // Pebble
-            default: material->set_roughness(0.8f);  break;
+            default: material->set_roughness(0.55f); break;
         }
-        material->set_specular(reflectance);
+        // Specular base ~0.5 (brillo tipo plastico de Roblox); reflectance lo
+        // sube. Antes era set_specular(reflectance) => 0 por defecto => TODO se
+        // veia mate y plano, sin reflejos especulares. Este es el cambio que
+        // mas acerca las piezas al look de Roblox.
+        material->set_specular(Math::clamp(0.5f + reflectance * 0.5f, 0.0f, 1.0f));
+        // Activar alpha solo si la pieza es translucida (las de vidrio/hielo ya
+        // lo ponen en su case).
+        if (transparency > 0.001f)
+            material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
         _update_albedo();
     }
 
