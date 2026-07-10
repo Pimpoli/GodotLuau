@@ -552,60 +552,24 @@ end)
 dprint("[Server] Juego listo!")
 )LUAU";
 
-// Default LocalScript template
-static const char* LUAU_TEMPLATE_LOCAL_SCRIPT = R"LUAU(
--- > GodotLuau — LocalScript (se ejecuta en el CLIENTE)
--- Ideal para: input, camara, GUI, efectos visuales.
+// Default LocalScript / ServerScript template — mínimo estilo Roblox Studio.
+// %SCRIPT_ID% se sustituye por el ID único del script al crearlo.
+static const char* LUAU_TEMPLATE_LOCAL_SCRIPT =
+    "-->GodotLuau Developed by PimpoliDev\n"
+    "print(\"Hello World\" .. \" the script \" .. \"%SCRIPT_ID%\" .. \" he was executed\")\n";
 
-local Players    = game:GetService("Players")
-local RunService = game:GetService("RunService")
+static const char* LUAU_TEMPLATE_SERVER_SCRIPT =
+    "-->GodotLuau Developed by PimpoliDev\n"
+    "print(\"Hello World\" .. \" the script \" .. \"%SCRIPT_ID%\" .. \" he was executed\")\n";
 
-local player = Players.LocalPlayer
-
-print("[Client] LocalScript activo")
-
--- RunService.Heartbeat:Connect(function(dt)
---     -- logica por frame del cliente
--- end)
-)LUAU";
-
-// Default ServerScript template
-static const char* LUAU_TEMPLATE_SERVER_SCRIPT = R"LUAU(
--- > GodotLuau — ServerScript (se ejecuta en el SERVIDOR)
--- Ideal para: reglas del juego, daño, datos, anti-exploit.
--- Nunca confies en datos que vienen del cliente: validalos siempre.
-
-local Players = game:GetService("Players")
-local RS      = game:GetService("ReplicatedStorage")
-
-print("[Server] ServerScript activo")
-
--- Players.PlayerAdded:Connect(function(player)
---     print(player.Name .. " ha entrado")
--- end)
-)LUAU";
-
-// Default ModuleScript OOP template
-static const char* LUAU_TEMPLATE_MODULE_OOP = R"LUAU(
--- > GodotLuau — ModuleScript (codigo compartido)
--- Se carga con: local MiModulo = require(ruta.al.modulo)
--- El modulo se cachea: todos los require() devuelven la misma tabla.
-
-local MiModulo = {}
-MiModulo.__index = MiModulo
-
--- Constructor (estilo OOP de Roblox)
-function MiModulo.new()
-    local self = setmetatable({}, MiModulo)
-    return self
-end
-
-function MiModulo:Ejemplo()
-    print("[MiModulo] funcionando!")
-end
-
-return MiModulo
-)LUAU";
+// Default ModuleScript template — mínimo + boilerplate de módulo.
+static const char* LUAU_TEMPLATE_MODULE_OOP =
+    "-->GodotLuau Developed by PimpoliDev\n"
+    "print(\"Hello World\" .. \" the script \" .. \"%SCRIPT_ID%\" .. \" he was executed\")\n"
+    "\n"
+    "local module = {}\n"
+    "\n"
+    "return module\n";
 
 #include "luau_api.h"
 #include "roblox_part.h"
@@ -989,11 +953,14 @@ protected:
                     } else if (cls == "ModuleScript") {
                         template_code = String(LUAU_TEMPLATE_MODULE_OOP);
                     } else {
-                        template_code = "-- > GodotLuau\nprint(\"Hello from " + cls + "\")\n";
+                        template_code = String(LUAU_TEMPLATE_LOCAL_SCRIPT);
                     }
 
-                    // Cabecera con el ID para poder localizar el archivo aunque lo renombren
-                    new_script->_set_source_code("-- @ID: " + script_id + "\n" + template_code);
+                    // Sustituir el ID único del script en la plantilla (para poder
+                    // localizarlo al buscar por su ID). Los templates de sistema
+                    // (Health/Animate…) no tienen el placeholder → quedan intactos.
+                    template_code = template_code.replace("%SCRIPT_ID%", script_id);
+                    new_script->_set_source_code(template_code);
                     // take_over_path reclama la ruta aunque haya un recurso viejo cacheado
                     // (evita "Another resource is loaded from path")
                     new_script->take_over_path(file_path);

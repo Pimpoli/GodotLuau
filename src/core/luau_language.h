@@ -89,10 +89,8 @@ public:
     bool _is_using_templates()     override       { return true; }
 
     static constexpr const char* DEFAULT_TEMPLATE =
-        "-- _NAME_\n"
-        "-- GodotLuau script\n"
-        "\n"
-        "print(\"_NAME_ loaded\")\n";
+        "-->GodotLuau Developed by PimpoliDev\n"
+        "print(\"Hello World\" .. \" the script \" .. script.Name .. \" he was executed\")\n";
 
     TypedArray<Dictionary> _get_built_in_templates(const StringName& p_object) const override {
         TypedArray<Dictionary> templates;
