@@ -1437,6 +1437,20 @@ static int godot_object_index(lua_State* L) {
                 lua_pushnumber(pL, s ? s->get_player_count() : 1); return 1;
             }, "GetPlayerCount", 1); return 1;
         }
+        if (strcmp(key, "GetDevice") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushstring(pL, s ? s->get_device().utf8().get_data() : "PC"); return 1;
+            }, "GetDevice", 1); return 1;
+        }
+        if (strcmp(key, "GetPlayerIndex") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushnumber(pL, s ? s->get_player_index() : 0); return 1;
+            }, "GetPlayerIndex", 1); return 1;
+        }
         if (strcmp(key, "PlayerConnected") == 0 || strcmp(key, "PlayerDisconnected") == 0 ||
             strcmp(key, "Connected") == 0       || strcmp(key, "ConnectionFailed") == 0) {
             int which = (strcmp(key,"PlayerConnected")==0) ? 0 :

@@ -3,6 +3,7 @@
 
 #include "roblox_player2d.h"
 #include "humanoid2d.h"
+#include "roblox_network.h"
 
 #include <godot_cpp/classes/node2d.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -134,6 +135,12 @@ public:
         if (get_parent() && !get_parent()->get_node_or_null("RunService")) {
             Node* rs = Object::cast_to<Node>(ClassDB::instantiate(StringName("RunService")));
             if (rs) { rs->set_name("RunService"); get_parent()->add_child(rs); }
+        }
+
+        // NetworkService (multijugador local) — solo si se lanzó desde la barra "Jugadores"
+        if (gl_mp_autostart_requested() && get_parent() && !get_parent()->get_node_or_null("NetworkService")) {
+            Node* ns = Object::cast_to<Node>(ClassDB::instantiate(StringName("NetworkService")));
+            if (ns) { ns->set_name("NetworkService"); get_parent()->call_deferred("add_child", ns); }
         }
 
         GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace2D ready. Player created at (200, 200).");

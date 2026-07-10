@@ -3,6 +3,7 @@
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include "roblox_network.h"
 #include <godot_cpp/classes/physics_server3d.hpp>
 #include <godot_cpp/classes/world3d.hpp>
 #include <godot_cpp/variant/variant.hpp>
@@ -286,6 +287,14 @@ public:
             // El deferred corre antes que los scripts (iniciar_corrutina tambien
             // es diferido y se encola despues), asi RunService existe a tiempo.
             if (rs) { rs->set_name("RunService"); get_parent()->call_deferred("add_child", rs); }
+        }
+
+        // ── NetworkService: SOLO se auto-crea si el juego se lanzó desde la barra
+        //    "Jugadores" del editor (multijugador local). Los juegos normales no
+        //    reciben un servicio de red que no pidieron. ──
+        if (gl_mp_autostart_requested() && get_parent() && !get_parent()->get_node_or_null("NetworkService")) {
+            Node* ns = Object::cast_to<Node>(ClassDB::instantiate(StringName("NetworkService")));
+            if (ns) { ns->set_name("NetworkService"); get_parent()->call_deferred("add_child", ns); }
         }
 
         // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────

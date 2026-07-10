@@ -338,6 +338,7 @@ func _enter_tree() -> void:
 	_check_for_update()
 	_connect_script_lifecycle()
 	_purge_old_trash()
+	_build_mp_toolbar()
 
 func _exit_tree() -> void:
 	_disconnect_script_lifecycle()
@@ -346,6 +347,71 @@ func _exit_tree() -> void:
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
+	_remove_mp_toolbar()
+
+# ── Barra de multijugador local + dispositivo (arriba, junto a Play) ─────────
+# SpinBox de jugadores (1-8) + selector PC/Móvil/Consola/VR + botón Jugar.
+# Lanza N ventanas del juego que se auto-conectan (Player1..N) para probar MP.
+var _mp_bar: HBoxContainer = null
+var _mp_count: SpinBox = null
+var _mp_device: OptionButton = null
+
+func _build_mp_toolbar() -> void:
+	_mp_bar = HBoxContainer.new()
+	_mp_bar.add_theme_constant_override("separation", 4)
+
+	var lbl := Label.new()
+	lbl.text = "  Jugadores"
+	_mp_bar.add_child(lbl)
+
+	_mp_count = SpinBox.new()
+	_mp_count.min_value = 1
+	_mp_count.max_value = 8
+	_mp_count.step = 1
+	_mp_count.value = 1
+	_mp_count.custom_minimum_size = Vector2(62, 0)
+	_mp_count.tooltip_text = "1 = un jugador. 2-8 = se abren esas ventanas y se conectan solas (Player1..N)."
+	_mp_bar.add_child(_mp_count)
+
+	_mp_device = OptionButton.new()
+	_mp_device.add_item("PC")
+	_mp_device.add_item("Movil")
+	_mp_device.add_item("Consola")
+	_mp_device.add_item("VR")
+	_mp_device.selected = 0
+	_mp_device.tooltip_text = "Como se ve/comporta el juego (PC por defecto)."
+	_mp_bar.add_child(_mp_device)
+
+	var run_btn := Button.new()
+	run_btn.text = "> Jugar"
+	run_btn.tooltip_text = "Lanza el juego con la cantidad de jugadores elegida."
+	run_btn.pressed.connect(_on_mp_run)
+	_mp_bar.add_child(run_btn)
+
+	add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
+
+func _remove_mp_toolbar() -> void:
+	if _mp_bar and is_instance_valid(_mp_bar):
+		remove_control_from_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
+		_mp_bar.queue_free()
+		_mp_bar = null
+
+func _on_mp_run() -> void:
+	var count: int = int(_mp_count.value) if _mp_count else 1
+	var devices := ["PC", "Mobile", "Console", "VR"]
+	var device: String = devices[_mp_device.selected] if _mp_device else "PC"
+	# Guardar antes de lanzar, así las ventanas corren el estado ACTUAL del proyecto.
+	EditorInterface.save_all_scenes()
+	var exe := OS.get_executable_path()
+	var proj := ProjectSettings.globalize_path("res://")
+	for i in range(count):
+		var pid := OS.create_process(exe, ["--path", proj, "--", "--glindex", str(i + 1), "--glcount", str(count), "--gldevice", device])
+		if pid == -1:
+			push_warning("[GodotLuau] No se pudo lanzar la instancia %d del juego." % (i + 1))
+		# El host (i==0) arranca primero; damos un respiro antes de los clientes
+		# para que abra el puerto antes de que ellos intenten conectar.
+		if i == 0 and count > 1:
+			OS.delay_msec(600)
 
 # ── Ciclo de vida de scripts: papelera + restauración con Ctrl+Z ─────────────
 # Al borrar un nodo LocalScript/ServerScript/ModuleScript en el editor, su .lua
