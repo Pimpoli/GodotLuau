@@ -87,18 +87,27 @@ Enum = {
         KeypadPlus = 270, KeypadEnter = 271,
     },
     Material = {
-        Plastic = 256, SmoothPlastic = 272, Metal = 1280, Neon = 288,
-        Wood = 512, WoodPlanks = 528, Marble = 784, Slate = 800,
-        Concrete = 816, Granite = 832, Foil = 1296, Grass = 1024,
-        SandStone = 1040, Sand = 1280, Fabric = 1312, Ice = 1536,
-        Glacier = 1552, Snow = 1568, Cobblestone = 1584,
-        Brick = 784, Ground = 1040, Mud = 1056, Rock = 816,
-        Basalt = 848, CrackedLava = 864, Asphalt = 1072, LeafyGrass = 1288,
-        Salt = 1552, Limestone = 1584, Pavement = 1600,
-        Air = 1, Water = 2, Forcefield = 1536, Fire = 1792,
-        DiamondPlate = 1072, Corrodedmetal = 1088,
+        -- Índices internos 0-22 (coinciden con RobloxPart::_apply_material_visual).
+        -- Antes usaban los valores de Roblox (Neon=288…) y ningún material se
+        -- aplicaba porque el switch interno espera 0-22.
+        Plastic = 0, SmoothPlastic = 1, Neon = 2, Wood = 3, WoodPlanks = 4,
+        Marble = 5, Slate = 6, Concrete = 7, Granite = 8, Brick = 9,
+        Metal = 10, CorrodedMetal = 11, Corrodedmetal = 11, DiamondPlate = 12,
+        Foil = 13, Grass = 14, Ice = 15, Glass = 16, Sand = 17, Fabric = 18,
+        Rock = 19, Snow = 20, Cobblestone = 21, Pebble = 22,
+        -- Materiales sin visual propio → se aproximan al más cercano
+        SandStone = 17, Sandstone = 17, Ground = 17, Mud = 17, Salt = 20,
+        Glacier = 15, Basalt = 19, Limestone = 7, Pavement = 7, Asphalt = 7,
+        LeafyGrass = 14, CrackedLava = 2, ForceField = 2, Forcefield = 2,
+        Fire = 2, Air = 0, Water = 16,
     },
     NormalId = { Top = 1, Bottom = 2, Front = 3, Back = 4, Right = 5, Left = 6 },
+    FillDirection = { Horizontal = 0, Vertical = 1 },
+    HorizontalAlignment = { Center = 0, Left = 1, Right = 2 },
+    VerticalAlignment = { Center = 0, Top = 1, Bottom = 2 },
+    SortOrder = { Name = 0, Custom = 1, LayoutOrder = 2 },
+    ApplyStrokeMode = { Contextual = 0, Border = 1 },
+    AutomaticSize = { None = 0, X = 1, Y = 2, XY = 3 },
     CameraMode = { Classic = 0, LockFirstPerson = 1 },
     PartType = { Block = 0, Sphere = 1, Cylinder = 2 },
     SurfaceType = { Smooth = 0, Weld = 1, Studs = 2, Inbox = 3, Hinge = 4, Motor = 5, SteppingMotor = 6 },
@@ -559,10 +568,30 @@ local function _make_datastore(name)
     end
 
     function store:GetSortedAsync(ascending, pageSize, minValue, maxValue)
+        -- Ordena las entradas numéricas del cache (antes devolvía páginas vacías)
+        local entries = {}
+        for k, v in pairs(self._cache) do
+            if type(v) == "number"
+               and (minValue == nil or v >= minValue)
+               and (maxValue == nil or v <= maxValue) then
+                entries[#entries + 1] = { key = k, value = v }
+            end
+        end
+        table.sort(entries, function(a, b)
+            if ascending then return a.value < b.value else return a.value > b.value end
+        end)
+        local pages, page, ps = {}, {}, (pageSize or 50)
+        for i = 1, #entries do
+            page[#page + 1] = entries[i]
+            if #page >= ps then pages[#pages + 1] = page; page = {} end
+        end
+        if #page > 0 then pages[#pages + 1] = page end
+        if #pages == 0 then pages[1] = {} end
+        local idx = 1
         return {
-            GetCurrentPage = function() return {} end,
-            AdvanceToNextPageAsync = function() end,
-            IsFinished = true,
+            GetCurrentPage = function() return pages[idx] or {} end,
+            AdvanceToNextPageAsync = function() if idx < #pages then idx = idx + 1 end end,
+            IsFinished = (#pages <= 1),
         }
     end
 
@@ -1375,7 +1404,10 @@ local _cls_map = {
     -- Constraints
     WeldConstraint="WeldConstraint", HingeConstraint="HingeConstraint",
     BallSocketConstraint="BallSocketConstraint", RodConstraint="RodConstraint",
-    SpringConstraint="SpringConstraint",
+    SpringConstraint="SpringConstraint", Attachment="Attachment",
+    -- Clases nuevas cuyo nombre choca con Godot / reutilizan nodos existentes
+    Decal="RobloxDecal", Texture="RobloxTexture", CanvasGroup="RobloxCanvasGroup",
+    Sky="LightingSkyNode", Atmosphere="AtmosphereNode", SunRays="SunRaysNode",
     -- Sound
     Sound="RobloxSound", SoundGroup="RobloxSoundGroup",
     -- Tween
@@ -1792,6 +1824,307 @@ function BrickColor.palette(index)
     return BrickColor.new(names[((index or 1)-1)%#names+1])
 end
 function BrickColor:__tostring() return self.Name end
+
+)LUAU"
+R"LUAU(
+-- ══════════════════════════════════════════════════════════════════════
+--  GodotLuau — Ola 1: datatypes, globales legacy y servicios (Luau puro)
+--  Funcional, no pulido. Añadido para cubrir "cosas que faltan".
+-- ══════════════════════════════════════════════════════════════════════
+
+-- ── RBXScriptSignal reutilizable (para respaldar servicios) ───────────
+local function _mkSignal()
+    local sig = { _h = {} }
+    function sig:Connect(fn)
+        local c = { Connected = true, _fn = fn }
+        function c:Disconnect()
+            c.Connected = false
+            for i, x in ipairs(sig._h) do if x == c then table.remove(sig._h, i) break end end
+        end
+        table.insert(sig._h, c)
+        return c
+    end
+    function sig:Once(fn)
+        local c
+        c = sig:Connect(function(...) c:Disconnect() fn(...) end)
+        return c
+    end
+    function sig:Wait()
+        local co = coroutine.running()
+        local c
+        c = sig:Connect(function(...) c:Disconnect() pcall(task.spawn, co, ...) end)
+        return coroutine.yield()
+    end
+    function sig:Fire(...)
+        local snap = {}
+        for _, c in ipairs(sig._h) do snap[#snap + 1] = c end
+        for _, c in ipairs(snap) do if c.Connected then task.spawn(c._fn, ...) end end
+    end
+    return sig
+end
+
+-- ── Datatypes que faltaban ────────────────────────────────────────────
+if not Ray then
+    local MT = { __type = "Ray" }; MT.__index = MT
+    function MT:ClosestPoint(p)
+        local o, u = self.Origin, self.Direction.Unit
+        return o + u * ((p - o):Dot(u))
+    end
+    function MT:Distance(p) return (self:ClosestPoint(p) - p).Magnitude end
+    function MT:__tostring() return "Ray" end
+    Ray = { new = function(origin, direction)
+        return setmetatable({ Origin = origin, Direction = direction }, MT)
+    end }
+end
+
+if not NumberRange then
+    local MT = { __type = "NumberRange" }; MT.__index = MT
+    function MT:__tostring() return tostring(self.Min) .. " " .. tostring(self.Max) end
+    NumberRange = { new = function(a, b)
+        if b == nil then b = a end
+        return setmetatable({ Min = a, Max = b }, MT)
+    end }
+end
+
+if not Vector3int16 then
+    local MT = { __type = "Vector3int16" }; MT.__index = MT
+    Vector3int16 = { new = function(x, y, z)
+        return setmetatable({ X = math.floor(x or 0), Y = math.floor(y or 0), Z = math.floor(z or 0) }, MT)
+    end }
+end
+
+if not Vector2int16 then
+    local MT = { __type = "Vector2int16" }; MT.__index = MT
+    Vector2int16 = { new = function(x, y)
+        return setmetatable({ X = math.floor(x or 0), Y = math.floor(y or 0) }, MT)
+    end }
+end
+
+if not Faces then
+    local MT = { __type = "Faces" }; MT.__index = MT
+    local _fnames = { [1]="Top", [2]="Bottom", [3]="Front", [4]="Back", [5]="Right", [6]="Left" }
+    Faces = { new = function(...)
+        local f = setmetatable({ Top=false, Bottom=false, Left=false, Right=false, Back=false, Front=false }, MT)
+        for _, id in ipairs({...}) do local n = _fnames[id]; if n then f[n] = true end end
+        return f
+    end }
+end
+
+if not Axes then
+    local MT = { __type = "Axes" }; MT.__index = MT
+    Axes = { new = function()
+        return setmetatable({ X=false, Y=false, Z=false }, MT)
+    end }
+end
+
+if not PhysicalProperties then
+    local MT = { __type = "PhysicalProperties" }; MT.__index = MT
+    PhysicalProperties = { new = function(density, friction, elasticity, fw, ew)
+        return setmetatable({
+            Density = density or 0.7, Friction = friction or 0.3, Elasticity = elasticity or 0.5,
+            FrictionWeight = fw or 1, ElasticityWeight = ew or 1
+        }, MT)
+    end }
+end
+
+if not DateTime then
+    local MT = { __type = "DateTime" }; MT.__index = MT
+    function MT:ToIsoDate() return os.date("!%Y-%m-%dT%H:%M:%SZ", math.floor(self.UnixTimestamp)) end
+    function MT:FormatUniversalTime(fmt) return os.date("!" .. fmt, math.floor(self.UnixTimestamp)) end
+    function MT:ToUniversalTime()
+        local t = os.date("!*t", math.floor(self.UnixTimestamp))
+        return { Year=t.year, Month=t.month, Day=t.day, Hour=t.hour, Minute=t.min, Second=t.sec }
+    end
+    local function _mk(ts) return setmetatable({ UnixTimestamp = ts, UnixTimestampMillis = ts * 1000 }, MT) end
+    DateTime = {
+        now = function() return _mk(os.time()) end,
+        fromUnixTimestamp = function(s) return _mk(s) end,
+        fromUnixTimestampMillis = function(ms) return _mk(ms / 1000) end,
+    }
+end
+
+-- ── Fix typeof: datatypes que no declaraban __type ───────────────────
+if Region3 then Region3.__type = "Region3" end
+if Rect then Rect.__type = "Rect" end
+if NumberSequence then NumberSequence.__type = "NumberSequence" end
+if ColorSequence then ColorSequence.__type = "ColorSequence" end
+if NumberSequenceKeypoint then NumberSequenceKeypoint.__type = "NumberSequenceKeypoint" end
+if ColorSequenceKeypoint then ColorSequenceKeypoint.__type = "ColorSequenceKeypoint" end
+if BrickColor then BrickColor.__type = "BrickColor" end
+
+-- ── Globales legacy ───────────────────────────────────────────────────
+if not spawn then spawn = function(f, ...) return task.spawn(f, ...) end end
+if not delay then delay = function(t, f) return task.delay(t, f) end end
+Spawn = Spawn or spawn
+Delay = Delay or delay
+if not elapsedTime then elapsedTime = function() return os.clock() end end
+if not settings then settings = function() return {} end end
+if not UserSettings then UserSettings = function() return { GetService = function() return {} end } end end
+if task then
+    task.synchronize = task.synchronize or function() end
+    task.desynchronize = task.desynchronize or function() end
+end
+
+-- ── Servicios que faltaban (registrados en _G["__SVC_*"]) ─────────────
+do  -- MessagingService: pub/sub en el proceso
+    local topics = {}
+    local S = {}
+    function S:SubscribeAsync(topic, cb)
+        topics[topic] = topics[topic] or {}
+        local conn = { Connected = true, _cb = cb }
+        function conn:Disconnect()
+            conn.Connected = false
+            local l = topics[topic]
+            if l then for i, c in ipairs(l) do if c == conn then table.remove(l, i) break end end end
+        end
+        table.insert(topics[topic], conn)
+        return conn
+    end
+    function S:PublishAsync(topic, message)
+        local l = topics[topic]
+        if not l then return end
+        local snap = {}
+        for _, c in ipairs(l) do snap[#snap + 1] = c end
+        for _, c in ipairs(snap) do if c.Connected then task.spawn(c._cb, { Data = message, Sent = os.time() }) end end
+    end
+    _G["__SVC_MessagingService"] = S
+end
+
+do  -- MemoryStoreService: mapas/colas en memoria
+    local function _newMap()
+        local data = {}
+        local m = {}
+        function m:SetAsync(k, v) data[k] = v; return true end
+        function m:GetAsync(k) return data[k] end
+        function m:RemoveAsync(k) data[k] = nil end
+        function m:UpdateAsync(k, cb) local nv = cb(data[k]); if nv ~= nil then data[k] = nv end; return data[k] end
+        function m:GetRangeAsync() local out = {}; for k, v in pairs(data) do out[#out + 1] = { key = k, value = v } end; return out end
+        return m
+    end
+    local S = {}
+    function S:GetSortedMap(name) return _newMap() end
+    function S:GetHashMap(name) return _newMap() end
+    function S:GetQueue(name)
+        local q = {}
+        local Q = {}
+        function Q:AddAsync(v) table.insert(q, v) end
+        function Q:ReadAsync(count)
+            local out = {}
+            for _ = 1, (count or 1) do if q[1] then table.insert(out, table.remove(q, 1)) end end
+            return out
+        end
+        function Q:RemoveAsync() end
+        return Q
+    end
+    _G["__SVC_MemoryStoreService"] = S
+end
+
+do  -- LogService
+    local S = { MessageOut = _mkSignal() }
+    local history = {}
+    function S:GetLogHistory() return history end
+    _G["__SVC_LogService"] = S
+end
+
+do  -- GroupService
+    local S = {}
+    function S:GetGroupInfoAsync(groupId)
+        return { Name = "Group", Id = groupId, Owner = {}, EmblemUrl = "", Description = "" }
+    end
+    function S:GetGroupsAsync(userId) return {} end
+    _G["__SVC_GroupService"] = S
+end
+
+do  -- PolicyService
+    local S = {}
+    function S:GetPolicyInfoForPlayerAsync(player)
+        return {
+            AllowedExternalLinkReferences = {}, ArePaidRandomItemsRestricted = false,
+            IsPaidItemTradingAllowed = true, IsSubjectToChinaPolicies = false,
+        }
+    end
+    _G["__SVC_PolicyService"] = S
+end
+
+do  -- Stats
+    local S = { DataReceiveKbps = 0, DataSendKbps = 0, HeartbeatTimeMs = 0, PhysicsReceiveKbps = 0, PhysicsSendKbps = 0 }
+    function S:GetTotalMemoryUsageMb() return 0 end
+    _G["__SVC_Stats"] = S
+end
+
+do  -- GuiService
+    local S = { SelectedObject = nil, MenuIsOpen = false }
+    function S:GetGuiInset() return Vector2.new(0, 36), Vector2.new(0, 0) end
+    function S:GetScreenResolution() return Vector2.new(1920, 1080) end
+    function S:IsTenFootInterface() return false end
+    _G["__SVC_GuiService"] = S
+end
+
+do  -- ProximityPromptService
+    local S = {
+        PromptTriggered = _mkSignal(), PromptTriggerEnded = _mkSignal(),
+        PromptShown = _mkSignal(), PromptHidden = _mkSignal(),
+        PromptButtonHoldBegan = _mkSignal(), PromptButtonHoldEnded = _mkSignal(),
+    }
+    _G["__SVC_ProximityPromptService"] = S
+end
+
+do  -- MarketplaceService: completar señales/métodos si el stub existe
+    local MPS = _G["__SVC_MarketplaceService"]
+    if MPS then
+        MPS.PromptGamePassPurchaseFinished = MPS.PromptGamePassPurchaseFinished or _mkSignal()
+        MPS.PromptProductPurchaseFinished  = MPS.PromptProductPurchaseFinished or _mkSignal()
+        MPS.PromptPurchaseFinished         = MPS.PromptPurchaseFinished or _mkSignal()
+        MPS._owned = MPS._owned or {}
+        if not MPS.GetProductInfo then
+            function MPS:GetProductInfo(id, infoType)
+                return { Name = "Item", PriceInRobux = 0, Description = "", ProductId = id, IsForSale = true }
+            end
+        end
+        function MPS:UserOwnsGamePassAsync(userId, gamePassId)
+            return MPS._owned[tostring(userId) .. ":" .. tostring(gamePassId)] == true
+        end
+        function MPS:PromptGamePassPurchase(player, gamePassId)
+            local uid = (player and player.UserId) or 0
+            MPS._owned[tostring(uid) .. ":" .. tostring(gamePassId)] = true
+            MPS.PromptGamePassPurchaseFinished:Fire(player, gamePassId, true)
+        end
+        function MPS:PromptProductPurchase(player, productId)
+            MPS.PromptProductPurchaseFinished:Fire(player, productId, true)
+        end
+    end
+end
+
+do  -- BadgeService: persistir medallas otorgadas (antes AwardBadge solo print)
+    local BS = _G["__SVC_BadgeService"]
+    if BS then
+        BS._awarded = BS._awarded or {}
+        function BS:AwardBadge(userId, badgeId)
+            BS._awarded[tostring(userId) .. ":" .. tostring(badgeId)] = true
+            return true
+        end
+        function BS:UserHasBadgeAsync(userId, badgeId)
+            return BS._awarded[tostring(userId) .. ":" .. tostring(badgeId)] == true
+        end
+    end
+end
+
+-- ── Instance.new: clases nuevas en Luau puro (BindableFunction, etc.) ──
+do
+    local _prev_new = Instance.new
+    Instance.new = function(className, parent)
+        if className == "BindableFunction" then
+            local bf = { Name = "BindableFunction", ClassName = "BindableFunction", OnInvoke = nil }
+            function bf:Invoke(...) if bf.OnInvoke then return bf.OnInvoke(...) end end
+            return bf
+        elseif className == "UnreliableRemoteEvent" then
+            local ev = _prev_new("RemoteEvent", parent)
+            if ev then pcall(function() ev.Name = "UnreliableRemoteEvent" end) end
+            return ev
+        end
+        return _prev_new(className, parent)
+    end
+end
 
 )LUAU";
 

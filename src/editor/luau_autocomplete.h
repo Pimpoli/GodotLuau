@@ -1248,7 +1248,9 @@ public:
                     "TweenService","HttpService","UserInputService","Debris","CollectionService",
                     "DataStoreService","ContextActionService","PathfindingService","PhysicsService",
                     "TeleportService","BadgeService","MarketplaceService","GuiService","InsertService",
-                    "ScriptContext","MaterialService",nullptr};
+                    "ScriptContext","MaterialService",
+                    "MessagingService","MemoryStoreService","ProximityPromptService","GroupService",
+                    "PolicyService","LogService","Stats","NetworkService",nullptr};
                 for(int si=0;svcs[si];si++) {
                     String svc=String(svcs[si]);
                     int sc=fuzzy_match_score(filter_str,filter_lower,svc); if(sc<=0) continue;
@@ -1298,7 +1300,22 @@ public:
                     "Attachment","WeldConstraint","Motor6D","HingeConstraint","BallSocketConstraint",
                     "RemoteEvent","RemoteFunction","BindableEvent","BindableFunction",
                     "NumberValue","StringValue","BoolValue","IntValue","ObjectValue","CFrameValue",
-                    "Vector3Value","Color3Value",nullptr};
+                    "Vector3Value","Color3Value",
+                    // ── Clases nuevas añadidas por GodotLuau ──
+                    "UICorner","UIStroke","UIGradient","UIPadding","UIListLayout","UIGridLayout",
+                    "UITableLayout","UIPageLayout","UIScale","UIAspectRatioConstraint","UISizeConstraint",
+                    "UITextSizeConstraint","ViewportFrame","VideoFrame","CanvasGroup",
+                    "Highlight","Explosion","SelectionBox","SelectionSphere","MaterialVariant",
+                    "Smoke","Fire","Sparkles","Clouds",
+                    "AlignPosition","AlignOrientation","LinearVelocity","AngularVelocity","Torque","LineForce",
+                    "RopeConstraint","PrismaticConstraint","CylindricalConstraint","PlaneConstraint",
+                    "TorsionSpringConstraint","RigidConstraint","NoCollisionConstraint","UniversalConstraint",
+                    "ReverbSoundEffect","EchoSoundEffect","EqualizerSoundEffect","DistortionSoundEffect",
+                    "CompressorSoundEffect","PitchShiftSoundEffect","ChorusSoundEffect","FlangeSoundEffect",
+                    "TremoloSoundEffect","AudioPlayer","AudioEmitter","AudioListener","AudioFader","Wire",
+                    "Seat","VehicleSeat","Team","UnreliableRemoteEvent","SpawnLocation","Tool","Backpack",
+                    "ProximityPrompt","ClickDetector",
+                    nullptr};
                 for(int ci=0;classes[ci];ci++) {
                     String cl=String(classes[ci]);
                     int sc=fuzzy_match_score(filter_str,filter_lower,cl); if(sc<=0) continue;

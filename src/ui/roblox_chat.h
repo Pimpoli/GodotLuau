@@ -269,17 +269,23 @@ public:
         Color nc = name_colors[color_idx % 6];
         String hex = "#" + nc.to_html(false).substr(0, 6);
 
+        // Escapar corchetes del texto del usuario para que no inyecte BBCode
+        // (p.ej. [color=red] o [img]). RichTextLabel usa [lb] como '[' literal.
+        String safe_player = p_player.replace("[", "[lb]");
+        String safe_msg    = p_msg.replace("[", "[lb]");
+
         // Format: [color=hex][b]Name[/b][/color]: message
         //// Formato: [color=hex][b]Nombre[/b][/color]: mensaje
-        String formatted = "[color=" + hex + "][b]" + p_player + "[/b][/color][color=#c8c8cc]: " + p_msg + "[/color]\n";
+        String formatted = "[color=" + hex + "][b]" + safe_player + "[/b][/color][color=#c8c8cc]: " + safe_msg + "[/color]\n";
         msg_label->append_text(formatted);
 
         message_count++;
         // Clear old messages if there are too many
         //// Limpiar mensajes viejos si hay demasiados
-        if (message_count > max_messages) {
-            msg_label->clear();
-            message_count = 0;
+        // Recortar solo el mensaje más viejo (antes borraba TODO el historial)
+        while (message_count > max_messages) {
+            msg_label->remove_paragraph(0);
+            message_count--;
         }
 
         // Scroll to bottom / Scroll al final

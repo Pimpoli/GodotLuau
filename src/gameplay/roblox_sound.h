@@ -46,6 +46,8 @@ class RobloxSound : public Node {
     bool    rolloff_3d     = false;
     float   rolloff_max    = 40.0f;
     float   rolloff_min    = 10.0f;
+    int     rolloff_mode   = 0;      // Enum.RollOffMode
+    float   emitter_size   = 1.0f;
     bool    playing_state  = false;
     String  sound_group    = "";
 
@@ -70,10 +72,7 @@ class RobloxSound : public Node {
             player3d->set_stream(stream);
             player3d->set_volume_db(20.0f * log10f(Math::clamp(volume, 1e-6f, 10.0f)));
             player3d->set_pitch_scale(pitch);
-            player3d->set_max_distance(rolloff_max);
-            if (looped) {
-                // Roblox loops: set loop on stream if possible
-            }
+            _apply_spatial();
         } else {
             if (!player2d) {
                 player2d = memnew(AudioStreamPlayer);
@@ -88,6 +87,21 @@ class RobloxSound : public Node {
             if (player2d) player2d->set_bus(sound_group);
             if (player3d) player3d->set_bus(sound_group);
         }
+        _apply_loop();
+    }
+
+    // Aplica Looped al stream cargado (Ogg/MP3/WAV) — antes no hacía nada
+    void _apply_loop() {
+        Ref<AudioStream> st;
+        if (player2d) st = player2d->get_stream();
+        else if (player3d) st = player3d->get_stream();
+        if (st.is_null()) return;
+        Ref<AudioStreamOggVorbis> ogg = st;
+        if (ogg.is_valid()) { ogg->set_loop(looped); return; }
+        Ref<AudioStreamMP3> mp3 = st;
+        if (mp3.is_valid()) { mp3->set_loop(looped); return; }
+        Ref<AudioStreamWAV> wav = st;
+        if (wav.is_valid()) { wav->set_loop_mode(looped ? AudioStreamWAV::LOOP_FORWARD : AudioStreamWAV::LOOP_DISABLED); }
     }
 
 protected:
@@ -107,10 +121,15 @@ protected:
         ClassDB::bind_method(D_METHOD("play"),  &RobloxSound::play);
         ClassDB::bind_method(D_METHOD("stop"),  &RobloxSound::stop);
         ClassDB::bind_method(D_METHOD("pause"), &RobloxSound::pause);
+        ClassDB::bind_method(D_METHOD("resume"), &RobloxSound::resume);
         ClassDB::bind_method(D_METHOD("is_playing"), &RobloxSound::is_playing);
+        ClassDB::bind_method(D_METHOD("is_paused"),  &RobloxSound::is_paused);
+        ClassDB::bind_method(D_METHOD("is_loaded"),  &RobloxSound::is_loaded);
+        ClassDB::bind_method(D_METHOD("get_time_position"),      &RobloxSound::get_time_position);
+        ClassDB::bind_method(D_METHOD("set_time_position", "t"), &RobloxSound::set_time_position);
 
         ADD_PROPERTY(PropertyInfo(Variant::STRING, "SoundId"), "set_sound_id", "get_sound_id");
-        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Volume", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_volume", "get_volume");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Volume", PROPERTY_HINT_RANGE, "0,10,0.01"), "set_volume", "get_volume");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Pitch", PROPERTY_HINT_RANGE, "0.01,4,0.01"), "set_pitch", "get_pitch");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Looped"), "set_looped", "get_looped");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL, "RollOffMode"), "set_rolloff_3d", "get_rolloff_3d");
@@ -135,7 +154,7 @@ public:
     }
     float get_pitch() const { return pitch; }
 
-    void set_looped(bool v) { looped = v; }
+    void set_looped(bool v) { looped = v; _apply_loop(); }
     bool get_looped() const { return looped; }
 
     void set_rolloff_3d(bool v) { rolloff_3d = v; }
@@ -183,6 +202,60 @@ public:
         if (player3d) return (float)player3d->get_playback_position();
         return 0.0f;
     }
+
+    // Seek (antes TimePosition era solo lectura)
+    void set_time_position(float t) {
+        if (player2d) player2d->seek(t);
+        if (player3d) player3d->seek(t);
+    }
+    // Resume real (antes solo existía pause() con toggle)
+    void resume() {
+        if (player2d) player2d->set_stream_paused(false);
+        if (player3d) player3d->set_stream_paused(false);
+        playing_state = true;
+    }
+    bool is_paused() const {
+        if (player2d) return player2d->get_stream_paused();
+        if (player3d) return player3d->get_stream_paused();
+        return false;
+    }
+    bool is_loaded() const {
+        if (player2d) return player2d->get_stream().is_valid();
+        if (player3d) return player3d->get_stream().is_valid();
+        return false;
+    }
+
+    // ── Audio 3D espacial (rolloff) ──────────────────────────────────
+    int _atten_model() const {
+        switch (rolloff_mode) {
+            case 2:  return 1;  // LinearSquare → InverseSquare
+            case 3:  return 2;  // InverseTapered → Logarithmic
+            default: return 0;  // Linear/Inverse → InverseDistance
+        }
+    }
+    void _apply_spatial() {
+        if (!player3d) return;
+        player3d->set_max_distance(rolloff_max);
+        player3d->set_unit_size(Math::max(rolloff_min, 0.1f));
+        player3d->set_attenuation_model((AudioStreamPlayer3D::AttenuationModel)_atten_model());
+    }
+    // Setear RollOffMode activa el modo 3D (antes era inalcanzable desde Luau)
+    void  set_rolloff_mode(int m) { rolloff_mode = m; rolloff_3d = true; if (player3d) _apply_spatial(); else if (is_inside_tree()) _load_stream(); }
+    int   get_rolloff_mode() const { return rolloff_mode; }
+    void  set_rolloff_min(float v) { rolloff_min = v; _apply_spatial(); }
+    float get_rolloff_min() const { return rolloff_min; }
+    void  set_rolloff_max(float v) { rolloff_max = v; _apply_spatial(); }
+    float get_rolloff_max() const { return rolloff_max; }
+    void  set_emitter_size(float v) { emitter_size = v; }
+    float get_emitter_size() const { return emitter_size; }
+    float get_playback_loudness() const {
+        AudioServer* as = AudioServer::get_singleton();
+        int bi = as->get_bus_index(sound_group.is_empty() ? "Master" : sound_group);
+        if (bi < 0) return 0.0f;
+        float db = as->get_bus_peak_volume_left_db(bi, 0);
+        float lin = Math::pow(10.0f, db / 20.0f);
+        return Math::clamp(lin * 1000.0f, 0.0f, 1000.0f);
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -216,15 +289,22 @@ public:
     String get_group_name() const { return bus_name; }
 
     void set_volume(float v) {
-        volume = Math::clamp(v, 0.0f, 1.0f);
+        volume = Math::clamp(v, 0.0f, 10.0f);   // Roblox: 0-10 (antes 0-1)
         _apply_volume();
     }
     float get_volume() const { return volume; }
 
     void _apply_volume() {
-        int idx = AudioServer::get_singleton()->get_bus_index(bus_name);
+        AudioServer* as = AudioServer::get_singleton();
+        int idx = as->get_bus_index(bus_name);
+        if (idx < 0 && !bus_name.is_empty() && bus_name != "Master") {
+            // Crear el bus si no existe (antes no hacía nada)
+            idx = as->get_bus_count();
+            as->add_bus();
+            as->set_bus_name(idx, bus_name);
+        }
         if (idx >= 0)
-            AudioServer::get_singleton()->set_bus_volume_db(idx, 20.0f * log10f(Math::clamp(volume, 1e-6f, 10.0f)));
+            as->set_bus_volume_db(idx, 20.0f * log10f(Math::clamp(volume, 1e-6f, 10.0f)));
     }
 
     void _ready() override {

@@ -9,6 +9,7 @@
 #include <vector>
 #include <algorithm>
 #include <functional>
+#include <cstring>
 
 using namespace godot;
 
@@ -43,12 +44,12 @@ static inline void _gl_push_node(lua_State* dst, Node* node) {
 // serializa tablas a través de los RemoteEvents.
 static void _lua_cross_push(lua_State* src, int idx, lua_State* dst, int depth = 0) {
     int t = lua_type(src, idx);
+    if (idx < 0 && (t == LUA_TTABLE || t == LUA_TUSERDATA)) idx = lua_gettop(src) + idx + 1;
     if      (t == LUA_TNIL)     lua_pushnil(dst);
     else if (t == LUA_TBOOLEAN) lua_pushboolean(dst, lua_toboolean(src, idx));
     else if (t == LUA_TNUMBER)  lua_pushnumber(dst, lua_tonumber(src, idx));
     else if (t == LUA_TSTRING)  lua_pushstring(dst, lua_tostring(src, idx));
     else if (t == LUA_TTABLE && depth < 8) {
-        if (idx < 0) idx = lua_gettop(src) + idx + 1;
         lua_newtable(dst);
         lua_pushnil(src);
         while (lua_next(src, idx) != 0) {
@@ -57,6 +58,48 @@ static void _lua_cross_push(lua_State* src, int idx, lua_State* dst, int depth =
             lua_settable(dst, -3);
             lua_pop(src, 1);
         }
+        // Preservar la metatable de tablas tipadas (CFrame, UDim2, UDim, Region3, Rect…)
+        if (lua_getmetatable(src, idx)) {
+            lua_getfield(src, -1, "__type");
+            if (lua_isstring(src, -1)) {
+                lua_getglobal(dst, lua_tostring(src, -1));
+                if (lua_istable(dst, -1)) lua_setmetatable(dst, -2);
+                else lua_pop(dst, 1);
+            }
+            lua_pop(src, 2);  // __type + metatable
+        }
+    }
+    else if (t == LUA_TUSERDATA) {
+        bool done = false;
+        if (lua_getmetatable(src, idx)) {
+            // Instance (GodotObject) → recrear en dst por ObjectID
+            luaL_getmetatable(src, "GodotObject");
+            bool is_obj = lua_rawequal(src, -1, -2);
+            lua_pop(src, 1);
+            if (is_obj) {
+                GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(src, idx);
+                _gl_push_node(dst, w ? gow_node(w) : nullptr);
+                done = true;
+            } else {
+                // Vector3 / Color3 (userdata de 3 floats)
+                static const char* uds[] = { "Vector3", "Color3", nullptr };
+                for (int m = 0; uds[m] && !done; m++) {
+                    luaL_getmetatable(src, uds[m]);
+                    bool eq = lua_rawequal(src, -1, -2);
+                    lua_pop(src, 1);
+                    if (eq) {
+                        void* s = lua_touserdata(src, idx);
+                        void* d = lua_newuserdata(dst, 3 * sizeof(float));
+                        memcpy(d, s, 3 * sizeof(float));
+                        luaL_getmetatable(dst, uds[m]);
+                        lua_setmetatable(dst, -2);
+                        done = true;
+                    }
+                }
+            }
+            lua_pop(src, 1);  // metatable original
+        }
+        if (!done) lua_pushnil(dst);
     }
     else lua_pushnil(dst);
 }

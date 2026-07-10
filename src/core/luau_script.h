@@ -1396,7 +1396,7 @@ public:
                 msg += String(luaL_tolstring(L, i, nullptr));
                 if (i < n) msg += "\t";
             }
-            UtilityFunctions::print("[Luau WARN] ", msg);
+            UtilityFunctions::push_warning(msg);   // canal de advertencia real (antes era print)
             return 0;
         }, "warn");
         lua_setglobal(L_main, "warn");

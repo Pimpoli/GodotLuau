@@ -12,6 +12,7 @@
 #include "folder.h"
 #include "roblox_chat.h"
 #include "roblox_services.h"
+#include "roblox_network.h"
 #include "roblox_datamodel.h"
 #include "roblox_game3d.h"
 #include "roblox_game2d.h"
@@ -19,6 +20,10 @@
 #include "roblox_lighting_fx.h"
 #include "roblox_bodymovers.h"
 #include "roblox_constraints.h"
+#include "roblox_attachment.h"
+#include "roblox_extra.h"
+#include "roblox_behavior.h"
+#include "roblox_effects.h"
 #include "roblox_gui.h"
 #include "roblox_tween.h"
 #include "roblox_sound.h"
@@ -103,6 +108,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<SoundService>();
         ClassDB::register_class<RunService>();
         ClassDB::register_class<TextChatService>();
+        ClassDB::register_class<NetworkService>();
 
         // BodyMovers — equivalent to Roblox's BodyMovers
         //// BodyMovers — equivalentes a los BodyMovers de Roblox
@@ -119,6 +125,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<BallSocketConstraint>();
         ClassDB::register_class<RodConstraint>();
         ClassDB::register_class<SpringConstraint>();
+        ClassDB::register_class<Attachment>();
 
         // Roblox-style GUI — ScreenGui, Frame, TextLabel, etc.
         //// GUI tipo Roblox — ScreenGui, Frame, TextLabel, etc.
@@ -181,6 +188,12 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         //// Animación
         ClassDB::register_class<AnimationTrack>();
         ClassDB::register_class<AnimationObject>();
+
+        // Clases "estilo Roblox" que faltaban (versión funcional básica)
+        //// Ver src/core/roblox_extra.h — nodos puente con _gl_bridge
+        gl_register_extra_classes();
+        gl_register_behavior_classes();
+        gl_register_effects_classes();
 
         // .lua script loader and saver
         //// Cargador y guardador de scripts .lua

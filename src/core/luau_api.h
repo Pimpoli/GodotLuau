@@ -8,6 +8,7 @@
 #include "roblox_player2d.h"
 #include "roblox_part.h"
 #include "roblox_services.h"
+#include "roblox_network.h"
 #include "roblox_remote.h"
 #include "roblox_workspace.h"
 #include "roblox_bodymovers.h"
@@ -30,6 +31,8 @@
 #include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
 #include <godot_cpp/classes/world3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -117,6 +120,46 @@ static inline LuauVector3* check_vector3(lua_State* L, int idx) {
 }
 static inline LuauColor3* check_color3(lua_State* L, int idx) {
     return _gl_has_metatable(L, idx, "Color3") ? (LuauColor3*)lua_touserdata(L, idx) : nullptr;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Puente genérico de propiedades (clases nuevas con meta "_gl_bridge")
+//  Permite leer/escribir cualquier propiedad registrada en el ClassDB con
+//  nombre estilo Roblox (ADD_PROPERTY) sin cablearla a mano en el index/
+//  newindex. Solo se activa en nodos que ponen set_meta("_gl_bridge", true)
+//  en su constructor, así que NO afecta a las clases existentes.
+// ════════════════════════════════════════════════════════════════════
+static bool gl_has_property(Object* o, const String& pname) {
+    if (!o) return false;
+    TypedArray<Dictionary> pl = o->get_property_list();
+    for (int i = 0; i < pl.size(); i++) {
+        Dictionary d = pl[i];
+        if (String(d.get("name", String())) == pname) return true;
+    }
+    return false;
+}
+static bool gl_luau_to_variant(lua_State* L, int idx, Variant& out) {
+    switch (lua_type(L, idx)) {
+        case LUA_TNUMBER:  out = (double)lua_tonumber(L, idx); return true;
+        case LUA_TBOOLEAN: out = (bool)(lua_toboolean(L, idx) != 0); return true;
+        case LUA_TSTRING:  out = String(lua_tostring(L, idx)); return true;
+        case LUA_TUSERDATA:
+            if (LuauVector3* v = check_vector3(L, idx)) { out = Vector3(v->x, v->y, v->z); return true; }
+            if (LuauColor3*  c = check_color3(L, idx))  { out = Color(c->r, c->g, c->b);   return true; }
+            return false;
+        default: return false;
+    }
+}
+static bool gl_variant_to_luau(lua_State* L, const Variant& v) {
+    switch (v.get_type()) {
+        case Variant::BOOL:    lua_pushboolean(L, (bool)v);              return true;
+        case Variant::INT:     lua_pushnumber(L, (double)(int64_t)v);    return true;
+        case Variant::FLOAT:   lua_pushnumber(L, (double)v);             return true;
+        case Variant::STRING:  { String s = v; lua_pushstring(L, s.utf8().get_data()); return true; }
+        case Variant::VECTOR3: { Vector3 q = v; push_vector3(L, q.x, q.y, q.z); return true; }
+        case Variant::COLOR:   { Color q = v; push_color3(L, q.r, q.g, q.b);    return true; }
+        default: return false;
+    }
 }
 
 // Señal "inerte": objeto con Connect/Once/Wait que NO hace nada y NO filtra
@@ -540,6 +583,14 @@ static int method_getservice(lua_State* L) {
         }
     }
 
+    // 6. Servicios singleton C++ que se auto-crean bajo game la primera vez
+    if (strcmp(svc_name, "NetworkService") == 0) {
+        NetworkService* ns = memnew(NetworkService);
+        ns->set_name("NetworkService");
+        gow_node(w)->add_child(ns);
+        wrap_node(L, ns); return 1;
+    }
+
     lua_pushnil(L); return 1;
 }
 
@@ -553,6 +604,40 @@ static int godot_object_index(lua_State* L) {
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) { lua_pushnil(L); return 1; }
     Node* n = gow_node(wrapper);
+
+    // ── Utilidades de Instance (Ola 2) ────────────────────────────────
+    if (strcmp(key, "GetDebugId") == 0) {
+        lua_pushcfunction(L, [](lua_State* pL) -> int {
+            GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(pL, 1);
+            Node* nd = w ? gow_node(w) : nullptr;
+            String s = String::num_uint64(nd ? (uint64_t)nd->get_instance_id() : 0);
+            lua_pushstring(pL, s.utf8().get_data()); return 1;
+        }, "GetDebugId"); return 1;
+    }
+    if (strcmp(key, "GetActor") == 0) {
+        lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnil(pL); return 1; }, "GetActor"); return 1;
+    }
+
+    // ── DataModel (game): PlaceId/JobId/CreatorId/BindToClose… (Ola 2) ──
+    if (strcmp(key,"PlaceId")==0 || strcmp(key,"GameId")==0 || strcmp(key,"JobId")==0 ||
+        strcmp(key,"CreatorId")==0 || strcmp(key,"CreatorType")==0 || strcmp(key,"PrivateServerId")==0 ||
+        strcmp(key,"PrivateServerOwnerId")==0 || strcmp(key,"PlaceVersion")==0 ||
+        strcmp(key,"BindToClose")==0 || strcmp(key,"IsLoaded")==0) {
+        String _cls = n->get_class();
+        if (_cls == "RobloxGame3D" || _cls == "RobloxGame2D" || _cls == "RobloxTemplate") {
+            if (strcmp(key,"PlaceId")==0 || strcmp(key,"GameId")==0 || strcmp(key,"CreatorId")==0 ||
+                strcmp(key,"PrivateServerOwnerId")==0)      { lua_pushnumber(L, 0); return 1; }
+            if (strcmp(key,"PlaceVersion")==0)              { lua_pushnumber(L, 1); return 1; }
+            if (strcmp(key,"CreatorType")==0)               { lua_pushstring(L, "User"); return 1; }
+            if (strcmp(key,"JobId")==0 || strcmp(key,"PrivateServerId")==0) { lua_pushstring(L, ""); return 1; }
+            if (strcmp(key,"IsLoaded")==0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, 1); return 1; }, "IsLoaded"); return 1;
+            }
+            if (strcmp(key,"BindToClose")==0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "BindToClose"); return 1;
+            }
+        }
+    }
 
     if (strcmp(key, "Destroy")          == 0) { lua_pushcfunction(L, method_destroy,                   "Destroy");                return 1; }
     if (strcmp(key, "Clone")            == 0) { lua_pushcfunction(L, method_clone,                     "Clone");                  return 1; }
@@ -1296,6 +1381,90 @@ static int godot_object_index(lua_State* L) {
     }
 
     // ── RunService ────────────────────────────────────────────────
+    // ── NetworkService (multijugador, Fase 0) ─────────────────────────
+    NetworkService* nsvc = Object::cast_to<NetworkService>(n);
+    if (nsvc) {
+        if (strcmp(key, "StartServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                int port = (int)luaL_optnumber(pL, 2, 25565);
+                int maxp = (int)luaL_optnumber(pL, 3, 32);
+                lua_pushboolean(pL, s && s->start_server(port, maxp)); return 1;
+            }, "StartServer", 1); return 1;
+        }
+        if (strcmp(key, "Connect") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                const char* ip = luaL_checkstring(pL, 2);
+                int port = (int)luaL_optnumber(pL, 3, 25565);
+                lua_pushboolean(pL, s && s->connect_server(String(ip), port)); return 1;
+            }, "Connect", 1); return 1;
+        }
+        if (strcmp(key, "Disconnect") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (s) s->disconnect_net(); return 0;
+            }, "Disconnect", 1); return 1;
+        }
+        if (strcmp(key, "IsServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushboolean(pL, s && s->is_server()); return 1;
+            }, "IsServer", 1); return 1;
+        }
+        if (strcmp(key, "IsClient") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushboolean(pL, s && s->is_client()); return 1;
+            }, "IsClient", 1); return 1;
+        }
+        if (strcmp(key, "GetPeerId") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushnumber(pL, s ? s->get_peer_id() : 0); return 1;
+            }, "GetPeerId", 1); return 1;
+        }
+        if (strcmp(key, "GetPlayerCount") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushnumber(pL, s ? s->get_player_count() : 1); return 1;
+            }, "GetPlayerCount", 1); return 1;
+        }
+        if (strcmp(key, "PlayerConnected") == 0 || strcmp(key, "PlayerDisconnected") == 0 ||
+            strcmp(key, "Connected") == 0       || strcmp(key, "ConnectionFailed") == 0) {
+            int which = (strcmp(key,"PlayerConnected")==0) ? 0 :
+                        (strcmp(key,"PlayerDisconnected")==0) ? 1 :
+                        (strcmp(key,"Connected")==0) ? 2 : 3;
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushinteger(L, which);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                int w = (int)lua_tointeger(pL, lua_upvalueindex(2));
+                if (!s || !lua_isfunction(pL, 2)) { lua_pushnil(pL); return 1; }
+                lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
+                if      (w == 0) s->add_pc_cb(pL, ref);
+                else if (w == 1) s->add_pd_cb(pL, ref);
+                else if (w == 2) s->add_conn_cb(pL, ref);
+                else             s->add_fail_cb(pL, ref);
+                lua_newtable(pL);
+                lua_pushcfunction(pL, [](lua_State*) -> int { return 0; }, "Disconnect");
+                lua_setfield(pL, -2, "Disconnect");
+                return 1;
+            }, "Connect", 2);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+    }
+
+    // ── RunService ────────────────────────────────────────────────
     RunService* rs = Object::cast_to<RunService>(n);
     if (rs) {
         if (strcmp(key, "IsRunning") == 0) {
@@ -1305,11 +1474,17 @@ static int godot_object_index(lua_State* L) {
             return 1;
         }
         if (strcmp(key, "IsClient") == 0) {
-            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, true); return 1; }, "IsClient");
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                lua_getglobal(pL, "__IS_CLIENT"); bool v = lua_toboolean(pL, -1) != 0; lua_pop(pL, 1);
+                lua_pushboolean(pL, v); return 1;
+            }, "IsClient");
             return 1;
         }
         if (strcmp(key, "IsServer") == 0) {
-            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, true); return 1; }, "IsServer");
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                lua_getglobal(pL, "__IS_SERVER"); bool v = lua_toboolean(pL, -1) != 0; lua_pop(pL, 1);
+                lua_pushboolean(pL, v); return 1;
+            }, "IsServer");
             return 1;
         }
         if (strcmp(key, "IsStudio") == 0) {
@@ -2003,6 +2178,21 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key,"Looped")     == 0) { lua_pushboolean(L, rsound->get_looped());    return 1; }
         if (strcmp(key,"IsPlaying")  == 0) { lua_pushboolean(L, rsound->is_playing());    return 1; }
         if (strcmp(key,"TimePosition")== 0){ lua_pushnumber(L, rsound->get_time_position()); return 1; }
+        if (strcmp(key,"PlaybackSpeed")==0){ lua_pushnumber(L, rsound->get_pitch());          return 1; }
+        if (strcmp(key,"IsPaused")   == 0) { lua_pushboolean(L, rsound->is_paused());          return 1; }
+        if (strcmp(key,"IsLoaded")   == 0) { lua_pushboolean(L, rsound->is_loaded());          return 1; }
+        if (strcmp(key,"RollOffMode")       ==0){ lua_pushnumber(L, rsound->get_rolloff_mode());       return 1; }
+        if (strcmp(key,"RollOffMinDistance")==0){ lua_pushnumber(L, rsound->get_rolloff_min());        return 1; }
+        if (strcmp(key,"RollOffMaxDistance")==0){ lua_pushnumber(L, rsound->get_rolloff_max());        return 1; }
+        if (strcmp(key,"EmitterSize")       ==0){ lua_pushnumber(L, rsound->get_emitter_size());       return 1; }
+        if (strcmp(key,"PlaybackLoudness")  ==0){ lua_pushnumber(L, rsound->get_playback_loudness());  return 1; }
+        if (strcmp(key,"Resume") == 0) {
+            lua_pushlightuserdata(L, (void*)rsound);
+            lua_pushcclosure(L, [](lua_State* LL) -> int {
+                RobloxSound* s = (RobloxSound*)lua_touserdata(LL, lua_upvalueindex(1));
+                if (s) s->resume(); return 0;
+            }, "Resume", 1); return 1;
+        }
         if (strcmp(key,"Play")  == 0) {
             lua_pushlightuserdata(L, (void*)rsound);
             lua_pushcclosure(L, [](lua_State* LL) -> int {
@@ -2440,6 +2630,16 @@ static int godot_object_index(lua_State* L) {
                 return 1;
             },"GetTags",1); return 1;
         }
+    }
+
+    // ── Puente genérico de lectura (solo clases nuevas con meta _gl_bridge) ──
+    if (n->has_meta("_gl_bridge")) {
+        if (gl_has_property(n, String(key))) {
+            Variant gv = n->get(String(key));
+            if (gl_variant_to_luau(L, gv)) return 1;
+        }
+        String _mk = String("_glp_") + String(key);
+        if (n->has_meta(_mk) && gl_variant_to_luau(L, n->get_meta(_mk))) return 1;
     }
 
     Node* child = n->get_node_or_null(NodePath(key));
@@ -2931,7 +3131,13 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key,"SoundId")  == 0) { rsound_w->set_sound_id(String(luaL_checkstring(L,3)));        return 0; }
         if (strcmp(key,"Volume")   == 0) { rsound_w->set_volume((float)luaL_checknumber(L,3));           return 0; }
         if (strcmp(key,"Pitch")    == 0) { rsound_w->set_pitch((float)luaL_checknumber(L,3));            return 0; }
+        if (strcmp(key,"PlaybackSpeed")==0){ rsound_w->set_pitch((float)luaL_checknumber(L,3));          return 0; }
         if (strcmp(key,"Looped")   == 0) { rsound_w->set_looped(lua_toboolean(L,3)!=0);                  return 0; }
+        if (strcmp(key,"TimePosition")==0){ rsound_w->set_time_position((float)luaL_checknumber(L,3));   return 0; }
+        if (strcmp(key,"RollOffMode")==0){ rsound_w->set_rolloff_mode((int)luaL_checknumber(L,3));       return 0; }
+        if (strcmp(key,"RollOffMinDistance")==0){ rsound_w->set_rolloff_min((float)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key,"RollOffMaxDistance")==0){ rsound_w->set_rolloff_max((float)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key,"EmitterSize")==0){ rsound_w->set_emitter_size((float)luaL_checknumber(L,3));     return 0; }
         if (strcmp(key,"SoundGroup")== 0){ rsound_w->set_sound_group(String(luaL_checkstring(L,3)));     return 0; }
     }
 
@@ -3022,6 +3228,23 @@ static int godot_object_newindex(lua_State* L) {
         if (strcmp(key,"AnimationId") == 0) { aobj_w->set_animation_id(String(luaL_checkstring(L,3))); return 0; }
     }
 
+    // ── Puente genérico de escritura (solo clases nuevas con meta _gl_bridge) ──
+    if (n->has_meta("_gl_bridge")) {
+        Variant gv;
+        if (gl_luau_to_variant(L, 3, gv)) {
+            if (gl_has_property(n, String(key))) n->set(String(key), gv);
+            else n->set_meta(String("_glp_") + String(key), gv);
+        } else if (lua_istable(L, 3)) {
+            // UDim / UDim2 → usar Offset (p.ej. CornerRadius, Padding numéricos)
+            lua_getfield(L, 3, "Offset");
+            if (lua_isnumber(L, -1)) {
+                int off = (int)lua_tonumber(L, -1);
+                if (gl_has_property(n, String(key))) n->set(String(key), off);
+                else n->set_meta(String("_glp_") + String(key), off);
+            }
+            lua_pop(L, 1);
+        }
+    }
     return 0;
 }
 

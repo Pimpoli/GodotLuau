@@ -178,6 +178,10 @@ private:
 
         float r = Math::min(size.x, size.z) * 0.5f;
 
+        // Reset de rotación (el Cylinder la usa; el resto debe quedar recto)
+        mesh_instance->set_rotation(Vector3(0, 0, 0));
+        collision_shape->set_rotation(Vector3(0, 0, 0));
+
         switch (s) {
             case 1: { // Ball
                 sphere_mesh.instantiate();
@@ -189,16 +193,20 @@ private:
                 collision_shape->set_shape(sphere_shape);
                 break;
             }
-            case 2: { // Cylinder
+            case 2: { // Cylinder — en Roblox apunta al eje X (Godot lo hace en Y)
+                float cr = Math::min(size.y, size.z) * 0.5f;
                 cyl_mesh.instantiate();
-                cyl_mesh->set_top_radius(r);
-                cyl_mesh->set_bottom_radius(r);
-                cyl_mesh->set_height(size.y);
+                cyl_mesh->set_top_radius(cr);
+                cyl_mesh->set_bottom_radius(cr);
+                cyl_mesh->set_height(size.x);
                 mesh_instance->set_mesh(cyl_mesh);
                 cyl_shape.instantiate();
-                cyl_shape->set_radius(r);
-                cyl_shape->set_height(size.y);
+                cyl_shape->set_radius(cr);
+                cyl_shape->set_height(size.x);
                 collision_shape->set_shape(cyl_shape);
+                // Rotar 90° en Z para que el eje del cilindro quede en X
+                mesh_instance->set_rotation(Vector3(0, 0, 1.5707964f));
+                collision_shape->set_rotation(Vector3(0, 0, 1.5707964f));
                 break;
             }
             default: { // Block / Wedge / CornerWedge
