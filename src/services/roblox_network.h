@@ -46,6 +46,13 @@
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
+#include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/canvas_layer.hpp>
+#include <godot_cpp/classes/h_box_container.hpp>
+#include <godot_cpp/classes/sub_viewport.hpp>
+#include <godot_cpp/classes/sub_viewport_container.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/animatable_body3d.hpp>
 #include <godot_cpp/classes/animatable_body2d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
@@ -85,11 +92,12 @@ static inline void gl_mp_log(const String& s) {
     if (gl_debug_on()) UtilityFunctions::print(String("[GodotLuau MP] ") + s);
 }
 
-// ── Respaldo de sesion por res:// ─────────────────────────────────────────
+// ── Sesion de prueba por res:// ────────────────────────────────────────────
 // El plugin del editor escribe res://.gl_mp_session = "count|device|stamp".
 // res:// es EXACTAMENTE la misma carpeta para el editor y para el juego
 // lanzado desde el editor (corre sin pack), asi que este canal no puede
-// fallar por rutas. Es el plan B si "editor/run/main_run_args" no llega.
+// fallar por rutas. count>=2 => la ventana NATIVA es el SERVIDOR; count==1
+// el archivo solo transporta el dispositivo emulado.
 static inline bool gl_mp_session_read(int& out_count, String& out_device) {
     Ref<FileAccess> f = FileAccess::open("res://.gl_mp_session", FileAccess::READ);
     if (f.is_null()) return false;
@@ -99,7 +107,7 @@ static inline bool gl_mp_session_read(int& out_count, String& out_device) {
     int    cnt   = String(parts[0]).to_int();
     double stamp = String(parts[2]).to_float();
     double now   = Time::get_singleton()->get_unix_time_from_system();
-    if (cnt < 2) return false;
+    if (cnt < 1) return false;
     if (now - stamp > 21600.0) return false;   // 6 h: sesion de otro dia no cuenta
     out_count  = cnt;
     out_device = parts[1];
@@ -107,10 +115,8 @@ static inline bool gl_mp_session_read(int& out_count, String& out_device) {
 }
 
 // ¿Debe auto-crearse el NetworkService al arrancar el juego?
-//   · hay --glindex en los user args (host via main_run_args, clientes directo)
-//   · hay una sesion res:// fresca (plan B del host)
-//   · el juego corre desde el editor (para el toggle Server/Client View del
-//     panel Game, que funciona incluso con 1 jugador)
+// Siempre que el juego corra desde el editor (toggle de vista, dispositivo,
+// sesiones) o que lleve --glindex (ventanas cliente).
 static inline bool gl_mp_autostart_requested() {
     PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
     for (int i = 0; i < a.size(); i++) if (String(a[i]) == "--glindex") return true;
@@ -165,6 +171,59 @@ public:
     GLFreeCamera() {}
 };
 
+// ── Vista previa de VR: la pantalla se divide en dos "ojos" ─────────────────
+//  Dos SubViewports que comparten el mundo 3D del juego, cada uno con una
+//  camara desplazada ~3.2 cm (distancia interpupilar) que sigue a la camara
+//  activa del juego. Es una PREVIEW visual (sin lentes reales).
+class GLVRPreview : public Control {
+    GDCLASS(GLVRPreview, Control);
+    SubViewport* eye_l = nullptr;
+    SubViewport* eye_r = nullptr;
+    Camera3D*    cam_l = nullptr;
+    Camera3D*    cam_r = nullptr;
+protected:
+    static void _bind_methods() {}
+public:
+    void _ready() override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        set_anchors_preset(Control::PRESET_FULL_RECT);
+        HBoxContainer* hb = memnew(HBoxContainer);
+        hb->set_anchors_preset(Control::PRESET_FULL_RECT);
+        hb->add_theme_constant_override("separation", 4);
+        add_child(hb);
+        for (int i = 0; i < 2; i++) {
+            SubViewportContainer* svc = memnew(SubViewportContainer);
+            svc->set_stretch(true);
+            svc->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+            svc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+            hb->add_child(svc);
+            SubViewport* sv = memnew(SubViewport);
+            sv->set_update_mode(SubViewport::UPDATE_ALWAYS);
+            svc->add_child(sv);
+            Camera3D* c = memnew(Camera3D);
+            sv->add_child(c);
+            c->set_current(true);
+            if (i == 0) { eye_l = sv; cam_l = c; } else { eye_r = sv; cam_r = c; }
+        }
+        // Compartir el mundo 3D del juego (mismas luces, mismo escenario)
+        Ref<World3D> w = get_viewport()->find_world_3d();
+        if (w.is_valid()) { eye_l->set_world_3d(w); eye_r->set_world_3d(w); }
+    }
+    void _process(double) override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        Viewport* root = get_viewport();
+        Camera3D* main_cam = root ? root->get_camera_3d() : nullptr;
+        if (!main_cam || !cam_l || !cam_r) return;
+        Transform3D t = main_cam->get_global_transform();
+        Vector3 right = t.basis.get_column(0).normalized() * 0.032f;   // ~IPD/2
+        cam_l->set_global_transform(Transform3D(t.basis, t.origin - right));
+        cam_r->set_global_transform(Transform3D(t.basis, t.origin + right));
+        cam_l->set_fov(main_cam->get_fov());
+        cam_r->set_fov(main_cam->get_fov());
+    }
+    GLVRPreview() {}
+};
+
 class NetworkService : public Node {
     GDCLASS(NetworkService, Node);
 
@@ -201,6 +260,7 @@ class NetworkService : public Node {
     int          view_last_n = -1;  // último comando aplicado
     double       view_poll = 0.0;
     bool         view_watch = false;
+    bool         boot_server_view = false;   // la ventana del servidor arranca en cámara libre
 
     static Node* _find_by_class(Node* n, const char* cls) {
         if (!n) return nullptr;
@@ -230,30 +290,51 @@ class NetworkService : public Node {
         return w ? w : root;
     }
 
-    void _name_local_player(int idx) {
+    void _name_local_player(int display_num) {
         Node* p = _local_player();
         if (p) {
             // Solo DisplayName (NO renombrar el nodo: el nombre "LocalPlayer" lo
             // usa el fallback de workspace.CurrentCamera; renombrarlo lo dejaría nil).
-            p->set("DisplayName", String("Player") + String::num_int64(idx));
-            p->set_meta("PlayerIndex", idx);
+            p->set("DisplayName", String("Player") + String::num_int64(display_num));
+            p->set_meta("PlayerIndex", display_num);
         }
+    }
+    // La ventana del SERVIDOR no tiene personaje (como en Roblox Studio):
+    // el server observa con la camara libre; los jugadores son los clientes.
+    void _remove_local_player() {
+        Node* p = _local_player();
+        if (p) { gl_mp_log("ventana de servidor: sin personaje (solo observa)"); p->queue_free(); }
     }
     void _apply_device() {
         if (!is_inside_tree()) return;
         Window* w = get_tree()->get_root();
-        if (device == "Mobile" && w) w->set_size(Vector2i(400, 820));   // aspecto de teléfono
-        // Console/VR: sin efecto visual aún; el juego lee el modo con net:GetDevice().
+        if (!w) return;
+        if (device == "Mobile") {
+            // Telefono: ventana vertical (el joystick tactil lo pone RobloxPlayer)
+            w->set_size(Vector2i(400, 820));
+        } else if (device == "Console") {
+            // Consola: pantalla 16:9 tipo TV; se juega con gamepad (ya soportado)
+            w->set_size(Vector2i(1280, 720));
+        } else if (device == "VR") {
+            // VR: vista previa con dos "ojos" lado a lado
+            w->set_size(Vector2i(1220, 640));
+            CanvasLayer* cl = memnew(CanvasLayer);
+            cl->set_name("GL_VRPreview");
+            cl->set_layer(90);
+            add_child(cl);
+            GLVRPreview* vr = memnew(GLVRPreview);
+            cl->add_child(vr);
+        }
     }
-    // Acomoda las N ventanas en mosaico con título Player1..N. Antes todas
-    // abrían en la MISMA posición (apiladas) y parecían menos ventanas.
+    // Título + mosaico. Server (idx 1) = "Server View" (suele estar embebida en
+    // el editor); clientes (idx 2..N+1) = "Player1..N" repartidos en pantalla.
+    // Antes todas las ventanas abrían apiladas y parecían menos.
     void _apply_window_layout(int idx, int cnt) {
         if (!is_inside_tree()) return;
         Window* w = get_tree()->get_root();
         if (!w) return;
-        String title = String("Player") + String::num_int64(idx);
-        if (idx == 1) title += " (Server)";
-        w->set_title(title);
+        if (idx == 1) { w->set_title("Server View - GodotLuau"); return; }
+        w->set_title(String("Player") + String::num_int64(idx - 1));
         DisplayServer* ds = DisplayServer::get_singleton();
         if (!ds) return;
         Rect2i ur = ds->screen_get_usable_rect();
@@ -261,10 +342,10 @@ class NetworkService : public Node {
         int cols = (cnt <= 2) ? cnt : ((cnt <= 4) ? 2 : 3);
         int rows = (cnt + cols - 1) / cols;
         Vector2i cell(ur.size.x / cols, ur.size.y / rows);
-        int i0 = Math::clamp(idx - 1, 0, cnt - 1);
+        int i0 = Math::clamp(idx - 2, 0, cnt - 1);   // celda del cliente
         Vector2i pos = ur.position + Vector2i((i0 % cols) * cell.x, (i0 / cols) * cell.y);
-        if (device == "Mobile") {
-            // Teléfono: mantiene su tamaño, solo se posiciona en su celda
+        if (device == "Mobile" || device == "Console" || device == "VR") {
+            // Estos modos fijan su propio tamano de ventana; solo se posicionan
             w->set_position(pos + Vector2i(24, 40));
         } else {
             w->set_size(Vector2i(Math::max(cell.x - 24, 480), Math::max(cell.y - 56, 320)));
@@ -285,8 +366,15 @@ class NetworkService : public Node {
         if (parts.size() < 2) return;
         int n = String(parts[1]).to_int();
         if (n == view_last_n) return;
-        if (player_index > 1) { view_last_n = n; return; }   // solo host / un jugador
+        if (player_index > 1) { view_last_n = n; return; }   // clientes: ignoran
         bool want_server = (String(parts[0]) == "server");
+        // La ventana del SERVIDOR de una prueba multijugador no puede volverse
+        // cliente (no tiene personaje) — como en Roblox Studio.
+        if (!want_server && player_index == 1 && mode == 1) {
+            gl_mp_log("la ventana del servidor siempre queda en Server View");
+            view_last_n = n;
+            return;
+        }
         if (_set_view(want_server)) view_last_n = n;   // si aún no hay cámara, reintenta
     }
 
@@ -480,22 +568,23 @@ class NetworkService : public Node {
     }
     void _broadcast_local() {
         Node* lp = _local_player();
-        if (!lp) return;
+        if (!lp) return;   // la ventana del servidor no tiene personaje: no difunde
         bool server = is_server();
+        int display_num = (player_index >= 2) ? player_index - 1 : player_index;   // glindex 2..N+1 → Player1..N
         if (is_2d) {
             Node2D* n = Object::cast_to<Node2D>(lp);
             if (!n) return;
             Vector2 p = n->get_global_position();
             float   r = n->get_global_rotation();
-            if (server) rpc("_recv_state2d", 1, p, r, player_index);
-            else        rpc_id(1, "_relay_state2d", p, r, player_index);
+            if (server) rpc("_recv_state2d", 1, p, r, display_num);
+            else        rpc_id(1, "_relay_state2d", p, r, display_num);
         } else {
             Node3D* n = Object::cast_to<Node3D>(lp);
             if (!n) return;
             Vector3 p = n->get_global_position();
             float   y = n->get_rotation().y;
-            if (server) rpc("_recv_state", 1, p, y, player_index);
-            else        rpc_id(1, "_relay_state", p, y, player_index);
+            if (server) rpc("_recv_state", 1, p, y, display_num);
+            else        rpc_id(1, "_relay_state", p, y, display_num);
         }
     }
 
@@ -573,12 +662,18 @@ public:
         if (server) {
             Viewport* vp = get_viewport();
             Camera3D* cur = vp ? vp->get_camera_3d() : nullptr;
-            if (!cur) { gl_mp_log("Server View: aun no hay camara 3D (se reintenta)"); return false; }
-            prevcam_id = (uint64_t)cur->get_instance_id();
+            prevcam_id = cur ? (uint64_t)cur->get_instance_id() : 0;
             GLFreeCamera* fc = memnew(GLFreeCamera);
             fc->set_name("GL_ServerFreeCam");
             get_tree()->get_root()->add_child(fc);
-            fc->set_global_transform(cur->get_global_transform());
+            if (cur) {
+                fc->set_global_transform(cur->get_global_transform());
+            } else {
+                // Sin camara previa (ventana del servidor sin personaje):
+                // vista aerea del spawn, mirando al centro del mapa
+                fc->set_global_position(Vector3(0.0f, 14.0f, 26.0f));
+                fc->set_rotation(Vector3(-0.45f, 0.0f, 0.0f));
+            }
             fc->make_current();
             freecam_id = (uint64_t)fc->get_instance_id();
             gl_freecam().active = true;
@@ -617,7 +712,10 @@ public:
     }
 
     void _process(double dt) override {
-        // 0. Toggle Server/Client View pedido desde el panel Game del editor
+        // 0a. La ventana del servidor arranca en camara libre (reintenta hasta
+        //     que exista una camara que reemplazar)
+        if (boot_server_view && _set_view(true)) boot_server_view = false;
+        // 0b. Toggle Server/Client View pedido desde el panel Game del editor
         if (view_watch) _poll_view_cmd(dt);
         // 1. Reintentos de conexión del cliente (hasta que el host abra el puerto)
         if (retry_left > 0) {
@@ -648,7 +746,10 @@ public:
     }
 
     // Resuelve el rol de esta instancia y auto-conecta el multijugador local.
-    // Prioridad: user args (--glindex...) → sesion res:// (plan B del host).
+    //   · ventana NATIVA (sin --glindex) + sesion res:// con count>=2  → SERVIDOR
+    //     (sin personaje, camara libre — como la vista de servidor de Roblox)
+    //   · --glindex 2..N+1 → cliente PlayerN (glindex-1)
+    //   · sin nada → un jugador normal
     void _auto_init() {
         PackedStringArray args = OS::get_singleton()->get_cmdline_user_args();
         int idx = 0, cnt = 1;
@@ -660,11 +761,12 @@ public:
         }
         String role_src = "user args";
         if (idx == 0) {
-            // Sin args: ¿hay sesion multijugador escrita por el editor? → HOST
+            // Ventana nativa: la sesion res:// dice si hay prueba multijugador
+            // (count>=2 → esta ventana es el SERVIDOR) y el dispositivo emulado.
             int scnt; String sdev;
             if (gl_mp_session_read(scnt, sdev)) {
-                idx = 1; cnt = scnt; device = sdev;
-                role_src = "res://.gl_mp_session (plan B)";
+                device = sdev;
+                if (scnt >= 2) { idx = 1; cnt = scnt; role_src = "res://.gl_mp_session"; }
             }
         }
         // Diagnostico (solo Modo Debug): con esto se ve EXACTAMENTE que llego
@@ -675,23 +777,29 @@ public:
         if (idx >= 1 && cnt >= 2) {
             bool as_client = (idx != 1);
             if (idx == 1) {
-                // Eleccion de host por puerto: si otra instancia ya abrio el 25575,
-                // esta se une como cliente (robusto ante un doble anfitrion).
-                if (!start_server(25575, cnt)) { as_client = true; gl_mp_log("puerto 25575 ocupado -> me uno como cliente"); }
+                // Eleccion por puerto: si otra instancia ya abrio el 25575,
+                // esta se une como cliente (robusto ante un doble servidor).
+                if (!start_server(25575, cnt + 2)) { as_client = true; gl_mp_log("puerto 25575 ocupado -> me uno como cliente"); }
             }
-            if (as_client) { connect_server("127.0.0.1", 25575); retry_left = 20; }
-            gl_mp_log(as_client
-                ? (String("cliente Player") + String::num_int64(idx) + " conectando a 127.0.0.1:25575...")
-                : (String("HOST Player1 escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, dispositivo " + device + ")"));
+            if (as_client) {
+                connect_server("127.0.0.1", 25575);
+                retry_left = 20;
+                _name_local_player(idx - 1);   // glindex 2..N+1 → Player1..PlayerN
+                gl_mp_log(String("cliente Player") + String::num_int64(idx - 1) + " conectando a 127.0.0.1:25575...");
+            } else {
+                // VENTANA DEL SERVIDOR: observa con camara libre, sin personaje
+                _remove_local_player();
+                boot_server_view = true;   // la camara del jugador puede tardar un frame
+                gl_mp_log(String("SERVIDOR escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, dispositivo " + device + ")");
+            }
             _apply_window_layout(idx, cnt);
         } else {
             gl_mp_log("modo un jugador");
         }
         // El watcher del toggle Server/Client corre siempre que el juego se
-        // lanzo desde el editor (tambien con 1 jugador, como pide Roblox Studio).
+        // lanzo desde el editor (tambien con 1 jugador, como Roblox Studio).
         view_watch = OS::get_singleton()->has_feature("editor");
         set_process(true);
-        if (idx >= 1) _name_local_player(idx);
         _apply_device();
     }
     int    get_player_index() const { return player_index; }

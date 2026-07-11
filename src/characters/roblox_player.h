@@ -15,6 +15,9 @@
 #include <godot_cpp/classes/input_event_screen_drag.hpp>
 #include <godot_cpp/classes/canvas_layer.hpp>
 #include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/panel.hpp>
+#include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/math.hpp>
@@ -66,6 +69,14 @@ private:
     Vector2      move_origin;          // punto donde se apoyo el dedo del joystick
     int          look_touch  = -1;     // indice del dedo que rota la camara
     float        touch_look_sensitivity = 0.0038f;  // v1.8.3: bajado de 0.005
+    // Emulacion de movil desde el editor (device "Mobile" en la barra Players):
+    // los controles tactiles aparecen aunque no haya pantalla tactil y el MOUSE
+    // hace de dedo (click izquierdo = tocar).
+    bool         mobile_emu  = false;
+    bool         mouse_move_drag = false;   // mouse "tocando" el joystick
+    bool         mouse_look_drag = false;   // mouse "tocando" la zona de mirar
+    Panel*       joy_base    = nullptr;     // joystick visual (base)
+    Panel*       joy_knob    = nullptr;     // joystick visual (perilla)
 
     // ── Roblox-style player properties ─────────────────────────────
     //// ── Propiedades de jugador tipo Roblox ─────────────────────────
@@ -192,11 +203,13 @@ public:
         camera->set_current(true);
         spring_arm->add_child(camera);
 
-        // ── Controles tactiles en pantalla (solo si hay pantalla tactil) ──
-        // Como el TouchGui de Roblox: aparecen solos en movil. Joystick =
-        // arrastrar en la mitad izquierda; mirar = arrastrar en la derecha;
-        // boton de salto abajo a la derecha.
-        if (DisplayServer::get_singleton()->is_touchscreen_available()) {
+        // ── Controles tactiles en pantalla ─────────────────────────────
+        // Como el TouchGui de Roblox: aparecen solos en movil REAL (pantalla
+        // tactil) o cuando el editor emula "Mobile" (barra Players). En la
+        // emulacion el mouse hace de dedo. Joystick = mitad izquierda;
+        // mirar = arrastrar en la derecha; salto abajo a la derecha.
+        mobile_emu = (gl_emulated_device() == String("Mobile"));
+        if (DisplayServer::get_singleton()->is_touchscreen_available() || mobile_emu) {
             gl_mobile().active = true;
             touch_ui = memnew(CanvasLayer);
             touch_ui->set_name("TouchControls");
@@ -215,9 +228,47 @@ public:
             jump_btn->set_offset(SIDE_RIGHT,   -40.0f);
             jump_btn->set_offset(SIDE_BOTTOM,  -40.0f);
             touch_ui->add_child(jump_btn);
+
+            // Joystick VISUAL (base + perilla) abajo-izquierda, como Roblox.
+            // Es informativo: muestra hacia donde estas moviendo el "dedo".
+            joy_base = memnew(Panel);
+            joy_base->set_name("JoystickBase");
+            _style_circle(joy_base, Color(1, 1, 1, 0.10f));
+            joy_base->set_anchor(SIDE_TOP, 1.0f); joy_base->set_anchor(SIDE_BOTTOM, 1.0f);
+            joy_base->set_offset(SIDE_LEFT, 40.0f);  joy_base->set_offset(SIDE_RIGHT, 200.0f);
+            joy_base->set_offset(SIDE_TOP, -220.0f); joy_base->set_offset(SIDE_BOTTOM, -60.0f);
+            joy_base->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+            touch_ui->add_child(joy_base);
+            joy_knob = memnew(Panel);
+            joy_knob->set_name("JoystickKnob");
+            _style_circle(joy_knob, Color(1, 1, 1, 0.28f));
+            joy_knob->set_size(Vector2(64, 64));
+            joy_knob->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+            joy_base->add_child(joy_knob);
+            _center_knob();
         } else {
             gl_mobile().active = false;
         }
+    }
+
+    // Circulo de UI (StyleBoxFlat con esquinas al maximo)
+    void _style_circle(Panel* p, Color c) {
+        Ref<StyleBoxFlat> sb; sb.instantiate();
+        sb->set_bg_color(c);
+        sb->set_corner_radius_all(999);
+        p->add_theme_stylebox_override("panel", sb);
+    }
+    void _center_knob() {
+        if (!joy_base || !joy_knob) return;
+        joy_knob->set_position(joy_base->get_size() * 0.5f - joy_knob->get_size() * 0.5f);
+    }
+    // Refleja gl_mobile().move en la perilla del joystick visual
+    void _update_knob() {
+        if (!joy_base || !joy_knob) return;
+        Vector2 v = gl_mobile().move;   // x derecha, y adelante
+        Vector2 center = joy_base->get_size() * 0.5f - joy_knob->get_size() * 0.5f;
+        float r = joy_base->get_size().x * 0.5f - joy_knob->get_size().x * 0.5f;
+        joy_knob->set_position(center + Vector2(v.x, -v.y) * r);
     }
 
     // ── Input: Mouse ───────────────────────────────────────────────
@@ -231,6 +282,43 @@ public:
 
         // ── Tactil: joystick de movimiento (mitad izquierda) + mirar (derecha) ─
         Vector2 screen = get_viewport()->get_visible_rect().size;
+
+        // ── Emulacion de movil: el MOUSE hace de dedo (click izquierdo) ────
+        if (mobile_emu) {
+            Ref<InputEventMouseButton> emb = p_event;
+            if (emb.is_valid() && emb->get_button_index() == MOUSE_BUTTON_LEFT) {
+                Vector2 p = emb->get_position();
+                if (emb->is_pressed()) {
+                    bool in_jump = (p.x > screen.x - 170.0f) && (p.y > screen.y - 170.0f);
+                    if (p.x < screen.x * 0.5f) { mouse_move_drag = true; move_origin = p; }
+                    else if (!in_jump)          mouse_look_drag = true;
+                } else {
+                    mouse_move_drag = false; mouse_look_drag = false;
+                    gl_mobile().move = Vector2();
+                    _center_knob();
+                }
+                return;
+            }
+            Ref<InputEventMouseMotion> emm = p_event;
+            if (emm.is_valid() && (mouse_move_drag || mouse_look_drag)) {
+                if (mouse_move_drag) {
+                    Vector2 d = emm->get_position() - move_origin;
+                    Vector2 v = d / 110.0f;
+                    if (v.length() > 1.0f) v = v.normalized();
+                    gl_mobile().move = Vector2(v.x, -v.y);
+                } else if (mouse_look_drag && pivot_h && pivot_v) {
+                    Vector2 rel = emm->get_relative();
+                    Vector3 rh = pivot_h->get_rotation();
+                    rh.y -= rel.x * touch_look_sensitivity;
+                    pivot_h->set_rotation(rh);
+                    Vector3 rv = pivot_v->get_rotation();
+                    rv.x = Math::clamp(rv.x - rel.y * touch_look_sensitivity, -1.4f, 1.4f);
+                    pivot_v->set_rotation(rv);
+                }
+                return;
+            }
+        }
+
         Ref<InputEventScreenTouch> tt = p_event;
         if (tt.is_valid()) {
             Vector2 p = tt->get_position();
@@ -337,6 +425,8 @@ public:
         }
         // Boton de salto tactil → estado compartido que lee el Humanoid
         if (jump_btn) gl_mobile().jump = jump_btn->is_pressed();
+        // Joystick visual: la perilla sigue al movimiento actual
+        _update_knob();
 
         // Pivot height (at eye level)
         //// Altura del pivot (a la altura de los ojos)

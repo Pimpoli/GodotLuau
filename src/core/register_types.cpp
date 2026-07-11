@@ -110,6 +110,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<TextChatService>();
         ClassDB::register_class<NetworkService>();
         ClassDB::register_class<GLFreeCamera>();   // cámara libre de la Vista de Servidor
+        ClassDB::register_class<GLVRPreview>();    // vista previa VR (dos ojos)
 
         // BodyMovers — equivalent to Roblox's BodyMovers
         //// BodyMovers — equivalentes a los BodyMovers de Roblox

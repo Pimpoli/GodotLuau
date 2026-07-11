@@ -18,8 +18,12 @@
 // ════════════════════════════════════════════════════════════════════
 
 #include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/vector2.hpp>
+#include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -50,6 +54,24 @@ struct GLFreecamState {
     bool active = false;
 };
 inline GLFreecamState& gl_freecam() { static GLFreecamState s; return s; }
+
+// ── Dispositivo emulado (PC / Mobile / Console / VR) ─────────────────────────
+//  Elegido en la barra "Players" del editor. Llega por --gldevice (ventanas
+//  cliente) o por res://.gl_mp_session "count|device|stamp" (ventana nativa).
+//  Lo leen RobloxPlayer (controles tactiles en Mobile) y NetworkService
+//  (tamano de ventana, vista VR, etc.).
+static inline godot::String gl_emulated_device() {
+    godot::PackedStringArray a = godot::OS::get_singleton()->get_cmdline_user_args();
+    for (int i = 0; i < a.size(); i++)
+        if (godot::String(a[i]) == "--gldevice" && i + 1 < a.size()) return a[i + 1];
+    godot::Ref<godot::FileAccess> f = godot::FileAccess::open("res://.gl_mp_session", godot::FileAccess::READ);
+    if (f.is_valid()) {
+        godot::PackedStringArray parts = godot::String(f->get_as_text()).strip_edges().split("|");
+        f->close();
+        if (parts.size() >= 2) return parts[1];
+    }
+    return godot::String("PC");
+}
 
 // ── Wrapper de instancia: ObjectID en lugar de Node* crudo ───────────────────
 struct GodotObjectWrapper {
