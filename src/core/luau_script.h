@@ -1055,7 +1055,12 @@ public:
     void iniciar_corrutina() {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (get_class() == "ModuleScript") return;
-        if (!script_enabled) return;   // Enabled=false (como Roblox): no ejecutar
+        if (!script_enabled) {
+            // Enabled=false (como Roblox): no ejecutar. Aviso en Modo Debug para
+            // que "mi script no corre y no dice nada" se diagnostique solo.
+            GL_DEBUG_PRINT("[GodotLuau] Script '", get_name(), "' NO ejecutado: Enabled = false.");
+            return;
+        }
         if (script_started) return;    // ya corrio (evita doble arranque al re-habilitar)
         script_started = true;
 
