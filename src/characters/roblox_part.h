@@ -51,6 +51,7 @@ private:
     bool    cast_shadow   = true;
     bool    can_touch     = true;
     bool    can_query     = true;
+    bool    touch_monitoring = false;  // contact monitor activado bajo demanda
     bool    locked        = false;
     bool    massless      = false;
     float   reflectance   = 0.0f;
@@ -261,10 +262,13 @@ private:
         if (box_shape.is_valid())   box_shape->set_size(size);
         if (sphere_mesh.is_valid()) { sphere_mesh->set_radius(r); sphere_mesh->set_height(r * 2.0f); }
         if (sphere_shape.is_valid()) sphere_shape->set_radius(r);
+        // Cylinder: misma convencion que _apply_shape_internal (eje X de Roblox:
+        // radio por Y/Z, altura por X) — antes usaba Y y el resize lo deformaba.
+        float cr = Math::min(size.y, size.z) * 0.5f;
         if (cyl_mesh.is_valid()) {
-            cyl_mesh->set_top_radius(r); cyl_mesh->set_bottom_radius(r); cyl_mesh->set_height(size.y);
+            cyl_mesh->set_top_radius(cr); cyl_mesh->set_bottom_radius(cr); cyl_mesh->set_height(size.x);
         }
-        if (cyl_shape.is_valid()) { cyl_shape->set_radius(r); cyl_shape->set_height(size.y); }
+        if (cyl_shape.is_valid()) { cyl_shape->set_radius(cr); cyl_shape->set_height(size.x); }
         _update_mass_from_density();
     }
 
@@ -433,20 +437,33 @@ protected:
                 _update_mass_from_density();
 
                 set_freeze_enabled(anchored);
-                set_contact_monitor(true);
-                set_max_contacts_reported(10);
+                // CanCollide seteado ANTES del Parent (patron Roblox: configurar
+                // todo y parentear al final) debe aplicarse al crear la shape.
+                collision_shape->set_disabled(!can_collide);
 
                 if (!cast_shadow)
                     mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 
-                connect("body_entered", Callable(this, "_on_body_entered"));
-                connect("body_exited",  Callable(this, "_on_body_exited"));
+                // El contact monitor NO se activa aqui: con miles de parts el
+                // monitoreo de contactos de Jolt es carisimo. Se activa recien
+                // cuando alguien conecta Touched/TouchEnded (_ensure_touch_monitoring).
             }
         }
     }
 
 public:
     RobloxPart() {}
+
+    // Activa el monitoreo de contactos SOLO cuando el juego lo necesita
+    // (alguien conecto Touched/TouchEnded). Idempotente.
+    void _ensure_touch_monitoring() {
+        if (touch_monitoring) return;
+        touch_monitoring = true;
+        set_contact_monitor(true);
+        set_max_contacts_reported(10);
+        connect("body_entered", Callable(this, "_on_body_entered"));
+        connect("body_exited",  Callable(this, "_on_body_exited"));
+    }
 
     void _on_body_entered(Node* body) {
         if (body && body != this && can_touch) emit_signal("Touched", body);

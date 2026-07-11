@@ -1678,6 +1678,10 @@ static int godot_object_index(lua_State* L) {
                     int ref = lua_ref(L, -1);
                     int64_t ptr_L = (int64_t)gl_main_of(L);
                     if (target && target->has_signal(StringName(sig))) {
+                        // El contact monitor es caro con miles de parts: se
+                        // enciende recien aqui, cuando el juego usa Touched.
+                        if (RobloxPart* rp = Object::cast_to<RobloxPart>(target))
+                            rp->_ensure_touch_monitoring();
                         target->connect(StringName(sig),
                             Callable(target, "_on_luau_part_touched").bind(ref, ptr_L));
                     }

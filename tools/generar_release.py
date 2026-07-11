@@ -18,6 +18,7 @@ NOMBRE_ZIP = "GodotLuau.zip"
 ARCHIVOS_SUELTOS = [
     "godot_luau.gdextension",
     "godot_luau.gdextension.uid",
+    "LICENSE",
 ]
 CARPETAS = [
     "addons/GodotLuauUpdater",

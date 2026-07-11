@@ -1,0 +1,45 @@
+name: Build Linux binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "SConstruct"
+      - ".github/workflows/build-linux.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # 22.04: glibc 2.35 — los binarios corren tambien en distros viejas
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install SCons
+        run: pip install scons
+
+      - name: Build template_debug
+        run: scons platform=linux target=template_debug -j4
+
+      - name: Build template_release
+        run: scons platform=linux target=template_release -j4
+
+      - name: Publish binaries (rolling release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bin-linux-latest
+          name: "Linux binaries (auto-build)"
+          body: >
+            Binarios de Linux compilados automaticamente del ultimo commit de main.
+            Se incluyen dentro de GodotLuau.zip en cada release; este tag existe
+            solo como transporte del build.
+          prerelease: true
+          files: |
+            GodotLuau/bin/godot_luau.linux.template_debug.x86_64.so
+            GodotLuau/bin/godot_luau.linux.template_release.x86_64.so

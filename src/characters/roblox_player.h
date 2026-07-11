@@ -21,6 +21,8 @@
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
@@ -61,7 +63,10 @@ private:
 
     // ── Fade del personaje al acercar la camara (shader de disolucion) ──
     Ref<ShaderMaterial> fade_mat;
-    bool fade_setup_done = false;
+    bool  fade_setup_done = false;
+    bool  fade_applied    = false;     // override actualmente puesto en los meshes
+    float last_dissolve   = -1.0f;     // cache: no marcar el material dirty cada frame
+    std::vector<uint64_t> fade_meshes; // ObjectIDs de los MeshInstance3D del Character
 
     void _setup_fade() {
         if (fade_setup_done) return;
@@ -74,7 +79,14 @@ private:
         if (sh.is_null()) { fade_setup_done = true; return; }
         fade_mat.instantiate();
         fade_mat->set_shader(sh);
-        // Recorrer las mallas del personaje: tomar su textura y aplicar el shader
+        // El sampler NUNCA queda vacio: un descriptor set incompleto en
+        // D3D12/Vulkan produce "Uniforms were never supplied for set ..."
+        // (godot #120417 / #65732). Blanco 1x1 = neutro si no hay textura.
+        Ref<Image> white = Image::create(1, 1, false, Image::FORMAT_RGBA8);
+        white->fill(Color(1, 1, 1, 1));
+        fade_mat->set_shader_parameter("albedo_tex", ImageTexture::create_from_image(white));
+        // Recorrer las mallas del personaje: tomar su textura y registrarlas.
+        // El override se pone recien cuando el fade se activa (_update_fade).
         bool any = false;
         _apply_fade_recursive(character, any);
         if (!any) fade_mat = Ref<ShaderMaterial>();
@@ -88,10 +100,27 @@ private:
                 Ref<Texture2D> tex = src->get_texture(StandardMaterial3D::TEXTURE_ALBEDO);
                 if (tex.is_valid()) fade_mat->set_shader_parameter("albedo_tex", tex);
             }
-            mi->set_material_override(fade_mat);
+            fade_meshes.push_back((uint64_t)mi->get_instance_id());
             any = true;
         }
         for (int i = 0; i < n->get_child_count(); i++) _apply_fade_recursive(n->get_child(i), any);
+    }
+    // Aplica/actualiza el dissolve SOLO cuando cambia. Con la camara lejos
+    // (el caso normal) el override ni existe: el personaje se dibuja con su
+    // material estandar y el pipeline del shader custom no entra en juego.
+    void _update_fade(float d) {
+        if (Math::abs(d - last_dissolve) < 0.002f) return;
+        last_dissolve = d;
+        bool want = d > 0.001f;
+        if (want != fade_applied) {
+            fade_applied = want;
+            for (uint64_t id : fade_meshes) {
+                Object* o = ObjectDB::get_instance(id);
+                if (MeshInstance3D* mi = Object::cast_to<MeshInstance3D>(o))
+                    mi->set_material_override(want ? Ref<Material>(fade_mat) : Ref<Material>());
+            }
+        }
+        if (want) fade_mat->set_shader_parameter("dissolve", d);
     }
 
     // ── Camera mode ────────────────────────────────────────────────
@@ -536,7 +565,7 @@ public:
         if (fade_mat.is_valid()) {
             // De 2.5 hacia 0.5 de distancia el personaje se va disolviendo
             float d = 1.0f - Math::clamp((current_len - 0.5f) / 2.0f, 0.0f, 1.0f);
-            fade_mat->set_shader_parameter("dissolve", d);
+            _update_fade(d);
         }
         // Fallback capsula: ocultar el mesh en primera persona
         MeshInstance3D* mesh = Object::cast_to<MeshInstance3D>(get_node_or_null("Mesh"));

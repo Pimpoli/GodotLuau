@@ -37,6 +37,7 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
@@ -62,6 +63,30 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
     // ── SCENE level: register all nodes and services
     //// ── Nivel SCENE: registrar todos los nodos y servicios
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+
+        // Limites de Jolt Physics (respaldo para juegos exportados; en el
+        // editor el plugin ya los persiste en project.godot). Godot limita
+        // Jolt a 10240 cuerpos: un mundo tipo Roblox lo supera y las Parts
+        // extra quedan sin colision. Jolt cachea estos valores al arrancar y
+        // solo los relee con la señal settings_changed (diferida), asi que
+        // ademas de setearlos la emitimos a mano ANTES de que exista el
+        // primer espacio fisico (este init corre antes del SceneTree).
+        if (ProjectSettings* ps = ProjectSettings::get_singleton()) {
+            struct { const char* key; int64_t val; } limits[] = {
+                { "physics/jolt_physics_3d/limits/max_bodies",              262144 },
+                { "physics/jolt_physics_3d/limits/max_body_pairs",          131072 },
+                { "physics/jolt_physics_3d/limits/max_contact_constraints",  40960 },
+                { "physics/jolt_physics_3d/limits/temporary_memory_buffer_size", 128 },
+            };
+            bool changed = false;
+            for (auto& l : limits) {
+                if ((int64_t)ps->get_setting(l.key, 0) < l.val) {
+                    ps->set_setting(l.key, l.val);
+                    changed = true;
+                }
+            }
+            if (changed) ps->emit_signal("settings_changed");
+        }
 
         // Scripts (color in editor: Blue / Naranja / Purple)
         //// Scripts (color en el editor: Azul / Naranja / Morado)

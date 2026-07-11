@@ -332,6 +332,7 @@ func _enter_tree() -> void:
 	_sync_plugin_cfg()
 	_cleanup_old_dlls()
 	_register_settings()
+	_ensure_physics_limits()
 	_apply_autocomplete_speed()
 	_build_settings_panel()
 	_check_watermark()
@@ -1123,6 +1124,26 @@ func _register_settings() -> void:
 		"URL to download a custom AI model JSON from.")
 	_add_str("godot_luau/ai_model_selected",           "mini",
 		"Selected AI model id for AI Autocomplete (mini, plus, custom...).")
+
+# Godot limita Jolt Physics a 10240 cuerpos por defecto: un mundo tipo Roblox
+# (voxels, tycoons) lo revienta y las Parts extra quedan SIN colision aunque se
+# rendericen. Subimos los limites en project.godot (Jolt los lee al arrancar el
+# juego). Solo se sube, nunca se baja lo que el usuario haya puesto.
+func _ensure_physics_limits() -> void:
+	var limits := {
+		"physics/jolt_physics_3d/limits/max_bodies": 262144,
+		"physics/jolt_physics_3d/limits/max_body_pairs": 131072,
+		"physics/jolt_physics_3d/limits/max_contact_constraints": 40960,
+		"physics/jolt_physics_3d/limits/temporary_memory_buffer_size": 128,
+	}
+	var changed := false
+	for key in limits:
+		var cur := int(ProjectSettings.get_setting(key, 0))
+		if cur < limits[key]:
+			ProjectSettings.set_setting(key, limits[key])
+			changed = true
+	if changed:
+		ProjectSettings.save()
 
 func _add_bool(key: String, val: bool, hint: String) -> void:
 	if not ProjectSettings.has_setting(key): ProjectSettings.set_setting(key, val)
