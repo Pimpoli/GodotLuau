@@ -806,20 +806,20 @@ public:
     // Vincula el nodo con su archivo .lua para poder borrarlo/restaurarlo junto al nodo.
     String script_id;
 
-    // Disabled (como Roblox): con true el script NO se ejecuta. Si en runtime
-    // se pasa a false y todavia no habia corrido, se ejecuta en ese momento.
-    bool script_disabled = false;
-    bool script_started  = false;
+    // Enabled (como Roblox): true por defecto; con false el script NO se
+    // ejecuta. Si en runtime vuelve a true y no habia corrido, corre entonces.
+    bool script_enabled = true;
+    bool script_started = false;
 
 public:
-    void set_disabled(bool b) {
-        script_disabled = b;
-        if (!script_disabled && !script_started && is_inside_tree()
+    void set_enabled(bool b) {
+        script_enabled = b;
+        if (script_enabled && !script_started && is_inside_tree()
             && !Engine::get_singleton()->is_editor_hint()) {
             call_deferred("iniciar_corrutina");
         }
     }
-    bool get_disabled() const { return script_disabled; }
+    bool get_enabled() const { return script_enabled; }
 
 protected:
     static void _bind_methods() {
@@ -828,15 +828,15 @@ protected:
         ClassDB::bind_method(D_METHOD("iniciar_corrutina"), &ScriptNodeBase::iniciar_corrutina);
         ClassDB::bind_method(D_METHOD("set_script_id", "id"), &ScriptNodeBase::set_script_id);
         ClassDB::bind_method(D_METHOD("get_script_id"), &ScriptNodeBase::get_script_id);
-        ClassDB::bind_method(D_METHOD("set_disabled", "b"), &ScriptNodeBase::set_disabled);
-        ClassDB::bind_method(D_METHOD("get_disabled"), &ScriptNodeBase::get_disabled);
+        ClassDB::bind_method(D_METHOD("set_enabled", "b"), &ScriptNodeBase::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"), &ScriptNodeBase::get_enabled);
         // Relay de ChildAdded/ChildRemoved: Godot lo invoca con el hijo + el ref guardado.
         ClassDB::bind_method(D_METHOD("_gl_child_event", "child", "ref"), &ScriptNodeBase::_gl_child_event);
 
         ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "codigo_luau", PROPERTY_HINT_RESOURCE_TYPE, "LuauScript"),
                      "set_codigo_luau", "get_codigo_luau");
-        // Como en Roblox Studio: marca Disabled y el script no corre
-        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Disabled"), "set_disabled", "get_disabled");
+        // Como en Roblox Studio: Enabled true por defecto; desmarcado no corre
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Enabled"), "set_enabled", "get_enabled");
         // Visible en el inspector pero NO editable por el usuario
         ADD_PROPERTY(PropertyInfo(Variant::STRING, "script_id", PROPERTY_HINT_NONE, "",
                      PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY),
@@ -1055,7 +1055,7 @@ public:
     void iniciar_corrutina() {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (get_class() == "ModuleScript") return;
-        if (script_disabled) return;   // Disabled (como Roblox): no ejecutar
+        if (!script_enabled) return;   // Enabled=false (como Roblox): no ejecutar
         if (script_started) return;    // ya corrio (evita doble arranque al re-habilitar)
         script_started = true;
 

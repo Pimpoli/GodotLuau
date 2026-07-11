@@ -340,6 +340,36 @@ func _enter_tree() -> void:
 	_purge_old_trash()
 	_build_mp_toolbar()
 	_setup_luau_highlighting()
+	_inspector_plugin = ScriptEnabledInspector.new()
+	add_inspector_plugin(_inspector_plugin)
+
+# ── Propiedad "Enabled" de los scripts con texto True/False (como Roblox) ────
+var _inspector_plugin: EditorInspectorPlugin = null
+
+class EnabledProperty extends EditorProperty:
+	var check := CheckBox.new()
+	func _init() -> void:
+		check.text = "True"
+		add_child(check)
+		add_focusable(check)
+		check.toggled.connect(_on_toggled)
+	func _on_toggled(v: bool) -> void:
+		check.text = "True" if v else "False"
+		emit_changed("Enabled", v)
+	func _update_property() -> void:
+		var v: bool = bool(get_edited_object().get("Enabled"))
+		check.set_pressed_no_signal(v)
+		check.text = "True" if v else "False"
+
+class ScriptEnabledInspector extends EditorInspectorPlugin:
+	func _can_handle(object: Object) -> bool:
+		return object != null and object.get_class() in ["LocalScript", "ServerScript", "ModuleScript"]
+	func _parse_property(object: Object, type: Variant.Type, name: String, hint: PropertyHint,
+			hint_string: String, usage: int, wide: bool) -> bool:
+		if name == "Enabled":
+			add_property_editor(name, EnabledProperty.new())
+			return true   # reemplaza el checkbox por defecto ("Activado")
+		return false
 
 # ── Colores de sintaxis Luau (como Roblox Studio, tema oscuro) ────────────────
 # Mecanismo OFICIAL: un EditorSyntaxHighlighter registrado en el ScriptEditor;
@@ -443,6 +473,9 @@ func _teardown_luau_highlighting() -> void:
 		_luau_hl = null
 
 func _exit_tree() -> void:
+	if _inspector_plugin != null:
+		remove_inspector_plugin(_inspector_plugin)
+		_inspector_plugin = null
 	_teardown_luau_highlighting()
 	_disconnect_script_lifecycle()
 	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _http_aimodel, _outdated_timer]:
