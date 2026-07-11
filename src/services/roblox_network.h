@@ -272,6 +272,10 @@ class NetworkService : public Node {
     double bcast_timer = 0.0;
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
 
+    // Ping (medido cliente→servidor→cliente, en milisegundos)
+    double ping_ms = -1.0;
+    double ping_timer = 0.0;
+
     // Vista de Servidor (cámara libre) — comandada desde el panel Game del
     // editor vía res://.gl_view_cmd ("server|N" / "client|N")
     uint64_t     freecam_id = 0;    // ObjectID de la cámara libre
@@ -441,6 +445,8 @@ class NetworkService : public Node {
         rpc_config("_recv_remove",   r);
         rpc_config("_relay_chat",    r);   // chat: confiable (no se pierde ningun mensaje)
         rpc_config("_recv_chat",     r);
+        rpc_config("_ping_req",      u);   // medicion de ping (para el menu de ajustes)
+        rpc_config("_ping_res",      u);
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -605,7 +611,11 @@ class NetworkService : public Node {
                 if (!n) continue;
                 Vector3 before = n->get_global_position();
                 n->set_global_position(before.lerp(pu.tpos, a));
-                Vector3 r = n->get_rotation(); r.y = pu.tyaw; n->set_rotation(r);
+                // Rotacion SUAVIZADA por el camino corto (lerp_angle): antes el
+                // muñeco saltaba de golpe al nuevo angulo y se veia raro.
+                Vector3 r = n->get_rotation();
+                r.y = (float)Math::lerp_angle((double)r.y, (double)pu.tyaw, (double)a);
+                n->set_rotation(r);
                 // Animacion de caminar: bob del visual cuando se esta moviendo
                 float speed = before.distance_to(pu.tpos);
                 Node3D* vis = Object::cast_to<Node3D>(n->get_node_or_null("Visual"));
@@ -647,7 +657,7 @@ class NetworkService : public Node {
             Node3D* n = Object::cast_to<Node3D>(lp);
             if (!n) return;
             Vector3 p = n->get_global_position();
-            float   y = n->get_rotation().y;
+            float   y = n->get_global_rotation().y;   // yaw GLOBAL (robusto ante padres rotados)
             if (server) rpc("_recv_state", 1, p, y, display_num);
             else        rpc_id(1, "_relay_state", p, y, display_num);
         }
@@ -671,6 +681,11 @@ protected:
         ClassDB::bind_method(D_METHOD("gl_send_chat", "name", "text"),              &NetworkService::gl_send_chat);
         ClassDB::bind_method(D_METHOD("_relay_chat", "name", "text"),               &NetworkService::_relay_chat);
         ClassDB::bind_method(D_METHOD("_recv_chat", "from", "name", "text"),        &NetworkService::_recv_chat);
+        ClassDB::bind_method(D_METHOD("_ping_req", "t"),                            &NetworkService::_ping_req);
+        ClassDB::bind_method(D_METHOD("_ping_res", "t"),                            &NetworkService::_ping_res);
+        ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
+        ClassDB::bind_method(D_METHOD("get_player_count"),                          &NetworkService::get_player_count);
+        ClassDB::bind_method(D_METHOD("get_player_index"),                          &NetworkService::get_player_index);
     }
 
     void _notification(int p_what) {
@@ -750,6 +765,22 @@ public:
         int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
         if (from == myid) return;                  // yo ya lo mostre al enviarlo
         _show_chat(name, text);
+    }
+
+    // ── PING (para el menu de ajustes, como el de Roblox) ─────────────────
+    // El cliente manda su reloj al servidor cada segundo; el servidor lo
+    // devuelve tal cual; el cliente resta contra SU reloj → ida y vuelta en ms.
+    void _ping_req(double t) {
+        int sid = get_multiplayer()->get_remote_sender_id();
+        rpc_id(sid, "_ping_res", t);
+    }
+    void _ping_res(double t) {
+        ping_ms = (double)Time::get_singleton()->get_ticks_msec() - t;
+    }
+    double get_ping_ms() {
+        if (mode == 1) return 0.0;                      // el servidor/host: 0
+        if (mode == 2 && net_connected) return ping_ms; // cliente conectado
+        return -1.0;                                    // sin sesion
     }
 
     // ── Vista de Servidor: poner (true) o quitar (false) la cámara libre ──
@@ -870,6 +901,14 @@ public:
             if (m->get_peers().size() > 0) {
                 bcast_timer += dt;
                 if (bcast_timer >= 0.05) { bcast_timer = 0.0; _broadcast_local(); }
+                // Ping: el cliente pregunta cada segundo
+                if (mode == 2 && net_connected) {
+                    ping_timer += dt;
+                    if (ping_timer >= 1.0) {
+                        ping_timer = 0.0;
+                        rpc_id(1, "_ping_req", (double)Time::get_singleton()->get_ticks_msec());
+                    }
+                }
             }
             _lerp_puppets(dt);
         }

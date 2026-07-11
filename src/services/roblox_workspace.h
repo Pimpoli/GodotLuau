@@ -297,6 +297,12 @@ public:
             if (ns) { ns->set_name("NetworkService"); get_parent()->call_deferred("add_child", ns); }
         }
 
+        // ── Menú de ajustes (Esc), como el de Roblox: existe en TODO juego ──
+        if (get_parent() && !get_parent()->get_node_or_null("SettingsMenu")) {
+            Node* sm = Object::cast_to<Node>(ClassDB::instantiate(StringName("GLSettingsMenu")));
+            if (sm) { sm->set_name("SettingsMenu"); get_parent()->call_deferred("add_child", sm); }
+        }
+
         // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────
         //// ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
         Node* starter_player = nullptr;

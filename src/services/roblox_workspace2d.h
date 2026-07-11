@@ -143,6 +143,12 @@ public:
             if (ns) { ns->set_name("NetworkService"); get_parent()->call_deferred("add_child", ns); }
         }
 
+        // Menú de ajustes (Esc), como el de Roblox: existe en TODO juego
+        if (get_parent() && !get_parent()->get_node_or_null("SettingsMenu")) {
+            Node* sm = Object::cast_to<Node>(ClassDB::instantiate(StringName("GLSettingsMenu")));
+            if (sm) { sm->set_name("SettingsMenu"); get_parent()->call_deferred("add_child", sm); }
+        }
+
         GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace2D ready. Player created at (200, 200).");
     }
 };
