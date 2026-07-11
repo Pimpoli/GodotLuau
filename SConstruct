@@ -43,7 +43,10 @@ sources += Glob("luau/Compiler/src/*.cpp")
 sources += Glob("luau/Ast/src/*.cpp")
 sources += Glob("luau/Common/src/*.cpp")
 
-# 4. Forzamos el nombre de la DLL para que Godot la detecte
+# 4. Forzamos el nombre de la libreria para que Godot la detecte.
+#    Sin prefijo "lib" en Linux: godot_luau.gdextension espera
+#    godot_luau.linux.*.so (igual que la .dll de Windows).
+env["SHLIBPREFIX"] = ""
 target_name = "GodotLuau/bin/godot_luau" + env["suffix"] + env["SHLIBSUFFIX"]
 
 library = env.SharedLibrary(target=target_name, source=sources)
