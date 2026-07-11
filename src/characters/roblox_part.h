@@ -15,6 +15,7 @@
 #include <godot_cpp/classes/geometry_instance3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "lua.h"
@@ -25,6 +26,17 @@
 
 using namespace godot;
 
+// Cache GLOBAL de materiales compartidos: todas las Parts con el mismo
+// aspecto (Material, Color, Transparency, Reflectance) usan UN SOLO
+// StandardMaterial3D. Sin esto, 14.000 bloques = 14.000 materiales unicos:
+// el heap de descriptores de D3D12 se desborda ("Cannot create uniform set")
+// y cada draw arrastra un estado distinto (lag). Asi lo agrupa Roblox.
+// (static local en funcion, NO global: ver gotcha del error 1114 en gl_errors.h)
+static HashMap<String, Ref<StandardMaterial3D>>& gl_shared_materials() {
+    static HashMap<String, Ref<StandardMaterial3D>> cache;
+    return cache;
+}
+
 class RobloxPart : public RigidBody3D {
     GDCLASS(RobloxPart, RigidBody3D);
 
@@ -32,6 +44,7 @@ private:
     MeshInstance3D* mesh_instance   = nullptr;
     CollisionShape3D* collision_shape = nullptr;
     Ref<StandardMaterial3D> material;
+    bool material_shared = false;   // true = viene del cache global (NO mutarlo)
     Ref<PhysicsMaterial>    phys_mat;
 
     // Active shape meshes (only one set of refs valid at a time)
@@ -85,6 +98,16 @@ private:
         material->set_albedo(Color(color.r, color.g, color.b, 1.0f - transparency));
     }
 
+    // Clave visual de la part: dos parts con la misma clave comparten material.
+    String _material_key() const {
+        return String::num_int64(roblox_material) + "|" +
+               String::num_int64((int64_t)Math::round(color.r * 255.0f)) + "|" +
+               String::num_int64((int64_t)Math::round(color.g * 255.0f)) + "|" +
+               String::num_int64((int64_t)Math::round(color.b * 255.0f)) + "|" +
+               String::num_int64((int64_t)Math::round(transparency * 255.0f)) + "|" +
+               String::num_int64((int64_t)Math::round(reflectance * 255.0f));
+    }
+
     // Textura de la Part (PERSISTIDA): la usa el Baseplate para la cuadricula
     // estilo Studio y cualquier Part puede llevar la suya. Se TIÑE con Color.
     Ref<Texture2D> part_texture;
@@ -102,22 +125,52 @@ private:
     }
 
 public:
-    void set_part_texture(const Ref<Texture2D>& t) { part_texture = t; _apply_part_texture(); }
+    void set_part_texture(const Ref<Texture2D>& t) { part_texture = t; _apply_material_visual(); }
     Ref<Texture2D> get_part_texture() const { return part_texture; }
-    void set_part_texture_scale(float s) { part_texture_scale = Math::max(s, 0.001f); _apply_part_texture(); }
+    void set_part_texture_scale(float s) { part_texture_scale = Math::max(s, 0.001f); _apply_material_visual(); }
     float get_part_texture_scale() const { return part_texture_scale; }
 
     // Conveniencia del Baseplate (aplica textura + escala + suelo mate)
     void gl_apply_grid_texture(const Ref<Texture2D>& tex, float uv_scale) {
         part_texture = tex;
         part_texture_scale = uv_scale;
-        _apply_part_texture();
-        if (material.is_valid()) material->set_roughness(0.9f);
+        _apply_material_visual();   // con textura propia el material es dedicado
+        if (material.is_valid() && !material_shared) material->set_roughness(0.9f);
     }
 
 private:
 
     void _apply_material_visual() {
+        if (!mesh_instance) return;
+        if (part_texture.is_valid()) {
+            // Textura propia (ej. Baseplate): material DEDICADO de esta part
+            if (!material.is_valid() || material_shared) {
+                material.instantiate();
+                material_shared = false;
+            }
+            _configure_material();
+            mesh_instance->set_material_override(material);
+            return;
+        }
+        // Sin textura: material COMPARTIDO por clave visual
+        String key = _material_key();
+        HashMap<String, Ref<StandardMaterial3D>>& cache = gl_shared_materials();
+        Ref<StandardMaterial3D>* found = cache.getptr(key);
+        if (found) {
+            material = *found;
+        } else {
+            material.instantiate();
+            material_shared = false;   // recien creado: configurarlo
+            _configure_material();
+            cache[key] = material;
+        }
+        material_shared = true;
+        mesh_instance->set_material_override(material);
+    }
+
+    // Aplica TODO el aspecto al material actual (solo materiales no compartidos
+    // o recien creados para el cache).
+    void _configure_material() {
         if (!material.is_valid()) return;
         // Reset to neutral
         material->set_metallic(0.0f);
@@ -420,10 +473,9 @@ protected:
         if (p_what == NOTIFICATION_ENTER_TREE) {
             if (!mesh_instance) {
                 mesh_instance = memnew(MeshInstance3D);
-                material.instantiate();
-                material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
-                mesh_instance->set_material_override(material);
                 add_child(mesh_instance);
+                // El material lo resuelve _apply_material_visual() abajo
+                // (compartido por clave visual, o dedicado si hay textura).
 
                 collision_shape = memnew(CollisionShape3D);
                 add_child(collision_shape);
@@ -500,10 +552,7 @@ public:
     // ── Color ──────────────────────────────────────────────────────
     void set_color(Color c) {
         color = c;
-        if (material.is_valid()) {
-            if (roblox_material == 2) material->set_emission(color); // Neon
-            _update_albedo();
-        }
+        _apply_material_visual();   // nueva clave visual -> material del cache
     }
     Color get_color() const { return color; }
 
@@ -514,14 +563,14 @@ public:
     // ── Transparency ───────────────────────────────────────────────
     void set_transparency(float t) {
         transparency = Math::clamp(t, 0.0f, 1.0f);
-        if (material.is_valid()) _update_albedo();
+        _apply_material_visual();
     }
     float get_transparency() const { return transparency; }
 
     // ── Reflectance ────────────────────────────────────────────────
     void set_reflectance(float r) {
         reflectance = Math::clamp(r, 0.0f, 1.0f);
-        if (material.is_valid()) material->set_specular(reflectance);
+        _apply_material_visual();
     }
     float get_reflectance() const { return reflectance; }
 

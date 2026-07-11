@@ -1135,6 +1135,7 @@ func _ensure_physics_limits() -> void:
 		"physics/jolt_physics_3d/limits/max_body_pairs": 131072,
 		"physics/jolt_physics_3d/limits/max_contact_constraints": 40960,
 		"physics/jolt_physics_3d/limits/temporary_memory_buffer_size": 128,
+		"rendering/rendering_device/d3d12/max_resource_descriptors": 131072,
 	}
 	var changed := false
 	for key in limits:
@@ -1993,10 +1994,14 @@ func _get_local_version() -> String:
 	return f.get_as_text().strip_edges() if f else _t("ver_unknown")
 
 func _version_to_num(v: String) -> int:
-	# "v1.4.4" → 1004004; solo avisa si la remota es realmente más nueva
+	# Rellena SIEMPRE a 4 segmentos para que versiones con distinta cantidad
+	# de numeros se comparen bien: "v1.12" -> [1,12,0,0] y "v1.11.6.1" ->
+	# [1,11,6,1]. (El bug clasico: 1.12 con 2 segmentos daba 1012 y perdia
+	# contra 1.11.6.1 con 4 segmentos = 1011006001 -> "al dia" eterno.)
+	var parts := v.trim_prefix("v").split(".")
 	var n := 0
-	for p in v.trim_prefix("v").split("."):
-		n = n * 1000 + p.to_int()
+	for i in range(4):
+		n = n * 1000 + (parts[i].to_int() if i < parts.size() else 0)
 	return n
 
 # ── Download & reinstall ──────────────────────────────────────────────────────
