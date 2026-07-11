@@ -150,7 +150,7 @@ private:
     // Suavidad del giro del cuerpo hacia la direccion de movimiento (AutoRotate).
     // Mayor = gira mas rapido; menor = mas suave. Independiente de los FPS.
     // v1.8.3: bajado de 9 a 5 (giro claramente mas suave, no brusco).
-    float  turn_speed             = 5.0f;
+    float  turn_speed             = 11.0f;   // giro rapido hacia el movimiento, como Roblox
     bool   auto_jump_enabled      = true;
     float  name_display_distance  = 100.0f;
     float  health_display_distance= 100.0f;
@@ -538,6 +538,19 @@ public:
         // Animacion de PRUEBA por codigo (placeholder): SOLO si el toggle de
         // Debug 'debug_test_animation' esta activo. Anima la malla visual, no
         // la fisica; sirve para ver el muñeco "vivo" sin animaciones reales aun.
+        _drive_animation(body, velocity, delta);
+    }
+
+    // ── Animacion del personaje: R6Animator (avatar por partes) o fallback ──
+    void _drive_animation(CharacterBody3D* body, const Vector3& velocity, double delta) {
+        Node* character = body ? body->get_node_or_null(NodePath("Character")) : nullptr;
+        Node* anim = character ? character->get_node_or_null(NodePath("R6Animator")) : nullptr;
+        if (anim) {
+            Vector3 horiz(velocity.x, 0.0f, velocity.z);
+            double speed01 = Math::clamp((double)horiz.length() / (double)Math::max(walk_speed, 0.1f), 0.0, 1.0);
+            anim->call("set_move_state", speed01, !body->is_on_floor());
+            return;
+        }
         _test_animate(body, velocity, delta);
     }
 

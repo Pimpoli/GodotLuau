@@ -52,6 +52,8 @@ private:
 
     float mouse_sensitivity = 0.0022f;   // v1.8.3: bajado de 0.003 (camara mas calmada)
     float target_zoom       = 10.0f;
+    Vector2 rmb_restore_pos;             // donde estaba el cursor antes de rotar (Roblox)
+    bool    was_fp = false;              // veniamos de primera persona
 
     // ── Camera mode ────────────────────────────────────────────────
     //// ── Modo de cámara ──────────────────────────────────────────────
@@ -357,21 +359,25 @@ public:
             return;
         }
 
-        // Right button — capture mouse to rotate the camera
-        //// Botón derecho — captura el mouse para rotar la cámara
+        // Boton derecho — rotar la camara COMO ROBLOX: el cursor se oculta
+        // mientras arrastras y al soltar REAPARECE EXACTAMENTE donde estaba
+        // (nada de saltar al centro de la pantalla).
         if (p_event->is_class("InputEventMouseButton")) {
             Ref<InputEventMouseButton> mb = p_event;
             if (mb->get_button_index() == MOUSE_BUTTON_RIGHT) {
-                input->set_mouse_mode(
-                    mb->is_pressed() ? Input::MOUSE_MODE_CAPTURED
-                                     : Input::MOUSE_MODE_VISIBLE);
+                if (mb->is_pressed()) {
+                    rmb_restore_pos = get_viewport()->get_mouse_position();
+                    input->set_mouse_mode(Input::MOUSE_MODE_CAPTURED);
+                } else {
+                    input->set_mouse_mode(Input::MOUSE_MODE_VISIBLE);
+                    input->warp_mouse(rmb_restore_pos);
+                }
             }
-            // Mouse wheel — zoom
-            //// Rueda del mouse — zoom
+            // Rueda del mouse — zoom multiplicativo (pasos suaves como Roblox)
             if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)
-                target_zoom = Math::max(0.0f, target_zoom - 1.5f);
+                target_zoom = Math::max(0.5f, target_zoom / 1.12f);
             if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_DOWN)
-                target_zoom = Math::min(30.0f, target_zoom + 1.5f);
+                target_zoom = Math::min(60.0f, target_zoom * 1.12f);
         }
 
         // Mouse movement — rotate camera
@@ -475,6 +481,15 @@ public:
         float current_len = spring_arm->get_length();
         spring_arm->set_length(
             Math::lerp(current_len, target_zoom, (float)Math::min(10.0 * delta, 1.0)));
+
+        // Al salir de primera persona, liberar el mouse (si no estas rotando)
+        bool fp_now = target_zoom < 0.6f;
+        if (was_fp && !fp_now
+            && gp_input->get_mouse_mode() == Input::MOUSE_MODE_CAPTURED
+            && !gp_input->is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)) {
+            gp_input->set_mouse_mode(Input::MOUSE_MODE_VISIBLE);
+        }
+        was_fp = fp_now;
 
         // Hide the mesh in first person
         //// Ocultar el mesh en primera persona

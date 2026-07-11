@@ -31,6 +31,7 @@
 #include <godot_cpp/classes/camera3d.hpp>
 #include "roblox_player.h"
 #include "humanoid.h"
+#include "gl_avatar.h"
 #include "roblox_services.h"
 #include "roblox_interactive.h"
 
@@ -320,28 +321,13 @@ public:
         p->set_position(spawn_pos);
         add_child(p);
 
-        // ── 3. Default capsule character (same as Roblox) ──────────────────────
-        //// ── 3. Personaje cápsula predeterminado (igual que Roblox) ──────────────────
+        // ── 3. Personaje por defecto (como Roblox) ──────────────────────
+        // Prioridad: StarterPlayer/StarterCharacter (clonado, como Roblox) →
+        // avatar R6 por partes con animaciones clasicas → capsula gris.
+        // La FISICA siempre es la capsula.
         {
-            // Visual: el MODELO DEL USUARIO con la cara arreglada
-            // (AvatarR15_face.glb: misma forma, cuerpo gris limpio + cara en la
-            // cabeza). Si falta, capsula gris. La FISICA sigue siendo la capsula.
-            ResourceLoader* rl = ResourceLoader::get_singleton();
-            const String glb_path = "res://assets/avatars/AvatarR15_face.glb";
-            Node3D* character = nullptr;
-            if (rl && rl->exists(glb_path)) {
-                Ref<Resource> res = rl->load(glb_path);
-                Ref<PackedScene> scene = Ref<PackedScene>(Object::cast_to<PackedScene>(res.ptr()));
-                if (scene.is_valid())
-                    character = Object::cast_to<Node3D>(scene->instantiate());
-            }
+            Node3D* character = gl_build_character(this);
             if (character) {
-                character->set_name("Character");
-                // El modelo mide ~5.19 de alto con los pies en y=-3: lo escalamos
-                // a ~2 (altura de la capsula) y dejamos los pies en y=-1.
-                float s = 2.0f / 5.187f;
-                character->set_scale(Vector3(s, s, s));
-                character->set_position(Vector3(0, -1.0f + 3.0f * s, 0));
                 p->add_child(character);
             } else {
                 MeshInstance3D* m = memnew(MeshInstance3D);

@@ -83,6 +83,7 @@
 #include "lualib.h"
 #include "gl_runtime.h"   // gl_state_alive, gl_freecam
 #include "gl_debug.h"     // gl_debug_on (prints internos solo en Modo Debug)
+#include "gl_avatar.h"    // personaje R6 + animador (muñecos remotos)
 
 using namespace godot;
 
@@ -484,24 +485,11 @@ class NetworkService : public Node {
         col->set_shape(cs);
         body->add_child(col);
 
-        // Visual: el mismo modelo del avatar; si falta, cápsula azulada.
-        ResourceLoader* rl = ResourceLoader::get_singleton();
-        const String glb = "res://assets/avatars/AvatarR15_face.glb";
-        Node3D* vis = nullptr;
-        if (rl && rl->exists(glb)) {
-            Ref<Resource> res = rl->load(glb);
-            Ref<PackedScene> sc = Ref<PackedScene>(Object::cast_to<PackedScene>(res.ptr()));
-            if (sc.is_valid()) {
-                Node* inst = sc->instantiate();
-                vis = Object::cast_to<Node3D>(inst);
-                if (!vis && inst) inst->queue_free();   // raíz no-Node3D: no fugar el subárbol
-            }
-        }
+        // Visual: el MISMO personaje que el local (StarterCharacter o avatar R6
+        // con animaciones); si falta todo, capsula azulada.
+        Node3D* vis = gl_build_character(this);
         if (vis) {
-            float s = 2.0f / 5.187f;
             vis->set_name("Visual");
-            vis->set_scale(Vector3(s, s, s));
-            vis->set_position(Vector3(0, -1.0f + 3.0f * s, 0));
             body->add_child(vis);
         } else {
             MeshInstance3D* m = memnew(MeshInstance3D);
@@ -616,15 +604,25 @@ class NetworkService : public Node {
                 Vector3 r = n->get_rotation();
                 r.y = (float)Math::lerp_angle((double)r.y, (double)pu.tyaw, (double)a);
                 n->set_rotation(r);
-                // Animacion de caminar: bob del visual cuando se esta moviendo
-                float speed = before.distance_to(pu.tpos);
-                Node3D* vis = Object::cast_to<Node3D>(n->get_node_or_null("Visual"));
-                if (vis) {
-                    if (speed > 0.05f) pu.walk_phase += (float)dt * 12.0f;
-                    else               pu.walk_phase *= 0.85f;
-                    Vector3 vp = vis->get_position();
-                    vp.y = pu.vis_base_y + Math::abs(Math::sin(pu.walk_phase)) * 0.14f;
-                    vis->set_position(vp);
+                // Animacion: el R6Animator del muñeco recibe el estado derivado
+                // del movimiento (velocidad horizontal + si esta en el aire).
+                float dist = before.distance_to(pu.tpos);
+                Node* anim = n->get_node_or_null(NodePath("Visual/R6Animator"));
+                if (anim) {
+                    Vector3 dp = pu.tpos - before;
+                    double hspeed = Vector2(dp.x, dp.z).length() / Math::max(dt, 0.001);
+                    bool airborne = Math::abs(dp.y) / Math::max(dt, 0.001) > 2.5;
+                    anim->call("set_move_state", Math::clamp(hspeed / 8.0, 0.0, 1.0), airborne);
+                } else {
+                    // Fallback capsula: bob simple al moverse
+                    Node3D* vis = Object::cast_to<Node3D>(n->get_node_or_null("Visual"));
+                    if (vis) {
+                        if (dist > 0.05f) pu.walk_phase += (float)dt * 12.0f;
+                        else              pu.walk_phase *= 0.85f;
+                        Vector3 vp = vis->get_position();
+                        vp.y = pu.vis_base_y + Math::abs(Math::sin(pu.walk_phase)) * 0.14f;
+                        vis->set_position(vp);
+                    }
                 }
             }
         }

@@ -14,6 +14,7 @@
 #include "roblox_services.h"
 #include "roblox_network.h"
 #include "gl_settings_menu.h"
+#include "gl_avatar.h"
 #include "roblox_datamodel.h"
 #include "roblox_game3d.h"
 #include "roblox_game2d.h"
@@ -113,6 +114,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<GLFreeCamera>();    // cámara libre de la Vista de Servidor
         ClassDB::register_class<GLVRPreview>();     // vista previa VR (dos ojos)
         ClassDB::register_class<GLSettingsMenu>();  // menú de ajustes del juego (Esc)
+        ClassDB::register_class<GLR6Animator>();    // animaciones clásicas del avatar R6
 
         // BodyMovers — equivalent to Roblox's BodyMovers
         //// BodyMovers — equivalentes a los BodyMovers de Roblox
