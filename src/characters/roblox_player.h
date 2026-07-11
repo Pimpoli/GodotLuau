@@ -18,6 +18,10 @@
 #include <godot_cpp/classes/panel.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/math.hpp>
@@ -54,6 +58,41 @@ private:
     float target_zoom       = 10.0f;
     Vector2 rmb_restore_pos;             // donde estaba el cursor antes de rotar (Roblox)
     bool    was_fp = false;              // veniamos de primera persona
+
+    // ── Fade del personaje al acercar la camara (shader de disolucion) ──
+    Ref<ShaderMaterial> fade_mat;
+    bool fade_setup_done = false;
+
+    void _setup_fade() {
+        if (fade_setup_done) return;
+        Node* character = get_node_or_null("Character");
+        if (!character) { fade_setup_done = true; return; }   // capsula: usa visibilidad
+        ResourceLoader* rl = ResourceLoader::get_singleton();
+        const String sh_path = "res://GodotLuau/shaders/character_fade.gdshader";
+        if (!rl || !rl->exists(sh_path)) { fade_setup_done = true; return; }
+        Ref<Shader> sh = rl->load(sh_path);
+        if (sh.is_null()) { fade_setup_done = true; return; }
+        fade_mat.instantiate();
+        fade_mat->set_shader(sh);
+        // Recorrer las mallas del personaje: tomar su textura y aplicar el shader
+        bool any = false;
+        _apply_fade_recursive(character, any);
+        if (!any) fade_mat = Ref<ShaderMaterial>();
+        fade_setup_done = true;
+    }
+    void _apply_fade_recursive(Node* n, bool& any) {
+        if (MeshInstance3D* mi = Object::cast_to<MeshInstance3D>(n)) {
+            // Textura del material original (el rig R6 comparte una sola)
+            Ref<StandardMaterial3D> src = mi->get_active_material(0);
+            if (src.is_valid()) {
+                Ref<Texture2D> tex = src->get_texture(StandardMaterial3D::TEXTURE_ALBEDO);
+                if (tex.is_valid()) fade_mat->set_shader_parameter("albedo_tex", tex);
+            }
+            mi->set_material_override(fade_mat);
+            any = true;
+        }
+        for (int i = 0; i < n->get_child_count(); i++) _apply_fade_recursive(n->get_child(i), any);
+    }
 
     // ── Camera mode ────────────────────────────────────────────────
     //// ── Modo de cámara ──────────────────────────────────────────────
@@ -491,8 +530,15 @@ public:
         }
         was_fp = fp_now;
 
-        // Hide the mesh in first person
-        //// Ocultar el mesh en primera persona
+        // ── Fade del personaje al acercar la camara (como Roblox, pero con
+        //    shader de disolucion: descarta pixeles en vez de mezclar alpha) ──
+        if (!fade_setup_done) _setup_fade();
+        if (fade_mat.is_valid()) {
+            // De 2.5 hacia 0.5 de distancia el personaje se va disolviendo
+            float d = 1.0f - Math::clamp((current_len - 0.5f) / 2.0f, 0.0f, 1.0f);
+            fade_mat->set_shader_parameter("dissolve", d);
+        }
+        // Fallback capsula: ocultar el mesh en primera persona
         MeshInstance3D* mesh = Object::cast_to<MeshInstance3D>(get_node_or_null("Mesh"));
         if (mesh) {
             mesh->set_visible(target_zoom >= 0.6f);

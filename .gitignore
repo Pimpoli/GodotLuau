@@ -16,12 +16,12 @@ src/**/*.obj.import
 .luau_trash/
 
 # Ignorar las librerías compiladas (opcional, pero recomendado para el source code)
-bin/*.dll
-bin/*.so
-bin/*.dylib
-bin/*.lib
-bin/*.exp
-bin/*.old
+GodotLuau/bin/*.dll
+GodotLuau/bin/*.so
+GodotLuau/bin/*.dylib
+GodotLuau/bin/*.lib
+GodotLuau/bin/*.exp
+GodotLuau/bin/*.old
 
 # Caché de editores
 .vs/

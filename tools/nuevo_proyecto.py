@@ -104,7 +104,7 @@ def icon_svg():
 
 def script_controller_3d():
     """Contenido del script de movimiento 3D para StarterPlayerScripts"""
-    script_path = os.path.join(ORIGEN, "DefaultScripts", "PlayerController3D.lua")
+    script_path = os.path.join(ORIGEN, "GodotLuau/DefaultScripts", "PlayerController3D.lua")
     if os.path.exists(script_path):
         with open(script_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -131,7 +131,7 @@ print("[GodotLuau] PlayerController3D listo.")
 
 def script_controller_2d():
     """Contenido del script de movimiento 2D para StarterPlayerScripts"""
-    script_path = os.path.join(ORIGEN, "DefaultScripts", "PlayerController2D.lua")
+    script_path = os.path.join(ORIGEN, "GodotLuau/DefaultScripts", "PlayerController2D.lua")
     if os.path.exists(script_path):
         with open(script_path, "r", encoding="utf-8") as f:
             return f.read()

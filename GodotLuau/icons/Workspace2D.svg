@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="128" height="128">
+  <g stroke="#1A1A1A" stroke-width="4" fill="#16A085">
+    <rect x="10" y="55" width="80" height="35" rx="4"/>
+    <rect x="25" y="35" width="50" height="25" rx="4" fill="#1ABC9C"/>
+    <rect x="38" y="18" width="24" height="20" rx="4" fill="#48C9B0"/>
+  </g>
+  <text x="50" y="78" font-family="monospace" font-size="16" font-weight="bold" fill="white" text-anchor="middle">2D</text>
+</svg>

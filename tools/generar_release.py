@@ -21,10 +21,7 @@ ARCHIVOS_SUELTOS = [
 ]
 CARPETAS = [
     "addons/GodotLuauUpdater",
-    "bin",
-    "DefaultScripts",
-    "icons",
-    "assets/avatars",   # modelos de personaje por defecto (R15/R6)
+    "GodotLuau",   # TODO lo de la extension vive aqui (bin, icons, assets, shaders, DefaultScripts...)
 ]
 EXTENSIONES_BIN = (".dll", ".so", ".dylib", ".lib", ".exp")
 EXTENSIONES_TEXTO = (".cfg", ".gd", ".gdextension", ".txt", ".md", ".json", ".lua", ".uid")
@@ -64,7 +61,8 @@ def empaquetar():
                 continue
             for raiz, _, archivos in os.walk(carpeta):
                 for archivo in archivos:
-                    if carpeta == "bin" and not archivo.endswith(EXTENSIONES_BIN):
+                    raiz_norm = raiz.replace("\\", "/")
+                    if raiz_norm.endswith("/bin") and not archivo.endswith(EXTENSIONES_BIN):
                         continue
                     ruta = os.path.join(raiz, archivo)
                     agregar_archivo(zf, ruta, ruta.replace("\\", "/"))

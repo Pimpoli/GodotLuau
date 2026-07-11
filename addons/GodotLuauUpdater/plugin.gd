@@ -339,6 +339,65 @@ func _enter_tree() -> void:
 	_connect_script_lifecycle()
 	_purge_old_trash()
 	_build_mp_toolbar()
+	_setup_luau_highlighting()
+
+# ── Colores de sintaxis Luau (como Roblox Studio, tema oscuro) ────────────────
+# El editor abre los .lua con texto plano; aquí se le engancha un CodeHighlighter
+# con los colores clásicos de Studio a cada editor de script Luau que se abra.
+var _hl_seen: Array = []
+
+func _make_luau_highlighter() -> CodeHighlighter:
+	var ch := CodeHighlighter.new()
+	var kw := Color("#f86d7c")      # palabras clave (local, function, if...)
+	var builtin := Color("#84d6f7") # game, workspace, print, task...
+	ch.number_color = Color("#ffc600")
+	ch.symbol_color = Color("#cccccc")
+	ch.function_color = Color("#fdfbac")
+	ch.member_variable_color = Color("#9cdcfe")
+	for w in ["and","break","do","else","elseif","end","for","function","if","in",
+			  "local","not","or","repeat","return","then","until","while","continue",
+			  "type","export","self"]:
+		ch.add_keyword_color(w, kw)
+	for w in ["true","false","nil"]:
+		ch.add_keyword_color(w, Color("#ffc600"))
+	for w in ["game","workspace","script","print","warn","wait","task","spawn","delay",
+			  "require","pairs","ipairs","next","select","tostring","tonumber","typeof",
+			  "pcall","xpcall","error","assert","unpack","math","string","table","os",
+			  "coroutine","bit32","utf8","Instance","Vector2","Vector3","CFrame","Color3",
+			  "UDim","UDim2","Enum","Ray","Region3","TweenInfo","NumberRange","Random"]:
+		ch.add_keyword_color(w, builtin)
+	# Regiones: comentario de bloque ANTES que el de línea (comparten prefijo)
+	ch.add_color_region("--[[", "]]", Color("#666666"), false)
+	ch.add_color_region("--", "", Color("#666666"), true)
+	ch.add_color_region("\"", "\"", Color("#adf195"), false)
+	ch.add_color_region("'", "'", Color("#adf195"), false)
+	return ch
+
+func _setup_luau_highlighting() -> void:
+	var se := EditorInterface.get_script_editor()
+	if se == null: return
+	if not se.editor_script_changed.is_connected(_apply_luau_colors_everywhere):
+		se.editor_script_changed.connect(func(_s): _apply_luau_colors_everywhere())
+	_apply_luau_colors_everywhere()
+
+func _apply_luau_colors_everywhere() -> void:
+	var se := EditorInterface.get_script_editor()
+	if se == null: return
+	var editors := se.get_open_script_editors()
+	var scripts := se.get_open_scripts()
+	for i in editors.size():
+		var ed = editors[i]
+		var base = ed.get_base_editor()
+		if base == null or not (base is CodeEdit): continue
+		if base in _hl_seen: continue
+		# Los arrays de editores y scripts van en el mismo orden de pestañas
+		var is_luau := false
+		if i < scripts.size() and scripts[i] != null:
+			var path := String(scripts[i].resource_path)
+			is_luau = path.ends_with(".lua") or scripts[i].get_class() == "LuauScript"
+		if is_luau:
+			base.syntax_highlighter = _make_luau_highlighter()
+			_hl_seen.append(base)
 
 func _exit_tree() -> void:
 	_disconnect_script_lifecycle()
@@ -660,11 +719,22 @@ func _on_any_node_removed(n: Node) -> void:
 	if n == EditorInterface.get_edited_scene_root():
 		_suppress_trash_frame = Engine.get_process_frames() + 5
 		return
-	if not (n.get_class() in SCRIPT_NODE_CLASSES): return
-	# Se pasa el instance_id (int), no el Node: para cuando corre el deferred el
-	# nodo puede estar ya liberado y marshalarlo como Node falla
-	# ("Cannot convert argument 1 from Object to Object").
-	_check_script_removed.call_deferred(n.get_instance_id(), _node_script_id(n), _node_script_path(n))
+	if n.get_class() in SCRIPT_NODE_CLASSES:
+		# Se pasa el instance_id (int), no el Node: para cuando corre el deferred el
+		# nodo puede estar ya liberado y marshalarlo como Node falla
+		# ("Cannot convert argument 1 from Object to Object").
+		_check_script_removed.call_deferred(n.get_instance_id(), _node_script_id(n), _node_script_path(n))
+	elif n.get_child_count() > 0:
+		# Al borrar un PADRE, sus scripts DESCENDIENTES también deben ir a la
+		# papelera (antes sus .lua quedaban huérfanos en el proyecto).
+		_queue_descendant_scripts(n)
+
+func _queue_descendant_scripts(n: Node) -> void:
+	for c in n.get_children():
+		if c.get_class() in SCRIPT_NODE_CLASSES:
+			_check_script_removed.call_deferred(c.get_instance_id(), _node_script_id(c), _node_script_path(c))
+		if c.get_child_count() > 0:
+			_queue_descendant_scripts(c)
 
 func _check_script_removed(node_id: int, id: String, path: String) -> void:
 	await get_tree().process_frame
@@ -861,7 +931,10 @@ func _apply_autocomplete_speed() -> void:
 # ── Cleanup old DLL backups ───────────────────────────────────────────────────
 
 func _cleanup_old_dlls() -> void:
-	var bin_path := ProjectSettings.globalize_path("res://bin/")
+	# v1.11.1: la extension vive en res://GodotLuau/. Migrar instalaciones viejas:
+	# si ya existe la carpeta nueva, borrar los restos de la estructura antigua.
+	_migrate_old_layout()
+	var bin_path := ProjectSettings.globalize_path("res://GodotLuau/bin/")
 	if not DirAccess.dir_exists_absolute(bin_path): return
 	var dir := DirAccess.open(bin_path)
 	if not dir: return
@@ -876,6 +949,45 @@ func _cleanup_old_dlls() -> void:
 		or (f.begins_with("~") and f.contains("godot_luau")):
 			DirAccess.remove_absolute(bin_path + f)
 		f = dir.get_next()
+
+# ── Migracion a la estructura nueva (todo dentro de res://GodotLuau/) ─────────
+# Las instalaciones viejas tenian bin/, icons/, DefaultScripts/ y assets/ en la
+# raiz. El zip nuevo ya extrae en GodotLuau/; aqui se limpian los restos viejos
+# (solo carpetas DE LA EXTENSION, nunca contenido del usuario).
+func _migrate_old_layout() -> void:
+	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("res://GodotLuau/bin")):
+		return   # aun no se instalo la estructura nueva
+	var removed := false
+	for old in ["res://bin", "res://icons", "res://DefaultScripts", "res://assets/avatars/r6"]:
+		var g := ProjectSettings.globalize_path(old)
+		if DirAccess.dir_exists_absolute(g):
+			_remove_dir_recursive(g)
+			removed = true
+	# archivos sueltos del avatar viejo en res://assets/avatars/
+	for f in ["RobloxAvatarR6.obj", "RobloxAvatarR6.mtl", "RobloxAvatarR6.obj.import",
+			  "RobloxAvatarR15.obj", "RobloxAvatarR15.mtl", "RobloxAvatarR15.obj.import",
+			  "Rig1_diff.png", "Rig1_diff.png.import"]:
+		var p := ProjectSettings.globalize_path("res://assets/avatars/" + f)
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+			removed = true
+	if removed:
+		print("[GodotLuau] Migrated to the new res://GodotLuau/ layout (old folders removed).")
+		EditorInterface.get_resource_filesystem().scan()
+
+func _remove_dir_recursive(g_path: String) -> void:
+	var d := DirAccess.open(g_path)
+	if d == null: return
+	d.list_dir_begin()
+	var f := d.get_next()
+	while f != "":
+		if f != "." and f != "..":
+			var full := g_path.path_join(f)
+			if d.current_is_dir(): _remove_dir_recursive(full)
+			else: DirAccess.remove_absolute(full)
+		f = d.get_next()
+	d.list_dir_end()
+	DirAccess.remove_absolute(g_path)
 
 # ── Settings registration ─────────────────────────────────────────────────────
 

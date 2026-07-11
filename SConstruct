@@ -44,7 +44,7 @@ sources += Glob("luau/Ast/src/*.cpp")
 sources += Glob("luau/Common/src/*.cpp")
 
 # 4. Forzamos el nombre de la DLL para que Godot la detecte
-target_name = "bin/godot_luau" + env["suffix"] + env["SHLIBSUFFIX"]
+target_name = "GodotLuau/bin/godot_luau" + env["suffix"] + env["SHLIBSUFFIX"]
 
 library = env.SharedLibrary(target=target_name, source=sources)
 

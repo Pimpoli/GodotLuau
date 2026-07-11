@@ -15,6 +15,8 @@
 #include <godot_cpp/classes/capsule_mesh.hpp>      // <-- INDISPENSABLE
 #include <godot_cpp/classes/capsule_shape3d.hpp>   // <-- INDISPENSABLE
 #include <godot_cpp/classes/resource_loader.hpp>   // malla de avatar por defecto
+#include <godot_cpp/classes/resource_saver.hpp>    // guardar environment editable
+#include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>      // personaje del usuario (.glb cara arreglada)
@@ -106,6 +108,13 @@ private:
             env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
             env->set_ambient_light_sky_contribution(1.0f);
             env->set_ambient_light_energy(1.0f);
+
+            // Atmosfera sutil de distancia (como el "atmosphere" de Roblox):
+            // niebla muy leve que da profundidad sin costar rendimiento.
+            env->set_fog_enabled(true);
+            env->set_fog_light_color(Color(0.76f, 0.85f, 0.94f));
+            env->set_fog_density(0.0006f);
+            env->set_fog_sky_affect(0.0f);
         }
         if (sun) {
             sun->set_shadow(true);
@@ -170,10 +179,6 @@ protected:
                 // Mas relleno ambiental para que los lados en sombra (p.ej. el
                 // personaje) no salgan casi negros.
                 env->set_ambient_light_energy(1.15);
-                
-                env_node->set_environment(env);
-                add_child(env_node);
-                env_node->set_owner(root);
 
                 // 2. SUN
                 //// 2. SOL
@@ -187,6 +192,26 @@ protected:
                 // Look de iluminacion estilo Roblox "Future" sobre el entorno + sol
                 _apply_roblox_render(env, sol);
 
+                // El Environment vive como ARCHIVO EDITABLE en GodotLuau/shaders/:
+                // si ya existe se usa ese (respetando los cambios del usuario);
+                // si no, se guarda el recien creado para que pueda modificarlo.
+                {
+                    const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
+                    ResourceLoader* rload = ResourceLoader::get_singleton();
+                    if (rload && rload->exists(env_path)) {
+                        Ref<Environment> user_env = rload->load(env_path);
+                        if (user_env.is_valid()) env = user_env;
+                    } else {
+                        Ref<DirAccess> d = DirAccess::open("res://");
+                        if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
+                            d->make_dir_recursive("GodotLuau/shaders");
+                        ResourceSaver::get_singleton()->save(env, env_path);
+                    }
+                }
+                env_node->set_environment(env);
+                add_child(env_node);
+                env_node->set_owner(root);
+
                 // 3. BASEPLATE WITH GRID
                 //// 3. BASEPLATE CON CUADRÍCULA
                 StaticBody3D* bp = memnew(StaticBody3D);
@@ -197,13 +222,27 @@ protected:
                 MeshInstance3D* mesh = memnew(MeshInstance3D);
                 Ref<BoxMesh> m; m.instantiate();
                 m->set_size(Vector3(1000, 1, 1000));
-                
+
                 Ref<StandardMaterial3D> mat; mat.instantiate();
-                // Use the official set_texture method
-                //// Usamos el método oficial set_texture
-                mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, generar_textura_grid());
-                mat->set_uv1_scale(Vector3(100, 100, 1));
-                mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_NEAREST);
+                // Cuadricula estilo Roblox Studio: TEXTURA de archivo (editable en
+                // GodotLuau/assets/textures/) en blanco, teñida con albedo_color →
+                // cambiar el COLOR del Baseplate = tocar Albedo>Color en el material.
+                Ref<Texture2D> grid_tex;
+                {
+                    ResourceLoader* rload = ResourceLoader::get_singleton();
+                    const String tex_path = "res://GodotLuau/assets/textures/baseplate_grid.png";
+                    if (rload && rload->exists(tex_path)) grid_tex = rload->load(tex_path);
+                }
+                if (grid_tex.is_valid()) {
+                    mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, grid_tex);
+                    mat->set_albedo(Color(0.639f, 0.635f, 0.647f));   // gris Roblox (cambiable)
+                    mat->set_uv1_scale(Vector3(125, 125, 1));          // celda menor = 2 studs
+                    mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_LINEAR_WITH_MIPMAPS);
+                } else {
+                    mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, generar_textura_grid());
+                    mat->set_uv1_scale(Vector3(100, 100, 1));
+                    mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_NEAREST);
+                }
                 // Suelo MATE como Roblox (antes roughness 0.0 = suelo pulido/espejo)
                 mat->set_roughness(0.9f);
                 mat->set_metallic(0.0f);
@@ -277,7 +316,25 @@ public:
                 if (!sun) sun = Object::cast_to<DirectionalLight3D>(c);
             }
             Ref<Environment> env = we ? we->get_environment() : Ref<Environment>();
-            if (env.is_valid() || sun) _apply_roblox_render(env, sun);
+            // Si el usuario tiene su environment editable en GodotLuau/shaders/,
+            // usarlo en TODAS las escenas (viejas incluidas).
+            ResourceLoader* rload = ResourceLoader::get_singleton();
+            const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
+            if (we && rload && rload->exists(env_path)) {
+                Ref<Environment> user_env = rload->load(env_path);
+                if (user_env.is_valid()) { we->set_environment(user_env); env = user_env; }
+                if (sun) { sun->set_shadow(true); }
+            } else if (env.is_valid() || sun) {
+                _apply_roblox_render(env, sun);
+                // Primera vez que se juega: dejar el environment como archivo
+                // editable (solo corriendo desde el editor; un export no escribe res://)
+                if (env.is_valid() && OS::get_singleton()->has_feature("editor")) {
+                    Ref<DirAccess> d = DirAccess::open("res://");
+                    if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
+                        d->make_dir_recursive("GodotLuau/shaders");
+                    ResourceSaver::get_singleton()->save(env, env_path);
+                }
+            }
         }
 
         // ── RunService oculto: como en Roblox, existe pero no se ve en el editor ──

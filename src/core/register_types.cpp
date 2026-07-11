@@ -214,9 +214,9 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         //// Asegurar carpeta de iconos (necesaria para colores de nodos en editor)
         if (Engine::get_singleton()->is_editor_hint()) {
             Ref<DirAccess> dir = DirAccess::open("res://");
-            if (dir.is_valid() && !dir->dir_exists("icons")) {
-                dir->make_dir("icons");
-                GL_DEBUG_PRINT("[GodotLuau] Carpeta 'res://icons/' creada.");
+            if (dir.is_valid() && !dir->dir_exists("GodotLuau/icons")) {
+                dir->make_dir_recursive("GodotLuau/icons");
+                GL_DEBUG_PRINT("[GodotLuau] Carpeta 'res://GodotLuau/icons/' creada.");
             }
         }
 

@@ -121,12 +121,12 @@ static inline Node3D* gl_build_r6_rig() {
     if (!rl) return nullptr;
     struct PartDef { const char* file; const char* name; const char* pivot; Vector3 joint; float rest_z; };
     static const PartDef PARTS[6] = {
-        { "res://assets/avatars/r6/R6_Torso.obj",    "Torso",     "TorsoPivot",    Vector3(0.0f,   0.13f, 0.0f), 0.0f },
-        { "res://assets/avatars/r6/R6_Head.obj",     "Head",      "HeadPivot",     Vector3(0.0f,   1.13f, 0.0f), 0.0f },
-        { "res://assets/avatars/r6/R6_LeftArm.obj",  "Left Arm",  "LeftArmPivot",  Vector3(1.5f,   0.63f, 0.0f), -1.5707963f },
-        { "res://assets/avatars/r6/R6_RightArm.obj", "Right Arm", "RightArmPivot", Vector3(-1.5f,  0.63f, 0.0f),  1.5707963f },
-        { "res://assets/avatars/r6/R6_LeftLeg.obj",  "Left Leg",  "LeftLegPivot",  Vector3(0.55f, -0.87f, 0.0f), 0.0f },
-        { "res://assets/avatars/r6/R6_RightLeg.obj", "Right Leg", "RightLegPivot", Vector3(-0.55f,-0.87f, 0.0f), 0.0f },
+        { "res://GodotLuau/assets/avatars/r6/R6_Torso.obj",    "Torso",     "TorsoPivot",    Vector3(0.0f,   0.13f, 0.0f), 0.0f },
+        { "res://GodotLuau/assets/avatars/r6/R6_Head.obj",     "Head",      "HeadPivot",     Vector3(0.0f,   1.13f, 0.0f), 0.0f },
+        { "res://GodotLuau/assets/avatars/r6/R6_LeftArm.obj",  "Left Arm",  "LeftArmPivot",  Vector3(1.5f,   0.63f, 0.0f), -1.5707963f },
+        { "res://GodotLuau/assets/avatars/r6/R6_RightArm.obj", "Right Arm", "RightArmPivot", Vector3(-1.5f,  0.63f, 0.0f),  1.5707963f },
+        { "res://GodotLuau/assets/avatars/r6/R6_LeftLeg.obj",  "Left Leg",  "LeftLegPivot",  Vector3(0.55f, -0.87f, 0.0f), 0.0f },
+        { "res://GodotLuau/assets/avatars/r6/R6_RightLeg.obj", "Right Leg", "RightLegPivot", Vector3(-0.55f,-0.87f, 0.0f), 0.0f },
     };
     if (!rl->exists(PARTS[0].file)) return nullptr;
 

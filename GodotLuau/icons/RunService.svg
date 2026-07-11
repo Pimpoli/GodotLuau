@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="128" height="128">
+  <!-- Círculo exterior (clock/loop) -->
+  <circle cx="50" cy="50" r="42" stroke="#1A1A1A" stroke-width="5" fill="#2C3E50"/>
+  <!-- Triángulo play (ejecución) -->
+  <polygon points="35,28 35,72 78,50" fill="#2ECC71" stroke="#1A1A1A" stroke-width="3" stroke-linejoin="round"/>
+</svg>
