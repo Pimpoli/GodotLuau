@@ -81,6 +81,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, gl_freecam
 #include "gl_debug.h"     // gl_debug_on (prints internos solo en Modo Debug)
 #include "gl_avatar.h"    // personaje R6 + animador (muñecos remotos)
@@ -465,7 +466,7 @@ class NetworkService : public Node {
                 lua_xmove(cb.L, th, 1);
                 int nargs = 0;
                 if (has_id) { lua_pushinteger(th, id); nargs = 1; }
-                lua_resume(th, nullptr, nargs);
+                gl_check_resume(th, lua_resume(th, nullptr, nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
         }

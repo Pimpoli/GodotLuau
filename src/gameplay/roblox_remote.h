@@ -5,6 +5,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
 #include <vector>
 #include <algorithm>
@@ -143,7 +144,7 @@ public:
                 _gl_push_node(th, player);              // arg1: player (LocalPlayer) o nil
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
-                lua_resume(th, nullptr, 1 + nargs);
+                gl_check_resume(th, lua_resume(th, nullptr, 1 + nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);  // quitar el hilo
         }
@@ -159,7 +160,7 @@ public:
                 lua_xmove(cb.L, th, 1);
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
-                lua_resume(th, nullptr, nargs);
+                gl_check_resume(th, lua_resume(th, nullptr, nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
         }
@@ -213,18 +214,20 @@ public:
             lua_pushnil(caller); return 1;
         }
         int pre_top = lua_gettop(server_invoke_L);
+        lua_pushcfunction(server_invoke_L, gl_trace_handler, "errh");   // captura el stack del handler
         lua_rawgeti(server_invoke_L, LUA_REGISTRYINDEX, server_invoke_ref);
         lua_pushnil(server_invoke_L);
         for (int i = stack_base; i < stack_base + nargs; i++)
             _lua_cross_push(caller, i, server_invoke_L);
         int ret_count = 0;
-        if (lua_pcall(server_invoke_L, 1 + nargs, LUA_MULTRET, 0) == 0) {
-            ret_count = lua_gettop(server_invoke_L) - pre_top;
+        if (lua_pcall(server_invoke_L, 1 + nargs, LUA_MULTRET, pre_top + 1) == 0) {
+            ret_count = lua_gettop(server_invoke_L) - (pre_top + 1);
             if (ret_count < 0) ret_count = 0;
             for (int i = 1; i <= ret_count; i++)
-                _lua_cross_push(server_invoke_L, pre_top + i, caller);
+                _lua_cross_push(server_invoke_L, pre_top + 1 + i, caller);
             lua_settop(server_invoke_L, pre_top);
         } else {
+            gl_report_script_error_with_trace(server_invoke_L, gl_pcall_trace());
             lua_settop(server_invoke_L, pre_top);
             lua_pushnil(caller); ret_count = 1;
         }
@@ -237,17 +240,19 @@ public:
             lua_pushnil(caller); return 1;
         }
         int pre_top = lua_gettop(client_invoke_L);
+        lua_pushcfunction(client_invoke_L, gl_trace_handler, "errh");   // captura el stack del handler
         lua_rawgeti(client_invoke_L, LUA_REGISTRYINDEX, client_invoke_ref);
         for (int i = stack_base; i < stack_base + nargs; i++)
             _lua_cross_push(caller, i, client_invoke_L);
         int ret_count = 0;
-        if (lua_pcall(client_invoke_L, nargs, LUA_MULTRET, 0) == 0) {
-            ret_count = lua_gettop(client_invoke_L) - pre_top;
+        if (lua_pcall(client_invoke_L, nargs, LUA_MULTRET, pre_top + 1) == 0) {
+            ret_count = lua_gettop(client_invoke_L) - (pre_top + 1);
             if (ret_count < 0) ret_count = 0;
             for (int i = 1; i <= ret_count; i++)
-                _lua_cross_push(client_invoke_L, pre_top + i, caller);
+                _lua_cross_push(client_invoke_L, pre_top + 1 + i, caller);
             lua_settop(client_invoke_L, pre_top);
         } else {
+            gl_report_script_error_with_trace(client_invoke_L, gl_pcall_trace());
             lua_settop(client_invoke_L, pre_top);
             lua_pushnil(caller); ret_count = 1;
         }
@@ -284,7 +289,7 @@ public:
                 lua_xmove(cb.L, th, 1);
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
-                lua_resume(th, nullptr, nargs);
+                gl_check_resume(th, lua_resume(th, nullptr, nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
         }

@@ -1,6 +1,7 @@
 #ifndef LUAU_API_H
 #define LUAU_API_H
 
+#include "gl_errors.h"
 #include "folder.h"
 #include "humanoid.h"
 #include "humanoid2d.h"
@@ -371,19 +372,8 @@ static int method_isdescendantof(lua_State* L) {
 static int method_getfullname(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     if (!w || !gow_node(w)) { lua_pushstring(L, ""); return 1; }
-    // Build path by walking up the tree (stop at root or DataModel)
-    std::vector<std::string> parts;
-    Node* cur = gow_node(w);
-    while (cur && cur->get_parent()) {
-        parts.push_back(String(cur->get_name()).utf8().get_data());
-        cur = cur->get_parent();
-    }
-    std::string result;
-    for (int i = (int)parts.size() - 1; i >= 0; i--) {
-        if (!result.empty()) result += ".";
-        result += parts[i];
-    }
-    lua_pushstring(L, result.c_str()); return 1;
+    lua_pushstring(L, gl_instance_fullname(gow_node(w)).utf8().get_data());
+    return 1;
 }
 
 static int method_findfirstchild_whichisa(lua_State* L) {
@@ -653,8 +643,9 @@ static int godot_object_index(lua_State* L) {
     if (strcmp(key, "Destroy")          == 0) { lua_pushcfunction(L, method_destroy,                   "Destroy");                return 1; }
     if (strcmp(key, "Clone")            == 0) { lua_pushcfunction(L, method_clone,                     "Clone");                  return 1; }
     if (strcmp(key, "ClearAllChildren") == 0) { lua_pushcfunction(L, method_clearallchildren,          "ClearAllChildren");       return 1; }
-    if (strcmp(key, "FindFirstChild")   == 0 ||
-        strcmp(key, "WaitForChild")     == 0) { lua_pushcfunction(L, method_findfirstchild,            key);                      return 1; }
+    // WaitForChild NO va aqui: lo implementa el __index local de luau_script.h
+    // (suspende la corrutina de verdad, como Roblox).
+    if (strcmp(key, "FindFirstChild")   == 0) { lua_pushcfunction(L, method_findfirstchild,            key);                      return 1; }
     if (strcmp(key, "FindFirstChildOfClass") == 0 ||
         strcmp(key, "FindFirstChildWhichIsA")== 0) { lua_pushcfunction(L, method_findfirstchild_whichisa, key);                   return 1; }
     if (strcmp(key, "FindFirstAncestor")     == 0) { lua_pushcfunction(L, method_findfirstancestor,    "FindFirstAncestor");      return 1; }
@@ -2670,7 +2661,11 @@ static int godot_object_index(lua_State* L) {
     Node* child = n->get_node_or_null(NodePath(key));
     if (child) { wrap_node(L, child); return 1; }
 
-    lua_pushnil(L); return 1;
+    // COMO ROBLOX: indexar un miembro que no existe es un ERROR, no nil.
+    // (Para sondear sin error existen FindFirstChild / pcall, igual que alla.)
+    luaL_error(L, "%s is not a valid member of %s \"%s\"",
+               key, gl_roblox_classname(n), gl_instance_fullname(n).utf8().get_data());
+    return 0;
 }
 
 // ════════════════════════════════════════════════════════════════════

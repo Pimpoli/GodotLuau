@@ -19,6 +19,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 
 #include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
 
@@ -460,14 +461,18 @@ public:
         if (!gl_state_alive(L) || !p_hit) return;
         lua_getref(L, p_ref);
         if (lua_isfunction(L, -1)) {
+            int fidx = lua_gettop(L);
+            lua_pushcfunction(L, gl_trace_handler, "errh");
+            lua_insert(L, fidx);   // handler debajo de la funcion (captura el stack)
             GodotObjectWrapper* wrap = (GodotObjectWrapper*)lua_newuserdata(L, sizeof(GodotObjectWrapper));
             gow_set(wrap, p_hit);
             luaL_getmetatable(L, "GodotObject");
             lua_setmetatable(L, -2);
-            if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-                UtilityFunctions::print("[Luau Touched] ", lua_tostring(L, -1));
+            if (lua_pcall(L, 1, 0, fidx) != LUA_OK) {
+                gl_report_script_error_with_trace(L, gl_pcall_trace());
                 lua_pop(L, 1);
             }
+            lua_remove(L, fidx);
         } else { lua_pop(L, 1); }
     }
 

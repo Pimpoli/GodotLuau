@@ -725,6 +725,8 @@ public:
         String     child_name;
         double     timeout;   // -1 = sin timeout
         double     elapsed;
+        String     trace;          // stack en el momento de la llamada (para el warning)
+        bool       warned = false; // "Infinite yield possible" ya impreso
     };
 
 private:
@@ -745,7 +747,9 @@ public:
     void add_waiting_child(lua_State* th, lua_State* mL, int ref,
                            Node* parent, const String& name, double timeout) {
         uint64_t pid = parent ? (uint64_t)parent->get_instance_id() : 0;
-        waiting_children.push_back({th, mL, ref, pid, name, timeout, 0.0});
+        // El stack se captura AQUI (aun no cedimos): es el del caller de WaitForChild
+        waiting_children.push_back({th, mL, ref, pid, name, timeout, 0.0,
+                                    String::utf8(lua_debugtrace(th)), false});
         // Suspend the coroutine so _process won't auto-resume it via timer
         if (th == L_thread) {
             is_external_wait = true;
@@ -775,8 +779,7 @@ public:
             } else {
                 is_waiting      = false;
                 is_external_wait = false;
-                if (status != LUA_OK)
-                    UtilityFunctions::push_error("[GodotLuau] ", get_name(), ": ", lua_tostring(th, -1));
+                if (status != LUA_OK) gl_report_script_error(th);
                 script_finished = true;
             }
         } else {
@@ -792,8 +795,7 @@ public:
                         // another external wait – remains at -1 (set by add_waiting_child)
                     }
                 } else {
-                    if (status != LUA_OK)
-                        UtilityFunctions::push_error("[GodotLuau task] ", get_name(), ": ", lua_tostring(th, -1));
+                    if (status != LUA_OK) gl_report_script_error(th);
                     if (L_main) lua_unref(L_main, st.ref);
                     spawned_threads.erase(spawned_threads.begin() + i);
                 }
@@ -1285,12 +1287,16 @@ public:
 
             if (status == LUA_YIELD) {
                 double wait_time = 0.0;
-                if (lua_gettop(NL) > 0 && lua_isnumber(NL, -1)) { wait_time = lua_tonumber(NL, -1); lua_pop(NL, 1); }
+                if (lua_gettop(NL) > 0) {
+                    // Numero = task.wait(n); sentinel (__WAIT_CHILD__...) = espera
+                    // externa: timer -1 para que _process no lo re-resuma solo.
+                    wait_time = lua_isnumber(NL, -1) ? lua_tonumber(NL, -1) : -1.0;
+                    lua_pop(NL, 1);
+                }
                 SpawnedThread st; st.L = NL; st.ref = thread_ref; st.timer = wait_time; st.started = true;
                 self->spawned_threads.push_back(st);
             } else {
-                if (status != LUA_OK)
-                    UtilityFunctions::push_error("[GodotLuau task.spawn] ", lua_tostring(NL, -1));
+                if (status != LUA_OK) gl_report_script_error(NL);
                 if (self->L_main) lua_unref(self->L_main, thread_ref);
             }
             lua_settop(L, nl_idx);                     // devolver el hilo
@@ -1746,31 +1752,30 @@ public:
 
         std::string bytecode = Luau::compile(source.utf8().get_data());
 
-        if (luau_load(L_thread, String(get_name()).utf8().get_data(), bytecode.data(), bytecode.size(), 0) == 0) {
+        // Chunkname = ruta completa estilo Roblox ("ServerScriptService.Server"):
+        // asi los errores salen como alla ("ServerScriptService.Server:5: ...").
+        // El prefijo '=' evita que Luau lo envuelva en [string "..."].
+        String chunkname = String("=") + gl_instance_fullname(this);
+        if (luau_load(L_thread, chunkname.utf8().get_data(), bytecode.data(), bytecode.size(), 0) == 0) {
             resume();
         } else {
-            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3("Syntax error in '", "Error de sintaxis en '", "Erro de sintaxe em '"),
-                get_name(), "': ", lua_tostring(L_thread, -1));
+            // Error de sintaxis: linea roja identica a Roblox, sin stack.
+            gl_report_error_line(String::utf8(lua_tostring(L_thread, -1)));
         }
     }
 
     void setup_require_system(lua_State* L) {
         lua_pushcfunction(L, [](lua_State* L) -> int {
+            // Mensajes EXACTOS de Roblox en cada caso de require().
             GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
             if (!wrapper || !gow_node(wrapper)) {
-                UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
-                    "require() needs a valid ModuleScript.",
-                    "require() requiere un ModuleScript válido.",
-                    "require() precisa de um ModuleScript válido."));
+                luaL_error(L, "Attempted to call require with invalid argument(s).");
                 return 0;
             }
 
             Node* mod_node = gow_node(wrapper);
             if (mod_node->get_class() != "ModuleScript") {
-                UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
-                    "require() only accepts ModuleScripts.",
-                    "require() solo acepta ModuleScripts.",
-                    "require() só aceita ModuleScripts."));
+                luaL_error(L, "Attempted to call require with invalid argument(s).");
                 return 0;
             }
 
@@ -1784,18 +1789,19 @@ public:
 
             Ref<LuauScript> res = mod_ptr->get_codigo_luau();
             if (res.is_null()) {
-                UtilityFunctions::push_error("[GodotLuau] require(): ModuleScript '", mod_node->get_name(), "' ", gl_tr3(
-                    "has no source code assigned.",
-                    "no tiene código asignado.",
-                    "não tem código atribuído."));
+                // Modulo sin codigo = modulo que no devuelve nada (como en Roblox)
+                luaL_error(L, "Module code did not return exactly one value");
                 return 0;
             }
 
             std::string bc = Luau::compile(res->_get_source_code().utf8().get_data());
-            if (luau_load(L, String(mod_node->get_name()).utf8().get_data(), bc.data(), bc.size(), 0) != 0) {
-                UtilityFunctions::push_error("[GodotLuau] require('", mod_node->get_name(), "') ", gl_tr3(
-                    "failed to compile: ", "no compiló: ", "não compilou: "), lua_tostring(L, -1));
+            String mod_chunkname = String("=") + gl_instance_fullname(mod_node);
+            if (luau_load(L, mod_chunkname.utf8().get_data(), bc.data(), bc.size(), 0) != 0) {
+                // Como Roblox: se imprime el error de sintaxis del modulo (rojo) y
+                // el require lanza su error generico en la linea del caller.
+                gl_report_error_line(String::utf8(lua_tostring(L, -1)));
                 lua_pop(L, 1);
+                luaL_error(L, "Requested module experienced an error while loading");
                 return 0;
             }
 
@@ -1807,7 +1813,12 @@ public:
             wrap_node(L, mod_node);
             lua_setglobal(L, "script");
 
-            int call_status = lua_pcall(L, 0, 1, 0);
+            // Handler debajo de la funcion: captura el stack DENTRO del modulo
+            int fidx = lua_gettop(L);
+            lua_pushcfunction(L, gl_trace_handler, "errh");
+            lua_insert(L, fidx);
+            int call_status = lua_pcall(L, 0, 1, fidx);
+            lua_remove(L, fidx);
 
             // Restore script global (always, even on error)
             lua_rawgeti(L, LUA_REGISTRYINDEX, saved_script);
@@ -1815,15 +1826,21 @@ public:
             lua_unref(L, saved_script); // <-- Usamos lua_unref de Luau
 
             if (call_status == LUA_OK) {
+                if (lua_isnil(L, -1)) {
+                    // Roblox exige que el modulo devuelva exactamente un valor
+                    lua_pop(L, 1);
+                    luaL_error(L, "Module code did not return exactly one value");
+                    return 0;
+                }
                 lua_pushvalue(L, -1);
                 lua_setfield(L, LUA_REGISTRYINDEX, cache_id.utf8().get_data());
                 return 1;
             }
-            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3(
-                "Error inside required module: ",
-                "Error dentro del módulo requerido: ",
-                "Erro dentro do módulo requerido: "), lua_tostring(L, -1));
+            // Como Roblox: el error del modulo se imprime con su stack y el
+            // require lanza el error generico en la linea del caller.
+            gl_report_script_error_with_trace(L, gl_pcall_trace());
             lua_pop(L, 1);
+            luaL_error(L, "Requested module experienced an error while loading");
             return 0;
         }, "require");
         lua_setglobal(L, "require");
@@ -1848,8 +1865,7 @@ public:
             }
             is_waiting = true;
         } else if (status != LUA_OK) {
-            UtilityFunctions::push_error("[GodotLuau] ", gl_tr3("Runtime error in '", "Error de ejecución en '", "Erro de execução em '"),
-                get_name(), "': ", lua_tostring(L_thread, -1));
+            gl_report_script_error(L_thread);
             script_finished = true;
         } else {
             script_finished = true;
@@ -1867,7 +1883,8 @@ public:
         if (lua_isfunction(L_main, -1)) {
             lua_xmove(L_main, th, 1);
             wrap_node(th, child);
-            lua_resume(th, nullptr, 1);
+            int status = lua_resume(th, nullptr, 1);
+            if (status != LUA_OK && status != LUA_YIELD) gl_report_script_error(th);
         } else {
             lua_pop(L_main, 1);
         }
@@ -1909,8 +1926,7 @@ public:
                         st.timer = 0.0;
                     }
                 } else {
-                    if (status != LUA_OK)
-                        UtilityFunctions::push_error("[GodotLuau task.spawn] ", get_name(), ": ", lua_tostring(st.L, -1));
+                    if (status != LUA_OK) gl_report_script_error(st.L);
                     if (L_main) lua_unref(L_main, st.ref);
                     spawned_threads.erase(spawned_threads.begin() + i);
                 }
@@ -1930,6 +1946,15 @@ public:
                     Node* ch = parent->get_child(ci);
                     if (ch && ch->get_name() == StringName(wc.child_name)) { found = ch; break; }
                 }
+            }
+            // Warning de Roblox: WaitForChild sin timeout que lleva 5s sin
+            // resolverse — el clasico script colgado "en silencio".
+            if (!found && !parent_gone && wc.timeout <= 0 && !wc.warned && wc.elapsed >= 5.0) {
+                wc.warned = true;
+                String pname = parent ? gl_instance_fullname(parent) : String(get_name());
+                UtilityFunctions::print_rich(String("[color=") + GL_WARN_COLOR +
+                    "]Infinite yield possible on '" + pname + ":WaitForChild(\"" + wc.child_name + "\")'[/color]");
+                UtilityFunctions::print_rich(gl_format_roblox_stack(wc.trace));
             }
             // Si el padre desaparece, no dejamos la corrutina colgada para siempre.
             bool timed_out = (wc.timeout > 0 && wc.elapsed >= wc.timeout) || parent_gone;

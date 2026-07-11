@@ -22,6 +22,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"
 
 using namespace godot;
@@ -335,9 +336,7 @@ private:
                 uis_push_vec3(th, pos.x,   pos.y,   pos.z);   lua_setfield(th, -2, "Position");
                 uis_push_vec3(th, delta.x, delta.y, delta.z); lua_setfield(th, -2, "Delta");
                 lua_pushboolean(th, game_proc);  // 2do argumento: gameProcessed
-                int status = lua_resume(th, nullptr, 2);
-                if (status != LUA_OK && status != LUA_YIELD)
-                    UtilityFunctions::print("[UIS] Error: ", lua_tostring(th, -1));
+                gl_check_resume(th, lua_resume(th, nullptr, 2));
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);
         }

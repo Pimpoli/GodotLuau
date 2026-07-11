@@ -19,6 +19,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive
 
 using namespace godot;
@@ -94,9 +95,7 @@ public:
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
                 lua_xmove(cb.main_L, thread, 1);
-                int st = lua_resume(thread, nullptr, 0);
-                if (st != LUA_OK && st != LUA_YIELD)
-                    UtilityFunctions::print("[Humanoid.Died] Error: ", lua_tostring(thread, -1));
+                gl_check_resume(thread, lua_resume(thread, nullptr, 0));
             } else { lua_pop(cb.main_L, 1); }
             lua_pop(cb.main_L, 1);
         }
@@ -111,9 +110,7 @@ public:
                 lua_xmove(cb.main_L, thread, 1);
                 lua_pushnumber(thread, new_state);
                 lua_pushnumber(thread, old_state);
-                int st = lua_resume(thread, nullptr, 2);
-                if (st != LUA_OK && st != LUA_YIELD)
-                    UtilityFunctions::print("[Humanoid.StateChanged] Error: ", lua_tostring(thread, -1));
+                gl_check_resume(thread, lua_resume(thread, nullptr, 2));
             } else { lua_pop(cb.main_L, 1); }
             lua_pop(cb.main_L, 1);
         }
@@ -129,9 +126,7 @@ public:
                 lua_xmove(cb.main_L, thread, 1);
                 lua_pushnumber(thread, new_hp);
                 lua_pushnumber(thread, old_hp);
-                int st = lua_resume(thread, nullptr, 2);
-                if (st != LUA_OK && st != LUA_YIELD)
-                    UtilityFunctions::print("[Humanoid.HealthChanged] Error: ", lua_tostring(thread, -1));
+                gl_check_resume(thread, lua_resume(thread, nullptr, 2));
             } else { lua_pop(cb.main_L, 1); }
             lua_pop(cb.main_L, 1);
         }

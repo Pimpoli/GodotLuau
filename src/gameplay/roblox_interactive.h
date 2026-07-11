@@ -21,6 +21,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"
 
 using namespace godot;
@@ -115,7 +116,7 @@ private:
                     gow_set(w, player);
                     luaL_getmetatable(th, "GodotObject"); lua_setmetatable(th, -2);
                 } else lua_pushnil(th);
-                lua_resume(th, nullptr, 1);
+                gl_check_resume(th, lua_resume(th, nullptr, 1));
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);
         }
@@ -288,7 +289,7 @@ private:
                     gow_set(w, player);
                     luaL_getmetatable(th, "GodotObject"); lua_setmetatable(th, -2);
                 } else lua_pushnil(th);
-                lua_resume(th, nullptr, 1);
+                gl_check_resume(th, lua_resume(th, nullptr, 1));
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);
         }

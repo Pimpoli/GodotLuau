@@ -19,6 +19,7 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
 #include <vector>
 #include <algorithm>
@@ -317,7 +318,7 @@ private:
                 } else {
                     lua_pushnil(th);
                 }
-                lua_resume(th, nullptr, 1);
+                gl_check_resume(th, lua_resume(th, nullptr, 1));
             } else lua_pop(cb.main_L, 1);
             lua_pop(cb.main_L, 1);
         }
@@ -997,10 +998,7 @@ protected:
             if (lua_isfunction(cb.main_L, -1)) {
                 lua_xmove(cb.main_L, thread, 1);
                 lua_pushnumber(thread, delta);
-                int status = lua_resume(thread, nullptr, 1);
-                if (status != LUA_OK && status != LUA_YIELD) {
-                    UtilityFunctions::print("[RunService] Error: ", lua_tostring(thread, -1));
-                }
+                gl_check_resume(thread, lua_resume(thread, nullptr, 1));
             } else {
                 lua_pop(cb.main_L, 1);
             }
