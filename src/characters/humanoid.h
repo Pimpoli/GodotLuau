@@ -400,9 +400,12 @@ public:
 
         // ── 2. Jump (teclado + gamepad A + boton tactil) ───────────
         //// ── 2. Salto (teclado + gamepad A + botón táctil) ──────────
-        bool jump_pressed = input->is_key_pressed(KEY_SPACE)
+        // Vista de Servidor activa: la cámara libre se queda con el input
+        // (WASD/salto no mueven al personaje, como en Roblox Studio).
+        bool freecam = gl_freecam().active;
+        bool jump_pressed = !freecam && (input->is_key_pressed(KEY_SPACE)
             || input->is_joy_button_pressed(0, JOY_BUTTON_A)
-            || (gl_mobile().active && gl_mobile().jump);
+            || (gl_mobile().active && gl_mobile().jump));
         if (jump_pressed && body->is_on_floor()) {
             velocity.y = jump_power;
         }
@@ -427,21 +430,23 @@ public:
             // y consola sin cambiar nada.
             float input_forward = 0.0f;
             float input_right   = 0.0f;
-            // Teclado (WASD + flechas)
-            if (input->is_key_pressed(KEY_W) || input->is_key_pressed(KEY_UP))    input_forward += 1.0f;
-            if (input->is_key_pressed(KEY_S) || input->is_key_pressed(KEY_DOWN))  input_forward -= 1.0f;
-            if (input->is_key_pressed(KEY_D) || input->is_key_pressed(KEY_RIGHT)) input_right   += 1.0f;
-            if (input->is_key_pressed(KEY_A) || input->is_key_pressed(KEY_LEFT))  input_right   -= 1.0f;
-            // Gamepad: stick izquierdo (zona muerta para evitar deriva)
-            {
-                Vector2 ls(input->get_joy_axis(0, JOY_AXIS_LEFT_X),
-                           input->get_joy_axis(0, JOY_AXIS_LEFT_Y));
-                if (ls.length() > 0.2f) { input_right += ls.x; input_forward -= ls.y; }
-            }
-            // Tactil: joystick virtual en pantalla (lo escribe el RobloxPlayer)
-            if (gl_mobile().active) {
-                Vector2 tv = gl_mobile().move;
-                if (tv.length() > 0.05f) { input_right += tv.x; input_forward += tv.y; }
+            if (!freecam) {
+                // Teclado (WASD + flechas)
+                if (input->is_key_pressed(KEY_W) || input->is_key_pressed(KEY_UP))    input_forward += 1.0f;
+                if (input->is_key_pressed(KEY_S) || input->is_key_pressed(KEY_DOWN))  input_forward -= 1.0f;
+                if (input->is_key_pressed(KEY_D) || input->is_key_pressed(KEY_RIGHT)) input_right   += 1.0f;
+                if (input->is_key_pressed(KEY_A) || input->is_key_pressed(KEY_LEFT))  input_right   -= 1.0f;
+                // Gamepad: stick izquierdo (zona muerta para evitar deriva)
+                {
+                    Vector2 ls(input->get_joy_axis(0, JOY_AXIS_LEFT_X),
+                               input->get_joy_axis(0, JOY_AXIS_LEFT_Y));
+                    if (ls.length() > 0.2f) { input_right += ls.x; input_forward -= ls.y; }
+                }
+                // Tactil: joystick virtual en pantalla (lo escribe el RobloxPlayer)
+                if (gl_mobile().active) {
+                    Vector2 tv = gl_mobile().move;
+                    if (tv.length() > 0.05f) { input_right += tv.x; input_forward += tv.y; }
+                }
             }
             input_forward = Math::clamp(input_forward, -1.0f, 1.0f);
             input_right   = Math::clamp(input_right,   -1.0f, 1.0f);

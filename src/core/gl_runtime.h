@@ -42,6 +42,15 @@ struct GLMobileInput {
 };
 inline GLMobileInput& gl_mobile() { static GLMobileInput s; return s; }
 
+// ── Vista de Servidor (cámara libre de debug, como en Roblox Studio) ─────────
+//  Cuando está activa, el Humanoid y el RobloxPlayer IGNORAN el input: WASD y
+//  el mouse mueven la cámara libre, no al personaje. La activa el botón
+//  "Server View" que crea el NetworkService en sesiones multijugador.
+struct GLFreecamState {
+    bool active = false;
+};
+inline GLFreecamState& gl_freecam() { static GLFreecamState s; return s; }
+
 // ── Wrapper de instancia: ObjectID en lugar de Node* crudo ───────────────────
 struct GodotObjectWrapper {
     uint64_t obj_id;   // ObjectID del nodo (0 = ninguno)

@@ -16,9 +16,16 @@
 //
 //  Arranque automático: cuando el usuario pulsa el botón Play nativo con
 //  "Players" >= 2 en la barra del editor, se lanzan N instancias:
-//    · la instancia nativa (sin --glindex) lee user://gl_mp_session.gl y
-//      se vuelve el HOST (index 1),
+//    · la instancia nativa recibe "--glindex 1" vía ProjectSettings
+//      "editor/run/main_run_args" (el editor los añade DESPUÉS de la escena,
+//      así llegan como user args) y se vuelve el HOST,
 //    · las demás se lanzan con --glindex 2..N y se conectan como clientes.
+//  Las ventanas se acomodan en mosaico con título Player1..N para que se vean
+//  todas (antes se apilaban en la misma posición y parecían menos ventanas).
+//
+//  Vista de Servidor: en sesiones multijugador cada ventana tiene un botón
+//  "Server View" (como Roblox Studio) que suelta una cámara libre: WASD +
+//  click derecho vuelan la cámara SIN mover al personaje.
 //
 //  Señales (estilo Roblox): PlayerConnected(peerId), PlayerDisconnected(peerId),
 //           Connected(), ConnectionFailed().
@@ -33,9 +40,14 @@
 #include <godot_cpp/classes/e_net_multiplayer_peer.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/window.hpp>
-#include <godot_cpp/classes/time.hpp>
-#include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/canvas_layer.hpp>
+#include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/input.hpp>
+#include <godot_cpp/classes/input_event_mouse_button.hpp>
+#include <godot_cpp/classes/input_event_mouse_motion.hpp>
 #include <godot_cpp/classes/animatable_body3d.hpp>
 #include <godot_cpp/classes/animatable_body2d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
@@ -65,46 +77,65 @@
 
 using namespace godot;
 
-// ── Sesión de multijugador escrita por la barra del editor ───────────────
-// El botón Play nativo no puede pasarle argumentos a la instancia que él lanza,
-// así que la barra escribe user://gl_mp_session.gl con "count|device|stamp".
-// La instancia nativa (sin --glindex) lo lee y se convierte en el HOST.
-static inline bool gl_mp_session_read(int& out_count, String& out_device) {
-    Ref<FileAccess> f = FileAccess::open("user://gl_mp_session.gl", FileAccess::READ);
-    if (f.is_null()) return false;
-    String txt = f->get_as_text();
-    f->close();
-    PackedStringArray parts = txt.strip_edges().split("|");
-    if (parts.size() < 3) return false;
-    int    cnt   = String(parts[0]).to_int();
-    String dev   = parts[1];
-    double stamp = String(parts[2]).to_float();
-    double now   = Time::get_singleton()->get_unix_time_from_system();
-    // Ventana amplia: el archivo lo mantiene sincronizado el editor (se escribe al
-    // elegir >=2 jugadores y se borra al volver a 1 o al cerrar). Solo se rechaza
-    // si es antiquísimo (editor que crasheó hace mucho).
-    if (now - stamp > 86400.0) return false;
-    if (cnt < 2) return false;
-    out_count = cnt;
-    out_device = dev;
-    return true;
-}
-static inline bool gl_mp_session_active() {
-    int c; String d;
-    return gl_mp_session_read(c, d);
-}
 static inline void gl_mp_log(const String& s) {
     UtilityFunctions::print(String("[GodotLuau MP] ") + s);
 }
 
-// ¿Debe auto-crearse el NetworkService al arrancar el juego?
-//   · clientes: se lanzan con --glindex
-//   · host nativo: hay una sesión fresca escrita por la barra del editor
+// ¿Debe auto-crearse el NetworkService al arrancar el juego? TODAS las
+// instancias (host incluido) reciben --glindex: el host lo recibe vía
+// ProjectSettings "editor/run/main_run_args" (que el botón Play nativo añade
+// después de la escena) y los clientes en su línea de comandos.
 static inline bool gl_mp_autostart_requested() {
     PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
     for (int i = 0; i < a.size(); i++) if (String(a[i]) == "--glindex") return true;
-    return gl_mp_session_active();
+    return false;
 }
+
+// ── Cámara libre de la Vista de Servidor (como la cámara de Roblox Studio) ──
+//  WASD mueve, click derecho + mouse rota, rueda cambia la velocidad,
+//  E/Espacio sube, Q/Ctrl baja. NO toca al personaje.
+class GLFreeCamera : public Camera3D {
+    GDCLASS(GLFreeCamera, Camera3D);
+    float speed = 16.0f;
+    float sens  = 0.0025f;
+protected:
+    static void _bind_methods() {}
+public:
+    void _input(const Ref<InputEvent>& e) override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        Input* in = Input::get_singleton();
+        Ref<InputEventMouseButton> mb = e;
+        if (mb.is_valid()) {
+            if (mb->get_button_index() == MOUSE_BUTTON_RIGHT)
+                in->set_mouse_mode(mb->is_pressed() ? Input::MOUSE_MODE_CAPTURED
+                                                    : Input::MOUSE_MODE_VISIBLE);
+            if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)   speed = Math::min(speed * 1.15f, 200.0f);
+            if (mb->get_button_index() == MOUSE_BUTTON_WHEEL_DOWN) speed = Math::max(speed / 1.15f, 1.0f);
+        }
+        Ref<InputEventMouseMotion> mm = e;
+        if (mm.is_valid() && in->get_mouse_mode() == Input::MOUSE_MODE_CAPTURED) {
+            Vector3 r = get_rotation();
+            r.y -= mm->get_relative().x * sens;
+            r.x  = Math::clamp(r.x - mm->get_relative().y * sens, -1.5f, 1.5f);
+            set_rotation(r);
+        }
+    }
+    void _process(double dt) override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        Input* in = Input::get_singleton();
+        Basis b = get_global_transform().basis;
+        Vector3 dir;
+        if (in->is_key_pressed(KEY_W)) dir -= b.get_column(2);
+        if (in->is_key_pressed(KEY_S)) dir += b.get_column(2);
+        if (in->is_key_pressed(KEY_D)) dir += b.get_column(0);
+        if (in->is_key_pressed(KEY_A)) dir -= b.get_column(0);
+        if (in->is_key_pressed(KEY_E) || in->is_key_pressed(KEY_SPACE)) dir += Vector3(0, 1, 0);
+        if (in->is_key_pressed(KEY_Q) || in->is_key_pressed(KEY_CTRL))  dir -= Vector3(0, 1, 0);
+        if (dir.length_squared() > 0.0001f)
+            set_global_position(get_global_position() + dir.normalized() * speed * (float)dt);
+    }
+    GLFreeCamera() {}
+};
 
 class NetworkService : public Node {
     GDCLASS(NetworkService, Node);
@@ -134,6 +165,12 @@ class NetworkService : public Node {
     bool   is_2d = false;
     double bcast_timer = 0.0;
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
+
+    // Vista de Servidor (cámara libre)
+    CanvasLayer* view_ui  = nullptr;
+    Button*      view_btn = nullptr;
+    uint64_t     freecam_id = 0;   // ObjectID de la cámara libre
+    uint64_t     prevcam_id = 0;   // ObjectID de la cámara del jugador
 
     static Node* _find_by_class(Node* n, const char* cls) {
         if (!n) return nullptr;
@@ -177,6 +214,52 @@ class NetworkService : public Node {
         Window* w = get_tree()->get_root();
         if (device == "Mobile" && w) w->set_size(Vector2i(400, 820));   // aspecto de teléfono
         // Console/VR: sin efecto visual aún; el juego lee el modo con net:GetDevice().
+    }
+    // Acomoda las N ventanas en mosaico con título Player1..N. Antes todas
+    // abrían en la MISMA posición (apiladas) y parecían menos ventanas.
+    void _apply_window_layout(int idx, int cnt) {
+        if (!is_inside_tree()) return;
+        Window* w = get_tree()->get_root();
+        if (!w) return;
+        String title = String("Player") + String::num_int64(idx);
+        if (idx == 1) title += " (Server)";
+        w->set_title(title);
+        DisplayServer* ds = DisplayServer::get_singleton();
+        if (!ds) return;
+        Rect2i ur = ds->screen_get_usable_rect();
+        if (ur.size.x < 320 || ur.size.y < 240) return;   // headless / pantalla rara
+        int cols = (cnt <= 2) ? cnt : ((cnt <= 4) ? 2 : 3);
+        int rows = (cnt + cols - 1) / cols;
+        Vector2i cell(ur.size.x / cols, ur.size.y / rows);
+        int i0 = Math::clamp(idx - 1, 0, cnt - 1);
+        Vector2i pos = ur.position + Vector2i((i0 % cols) * cell.x, (i0 / cols) * cell.y);
+        if (device == "Mobile") {
+            // Teléfono: mantiene su tamaño, solo se posiciona en su celda
+            w->set_position(pos + Vector2i(24, 40));
+        } else {
+            w->set_size(Vector2i(Math::max(cell.x - 24, 480), Math::max(cell.y - 56, 320)));
+            w->set_position(pos + Vector2i(12, 40));
+        }
+    }
+    // Botón "Server View" (arriba al centro) para alternar cámara libre /
+    // cámara del jugador, como el toggle cliente/servidor de Roblox Studio.
+    void _build_view_toggle() {
+        if (view_ui) return;
+        view_ui = memnew(CanvasLayer);
+        view_ui->set_name("GL_ViewToggle");
+        view_ui->set_layer(95);
+        add_child(view_ui);
+        view_btn = memnew(Button);
+        view_btn->set_text("Server View");
+        view_btn->set_tooltip_text("Free camera like Roblox Studio's server view: WASD + right mouse to fly, wheel = speed. Your player does NOT move. Click again to return to the player camera.");
+        view_btn->set_anchor(SIDE_LEFT,  0.5f);
+        view_btn->set_anchor(SIDE_RIGHT, 0.5f);
+        view_btn->set_offset(SIDE_LEFT,  -76.0f);
+        view_btn->set_offset(SIDE_RIGHT,  76.0f);
+        view_btn->set_offset(SIDE_TOP,     8.0f);
+        view_btn->set_offset(SIDE_BOTTOM, 38.0f);
+        view_btn->connect("pressed", Callable(this, "_on_view_toggle"));
+        view_ui->add_child(view_btn);
     }
 
     Ref<MultiplayerAPI> _mp() {
@@ -403,6 +486,7 @@ protected:
         ClassDB::bind_method(D_METHOD("_relay_state2d", "pos", "rot", "idx"),       &NetworkService::_relay_state2d);
         ClassDB::bind_method(D_METHOD("_recv_remove", "who"),                       &NetworkService::_recv_remove);
         ClassDB::bind_method(D_METHOD("_on_puppet_gone", "key"),                    &NetworkService::_on_puppet_gone);
+        ClassDB::bind_method(D_METHOD("_on_view_toggle"),                           &NetworkService::_on_view_toggle);
     }
 
     void _notification(int p_what) {
@@ -454,6 +538,35 @@ public:
     }
     void _recv_remove(int who) { _remove_puppet(who); }
 
+    // ── Vista de Servidor: alternar cámara libre / cámara del jugador ─────
+    void _on_view_toggle() {
+        if (!gl_freecam().active) {
+            Viewport* vp = get_viewport();
+            Camera3D* cur = vp ? vp->get_camera_3d() : nullptr;
+            if (!cur) { gl_mp_log("Server View solo está disponible en juegos 3D por ahora"); return; }
+            prevcam_id = (uint64_t)cur->get_instance_id();
+            GLFreeCamera* fc = memnew(GLFreeCamera);
+            fc->set_name("GL_ServerFreeCam");
+            get_tree()->get_root()->add_child(fc);
+            fc->set_global_transform(cur->get_global_transform());
+            fc->make_current();
+            freecam_id = (uint64_t)fc->get_instance_id();
+            gl_freecam().active = true;
+            if (view_btn) view_btn->set_text("Client View");
+            gl_mp_log("Vista de Servidor: cámara libre (WASD + click derecho; el personaje no se mueve)");
+        } else {
+            gl_freecam().active = false;
+            if (Object* o = ObjectDB::get_instance(freecam_id))
+                if (Node* n = Object::cast_to<Node>(o)) n->queue_free();
+            freecam_id = 0;
+            Camera3D* pc = Object::cast_to<Camera3D>(ObjectDB::get_instance(prevcam_id));
+            if (pc) pc->make_current();
+            Input::get_singleton()->set_mouse_mode(Input::MOUSE_MODE_VISIBLE);
+            if (view_btn) view_btn->set_text("Server View");
+            gl_mp_log("Vista de Cliente: cámara del jugador");
+        }
+    }
+
     void add_pc_cb(lua_State* L, int ref)   { pc_cbs.push_back({L, ref}); }
     void add_pd_cb(lua_State* L, int ref)   { pd_cbs.push_back({L, ref}); }
     void add_conn_cb(lua_State* L, int ref) { conn_cbs.push_back({L, ref}); }
@@ -503,24 +616,17 @@ public:
         }
     }
 
-    // Lee --glindex/--glcount/--gldevice (clientes) o la sesión del editor (host)
+    // Lee --glindex/--glcount/--gldevice de los user args (el host los recibe
+    // vía "editor/run/main_run_args"; los clientes en su línea de comandos)
     // y auto-conecta el multijugador local.
     void _auto_init() {
         PackedStringArray args = OS::get_singleton()->get_cmdline_user_args();
         int idx = 0, cnt = 1;
-        bool have_idx = false;
         for (int i = 0; i < args.size(); i++) {
             String a = args[i];
-            if      (a == "--glindex"  && i + 1 < args.size()) { idx = String(args[i + 1]).to_int(); have_idx = true; }
+            if      (a == "--glindex"  && i + 1 < args.size()) idx = String(args[i + 1]).to_int();
             else if (a == "--glcount"  && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
             else if (a == "--gldevice" && i + 1 < args.size()) device = args[i + 1];
-        }
-        if (!have_idx) {
-            // ¿Instancia anfitriona nativa? (la lanzó el botón Play de Godot).
-            // NO se consume el archivo: debe seguir disponible en cada Play (el
-            // editor lo mantiene sincronizado y lo borra al salir / volver a 1).
-            int scnt; String sdev;
-            if (gl_mp_session_read(scnt, sdev)) { idx = 1; cnt = scnt; device = sdev; }
         }
         player_index = idx;
         if (idx >= 1 && cnt >= 2) {
@@ -535,6 +641,8 @@ public:
             gl_mp_log(as_client
                 ? (String("cliente Player") + String::num_int64(idx) + " conectando a 127.0.0.1:25575...")
                 : (String("host Player1 escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, disp. " + device + ")"));
+            _apply_window_layout(idx, cnt);
+            _build_view_toggle();
         } else {
             gl_mp_log("modo un jugador (Players = 1)");
         }

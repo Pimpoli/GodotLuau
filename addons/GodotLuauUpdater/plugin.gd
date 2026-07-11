@@ -347,10 +347,13 @@ func _exit_tree() -> void:
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
-	# Cerrar ventanas cliente y limpiar la sesión si el editor se cierra / se
-	# desactiva el plugin sin pulsar Stop (evita ventanas huérfanas).
+	# Cerrar ventanas cliente y quitar nuestros run-args si el editor se cierra o
+	# se desactiva el plugin (si quedaran, TODOS los Play futuros serían host).
 	_kill_mp_children()
-	_clear_mp_session()
+	var base := _strip_mp_args(str(ProjectSettings.get_setting("editor/run/main_run_args", "")))
+	if str(ProjectSettings.get_setting("editor/run/main_run_args", "")) != base:
+		ProjectSettings.set_setting("editor/run/main_run_args", base)
+		ProjectSettings.save()
 	_remove_mp_toolbar()
 
 # ── Local multiplayer controls next to the NATIVE Play button ────────────────
@@ -400,10 +403,10 @@ func _build_mp_toolbar() -> void:
 	_mp_device.tooltip_text = "How the game looks/behaves (PC by default)."
 	_mp_bar.add_child(_mp_device)
 
-	# Keep the host session file in sync BEFORE Play is pressed (closes the race
-	# where the native host boots before the file is written).
-	_mp_count.value_changed.connect(func(_v): _refresh_mp_session())
-	_mp_device.item_selected.connect(func(_i): _refresh_mp_session())
+	# Keep the host run-args in sync BEFORE Play is pressed (the native instance
+	# is launched by Godot itself, so its args must already be configured).
+	_mp_count.value_changed.connect(func(_v): _sync_mp_run_args())
+	_mp_device.item_selected.connect(func(_i): _sync_mp_run_args())
 
 	# Place the controls to the LEFT of Godot's native Play button and hook its
 	# signal — we do NOT create our own Play button.
@@ -424,10 +427,9 @@ func _build_mp_toolbar() -> void:
 		_mp_used_container = true
 		add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
 
-	# Clean slate: sync the session file with the current count (default 1 → cleared),
-	# so a leftover file from a previous session/crash never turns a single-player run
-	# into a host.
-	_refresh_mp_session()
+	# Clean slate: sync run args with the current count (default 1 → stripped), so
+	# leftovers from a previous session/crash never turn a single-player run into a host.
+	_sync_mp_run_args()
 
 func _remove_mp_toolbar() -> void:
 	if _mp_run_bar and is_instance_valid(_mp_run_bar):
@@ -448,29 +450,42 @@ func _mp_device_name() -> String:
 	var devices := ["PC", "Mobile", "Console", "VR"]
 	return devices[_mp_device.selected] if _mp_device else "PC"
 
-# Keep the session file present+fresh whenever Players >= 2, so the native host
-# instance always finds it on boot (play_pressed fires AFTER the process spawns).
-func _refresh_mp_session() -> void:
-	var count: int = int(_mp_count.value) if _mp_count else 1
-	if count >= 2:
-		_write_mp_session(count, _mp_device_name())
-	else:
-		_clear_mp_session()
+# The native Play button appends ProjectSettings "editor/run/main_run_args" AFTER
+# the scene argument, so putting "-- --glindex 1 ..." there makes the NATIVE game
+# instance receive real user args and become the HOST. Kept in sync with the
+# Players SpinBox (set when >= 2, stripped when 1) BEFORE Play is pressed.
+const MP_ARGS_MARKER := "-- --glindex"
 
-# Native Play pressed → if Players >= 2, become a shared local session.
+func _strip_mp_args(s: String) -> String:
+	var i := s.find(MP_ARGS_MARKER)
+	if i >= 0:
+		s = s.substr(0, i)
+	return s.strip_edges()
+
+func _sync_mp_run_args() -> void:
+	var count: int = int(_mp_count.value) if _mp_count else 1
+	var base := _strip_mp_args(str(ProjectSettings.get_setting("editor/run/main_run_args", "")))
+	var val := base
+	if count >= 2:
+		var ours := "%s 1 --glcount %d --gldevice %s" % [MP_ARGS_MARKER, count, _mp_device_name()]
+		val = (base + " " + ours) if base != "" else ours
+	if str(ProjectSettings.get_setting("editor/run/main_run_args", "")) != val:
+		ProjectSettings.set_setting("editor/run/main_run_args", val)
+		ProjectSettings.save()
+
+# Native Play pressed → if Players >= 2, launch the client windows #2..N.
+# (The native instance is the HOST: it already got "--glindex 1" via the synced
+# "editor/run/main_run_args".)
 func _on_native_play() -> void:
 	# Always close the windows we launched before (so a previous run's client
 	# windows never linger and inflate the count on the next Play).
 	_kill_mp_children()
 	var count: int = int(_mp_count.value) if _mp_count else 1
 	if count < 2:
-		_clear_mp_session()   # sin sesión → la instancia nativa corre single player
 		return
 	var device := _mp_device_name()
 	# Ensure the extra windows load the CURRENT project state from disk.
 	EditorInterface.save_all_scenes()
-	# The native instance (#1) reads this file and becomes the HOST (refresh stamp).
-	_write_mp_session(count, device)
 	# Run the SAME scene the host runs (F5 main / F6 current / F7 custom) so every
 	# window shares one world. Only a real scene path is forwarded (an unexpected
 	# value would make the client fail to boot).
@@ -487,8 +502,7 @@ func _on_native_play() -> void:
 		if pid > 0: _mp_child_pids.append(pid)
 		else: push_warning("[GodotLuau] Could not launch game instance %d." % i)
 
-# Native Stop pressed → close the extra windows. The session file is kept in sync
-# with the SpinBox (NOT cleared here) so replaying with the same count still hosts.
+# Native Stop pressed → close the extra windows.
 func _on_native_stop() -> void:
 	_kill_mp_children()
 
@@ -498,17 +512,6 @@ func _kill_mp_children() -> void:
 		if OS.is_process_running(pid):
 			OS.kill(pid)
 	_mp_child_pids.clear()
-
-func _write_mp_session(count: int, device: String) -> void:
-	var f := FileAccess.open("user://gl_mp_session.gl", FileAccess.WRITE)
-	if f:
-		f.store_string("%d|%s|%d" % [count, device, int(Time.get_unix_time_from_system())])
-		f.close()
-
-func _clear_mp_session() -> void:
-	var d := DirAccess.open("user://")
-	if d and d.file_exists("gl_mp_session.gl"):
-		d.remove("gl_mp_session.gl")
 
 # ── Ciclo de vida de scripts: papelera + restauración con Ctrl+Z ─────────────
 # Al borrar un nodo LocalScript/ServerScript/ModuleScript en el editor, su .lua
