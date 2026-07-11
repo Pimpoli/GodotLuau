@@ -590,6 +590,17 @@ static int method_getservice(lua_State* L) {
         gow_node(w)->add_child(ns);
         wrap_node(L, ns); return 1;
     }
+    // Players SIEMPRE existe (como en Roblox): si el juego no tiene el nodo,
+    // se crea al pedirlo. Sin esto game:GetService("Players") devolvia nil y
+    // cualquier framework con Players:GetPlayers() moria al instante.
+    if (strcmp(svc_name, "Players") == 0) {
+        Node* ps = Object::cast_to<Node>(ClassDB::instantiate(StringName("Players")));
+        if (ps) {
+            ps->set_name("Players");
+            gow_node(w)->add_child(ps);
+            wrap_node(L, ps); return 1;
+        }
+    }
 
     lua_pushnil(L); return 1;
 }

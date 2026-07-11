@@ -150,6 +150,13 @@ static inline Node3D* gl_build_r6_rig() {
     }
     if (built < 4) { root->queue_free(); return nullptr; }
 
+    // HumanoidRootPart (como Roblox R6): nodo invisible en el centro del torso;
+    // los scripts leen su .Position (global) para saber donde esta el jugador.
+    Node3D* hrp = memnew(Node3D);
+    hrp->set_name("HumanoidRootPart");
+    hrp->set_position(Vector3(0.0f, 0.13f, 0.0f));
+    root->add_child(hrp);
+
     // Escala Roblox->fisica: el modelo mide 5.1 (pies -2.87, cabeza 2.23);
     // la capsula del cuerpo mide 2 con los pies en y=-1.
     float s = 2.0f / 5.1f;

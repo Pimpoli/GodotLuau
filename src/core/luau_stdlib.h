@@ -139,6 +139,15 @@ Enum = {
     RunContext = { Legacy = 0, Server = 1, Client = 2 },
     RenderFidelity = { Automatic = 0, Precise = 1, Performance = 2 },
     CollisionFidelity = { Default = 0, Box = 1, Hull = 2, Disabled = 3, PreciseConvexDecomposition = 4 },
+    -- Indices EXACTOS de RobloxPart:set_roblox_material (no reordenar)
+    Material = {
+        Plastic = 0, SmoothPlastic = 1, Neon = 2, Wood = 3, WoodPlanks = 4,
+        Marble = 5, Slate = 6, Concrete = 7, Granite = 8, Brick = 9,
+        Metal = 10, CorrodedMetal = 11, DiamondPlate = 12, Foil = 13,
+        Grass = 14, Ice = 15, Glass = 16, Sand = 17, Fabric = 18,
+        Rock = 19, Snow = 20, Cobblestone = 21, Pebble = 22,
+    },
+    PartType = { Ball = 0, Block = 1, Cylinder = 2, Wedge = 3, CornerWedge = 4 },
 }
 
 -- ══════════════════════════════════════════════════════════════════════
@@ -1180,8 +1189,16 @@ function CFrame.new(ax, ay, az, bx, by, bz, m01, m02, m10, m11, m12, m20, m21, m
     if ax == nil then
         return _cf_raw(0,0,0, 1,0,0, 0,1,0, 0,0,1)
     end
-    -- CFrame.new(Vector3_pos, Vector3_lookAt)
-    if type(ax) == "table" and ay ~= nil and type(ay) == "table" then
+    -- CFrame.new(Vector3) — UN solo Vector3 de posicion. OJO: nuestro Vector3
+    -- es USERDATA (no tabla); antes caia al caso de numeros y daba (0,0,0).
+    if ay == nil and type(ax) ~= "number" then
+        local px = ax.X or ax.x or 0
+        local py = ax.Y or ax.y or 0
+        local pz = ax.Z or ax.z or 0
+        return _cf_raw(px,py,pz, 1,0,0, 0,1,0, 0,0,1)
+    end
+    -- CFrame.new(Vector3_pos, Vector3_lookAt) — acepta tabla O userdata
+    if type(ax) ~= "number" and ay ~= nil and type(ay) ~= "number" then
         local px,py,pz = ax.X or ax.x or 0, ax.Y or ax.y or 0, ax.Z or ax.z or 0
         local lx,ly,lz = ay.X or ay.x or 0, ay.Y or ay.y or 0, ay.Z or ay.z or 0
         local fx,fy,fz = lx-px, ly-py, lz-pz
