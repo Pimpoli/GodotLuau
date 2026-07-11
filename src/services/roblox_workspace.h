@@ -34,6 +34,7 @@
 #include "roblox_player.h"
 #include "humanoid.h"
 #include "gl_avatar.h"
+#include "roblox_part.h"
 #include "roblox_services.h"
 #include "roblox_interactive.h"
 
@@ -212,52 +213,25 @@ protected:
                 add_child(env_node);
                 env_node->set_owner(root);
 
-                // 3. BASEPLATE WITH GRID
-                //// 3. BASEPLATE CON CUADRÍCULA
-                StaticBody3D* bp = memnew(StaticBody3D);
-                bp->set_name("BasePlate");
-                add_child(bp);
+                // 3. BASEPLATE — una RobloxPart de verdad, COMO EN ROBLOX:
+                // seleccionas "Baseplate" y cambias su propiedad Color en el
+                // inspector; la textura de cuadricula (archivo editable en
+                // GodotLuau/assets/textures/) se tiñe con ese color.
+                RobloxPart* bp = memnew(RobloxPart);
+                bp->set_name("Baseplate");
+                add_child(bp);            // ENTER_TREE crea su material interno
                 bp->set_owner(root);
-
-                MeshInstance3D* mesh = memnew(MeshInstance3D);
-                Ref<BoxMesh> m; m.instantiate();
-                m->set_size(Vector3(1000, 1, 1000));
-
-                Ref<StandardMaterial3D> mat; mat.instantiate();
-                // Cuadricula estilo Roblox Studio: TEXTURA de archivo (editable en
-                // GodotLuau/assets/textures/) en blanco, teñida con albedo_color →
-                // cambiar el COLOR del Baseplate = tocar Albedo>Color en el material.
-                Ref<Texture2D> grid_tex;
+                bp->set_size(Vector3(1000, 1, 1000));
+                bp->set_anchored(true);
+                bp->set_color(Color(0.42f, 0.42f, 0.45f));   // gris Studio (cambiable)
                 {
                     ResourceLoader* rload = ResourceLoader::get_singleton();
                     const String tex_path = "res://GodotLuau/assets/textures/baseplate_grid.png";
+                    Ref<Texture2D> grid_tex;
                     if (rload && rload->exists(tex_path)) grid_tex = rload->load(tex_path);
+                    if (grid_tex.is_null()) grid_tex = generar_textura_grid();
+                    bp->gl_apply_grid_texture(grid_tex, 125.0f);   // celda menor = 2 studs
                 }
-                if (grid_tex.is_valid()) {
-                    mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, grid_tex);
-                    mat->set_albedo(Color(0.639f, 0.635f, 0.647f));   // gris Roblox (cambiable)
-                    mat->set_uv1_scale(Vector3(125, 125, 1));          // celda menor = 2 studs
-                    mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_LINEAR_WITH_MIPMAPS);
-                } else {
-                    mat->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, generar_textura_grid());
-                    mat->set_uv1_scale(Vector3(100, 100, 1));
-                    mat->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_NEAREST);
-                }
-                // Suelo MATE como Roblox (antes roughness 0.0 = suelo pulido/espejo)
-                mat->set_roughness(0.9f);
-                mat->set_metallic(0.0f);
-                
-                mesh->set_mesh(m);
-                mesh->set_material_override(mat);
-                bp->add_child(mesh);
-                mesh->set_owner(root);
-
-                CollisionShape3D* col = memnew(CollisionShape3D);
-                Ref<BoxShape3D> s; s.instantiate();
-                s->set_size(Vector3(1000, 1, 1000));
-                col->set_shape(s);
-                bp->add_child(col);
-                col->set_owner(root);
 
                 // 4. CURRENT CAMERA — visible in the scene tree like Roblox
                 // workspace.CurrentCamera is the camera that renders the game.

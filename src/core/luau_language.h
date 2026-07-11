@@ -22,7 +22,13 @@ public:
     LuauLanguage()  { singleton = this; }
     ~LuauLanguage() { if (singleton == this) singleton = nullptr; }
 
-    static void _bind_methods() {}
+    // Godot 4.4+ exige el virtual _reload_scripts (godot-cpp 4.3 no lo declara,
+    // asi que se registra a mano). No-op: los scripts Luau releen su .lua al
+    // ejecutarse; sin esto el motor imprime un ERROR en cada Play.
+    static void _call_reload_scripts(GDExtensionClassInstancePtr, const GDExtensionConstTypePtr*, GDExtensionTypePtr) {}
+    static void _bind_methods() {
+        ClassDB::bind_virtual_method(get_class_static(), "_reload_scripts", _call_reload_scripts);
+    }
 
     String _get_name()      const override { return "Luau"; }
     String _get_type()      const override { return "LuauScript"; }
@@ -159,7 +165,12 @@ protected:
 public:
     PackedStringArray _get_recognized_extensions() const override { PackedStringArray a; a.append("lua"); return a; }
     bool _handles_type(const StringName& t) const override { return t == StringName("LuauScript") || t == StringName("Script"); }
-    String _get_resource_type(const String& p) const override { return "LuauScript"; }
+    // SOLO los .lua son nuestros. Antes devolvia "LuauScript" para CUALQUIER
+    // ruta y el editor intentaba cargar plugin.cfg/README.md/.luau_ids.cfg
+    // como recursos → "No loader found for resource" en cada arranque.
+    String _get_resource_type(const String& p) const override {
+        return p.get_extension().to_lower() == "lua" ? String("LuauScript") : String();
+    }
     Variant _load(const String& p, const String& op, bool st, int cm) const override {
         Ref<LuauScript> s; s.instantiate();
         Ref<FileAccess> f = FileAccess::open(p, FileAccess::READ);

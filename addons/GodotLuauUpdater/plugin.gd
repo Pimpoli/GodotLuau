@@ -777,7 +777,12 @@ func _check_script_restored(n: Node) -> void:
 	if id.is_empty(): return
 	var path := _node_script_path(n)
 	if path.is_empty():
-		path = "res://%ss/%s.lua" % [n.get_class(), id]
+		# Ruta nueva (dentro de GodotLuau/); si el proyecto es viejo y esa
+		# carpeta no existe pero la vieja si, usar la vieja.
+		path = "res://GodotLuau/%ss/%s.lua" % [n.get_class(), id]
+		var old_path := "res://%ss/%s.lua" % [n.get_class(), id]
+		if not FileAccess.file_exists(path) and FileAccess.file_exists(old_path):
+			path = old_path
 	if FileAccess.file_exists(path): return
 	var trash_file := ProjectSettings.globalize_path(TRASH_DIR + "/" + id + ".lua")
 	if not FileAccess.file_exists(trash_file): return

@@ -926,10 +926,12 @@ protected:
 
                 if (necesita_archivo) {
                     String cls = get_class();
-                    String folder = "res://" + cls + "s";
+                    // Los scripts van DENTRO de GodotLuau/ (orden pedido por el
+                    // usuario): res://GodotLuau/LocalScripts, /ServerScripts, etc.
+                    String folder = "res://GodotLuau/" + cls + "s";
                     Ref<DirAccess> dir = DirAccess::open("res://");
                     if (dir.is_valid() && !dir->dir_exists(folder)) {
-                        dir->make_dir(folder);
+                        dir->make_dir_recursive(folder);
                     }
 
                     // El archivo se nombra por el ID → estable entre sesiones

@@ -83,6 +83,38 @@ private:
         material->set_albedo(Color(color.r, color.g, color.b, 1.0f - transparency));
     }
 
+    // Textura de la Part (PERSISTIDA): la usa el Baseplate para la cuadricula
+    // estilo Studio y cualquier Part puede llevar la suya. Se TIÑE con Color.
+    Ref<Texture2D> part_texture;
+    float part_texture_scale = 1.0f;
+
+    void _apply_part_texture() {
+        if (!material.is_valid()) return;
+        if (part_texture.is_valid()) {
+            material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, part_texture);
+            material->set_uv1_scale(Vector3(part_texture_scale, part_texture_scale, 1.0f));
+            material->set_texture_filter(BaseMaterial3D::TEXTURE_FILTER_LINEAR_WITH_MIPMAPS);
+        } else {
+            material->set_texture(StandardMaterial3D::TEXTURE_ALBEDO, Ref<Texture2D>());
+        }
+    }
+
+public:
+    void set_part_texture(const Ref<Texture2D>& t) { part_texture = t; _apply_part_texture(); }
+    Ref<Texture2D> get_part_texture() const { return part_texture; }
+    void set_part_texture_scale(float s) { part_texture_scale = Math::max(s, 0.001f); _apply_part_texture(); }
+    float get_part_texture_scale() const { return part_texture_scale; }
+
+    // Conveniencia del Baseplate (aplica textura + escala + suelo mate)
+    void gl_apply_grid_texture(const Ref<Texture2D>& tex, float uv_scale) {
+        part_texture = tex;
+        part_texture_scale = uv_scale;
+        _apply_part_texture();
+        if (material.is_valid()) material->set_roughness(0.9f);
+    }
+
+private:
+
     void _apply_material_visual() {
         if (!material.is_valid()) return;
         // Reset to neutral
@@ -163,6 +195,7 @@ private:
         if (transparency > 0.001f)
             material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
         _update_albedo();
+        _apply_part_texture();   // la textura persistida sobrevive re-aplicados
     }
 
     void _apply_shape_internal(int s) {
@@ -252,6 +285,16 @@ protected:
         ClassDB::bind_method(D_METHOD("set_anchored","a"), &RobloxPart::set_anchored);
         ClassDB::bind_method(D_METHOD("get_anchored"),     &RobloxPart::get_anchored);
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Anchored"),"set_anchored","get_anchored");
+
+        // ── Textura de la Part (persistida; se tiñe con Color) ──────
+        ClassDB::bind_method(D_METHOD("set_part_texture","t"), &RobloxPart::set_part_texture);
+        ClassDB::bind_method(D_METHOD("get_part_texture"),     &RobloxPart::get_part_texture);
+        ClassDB::bind_method(D_METHOD("set_part_texture_scale","s"), &RobloxPart::set_part_texture_scale);
+        ClassDB::bind_method(D_METHOD("get_part_texture_scale"),     &RobloxPart::get_part_texture_scale);
+        ADD_PROPERTY(PropertyInfo(Variant::OBJECT,"Texture",PROPERTY_HINT_RESOURCE_TYPE,"Texture2D"),
+            "set_part_texture","get_part_texture");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"TextureScale",PROPERTY_HINT_RANGE,"0.01,500,0.01"),
+            "set_part_texture_scale","get_part_texture_scale");
 
         // ── Color / BrickColor ──────────────────────────────────────
         ClassDB::bind_method(D_METHOD("set_color","c"), &RobloxPart::set_color);
