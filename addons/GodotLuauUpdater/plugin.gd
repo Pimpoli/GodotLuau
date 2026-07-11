@@ -347,21 +347,39 @@ func _exit_tree() -> void:
 	if _settings_panel and is_instance_valid(_settings_panel):
 		remove_control_from_bottom_panel(_settings_panel)
 		_settings_panel.queue_free()
+	# Cerrar ventanas cliente y limpiar la sesión si el editor se cierra / se
+	# desactiva el plugin sin pulsar Stop (evita ventanas huérfanas).
+	_kill_mp_children()
+	_clear_mp_session()
 	_remove_mp_toolbar()
 
-# ── Barra de multijugador local + dispositivo (arriba, junto a Play) ─────────
-# SpinBox de jugadores (1-8) + selector PC/Móvil/Consola/VR + botón Jugar.
-# Lanza N ventanas del juego que se auto-conectan (Player1..N) para probar MP.
+# ── Local multiplayer controls next to the NATIVE Play button ────────────────
+# A "Players" SpinBox (1-8) + a PC/Mobile/Console/VR device selector, placed to
+# the LEFT of Godot's own Play button (no custom Play button is created). When
+# the user presses the native Play with Players >= 2, extra game windows are
+# launched and everyone connects into a shared session (Player1..N) — they see,
+# collide and move around each other like Roblox Studio's local test.
 var _mp_bar: HBoxContainer = null
 var _mp_count: SpinBox = null
 var _mp_device: OptionButton = null
+var _mp_child_pids: Array[int] = []
+var _mp_run_bar: Node = null          # EditorRunBar (para desconectar señales)
+var _mp_used_container: bool = false  # true si caímos al fallback CONTAINER_TOOLBAR
+
+func _find_node_by_class(root: Node, cls: String) -> Node:
+	if root == null: return null
+	if root.get_class() == cls: return root
+	for c in root.get_children():
+		var r := _find_node_by_class(c, cls)
+		if r: return r
+	return null
 
 func _build_mp_toolbar() -> void:
 	_mp_bar = HBoxContainer.new()
 	_mp_bar.add_theme_constant_override("separation", 4)
 
 	var lbl := Label.new()
-	lbl.text = "  Jugadores"
+	lbl.text = "Players"
 	_mp_bar.add_child(lbl)
 
 	_mp_count = SpinBox.new()
@@ -369,49 +387,120 @@ func _build_mp_toolbar() -> void:
 	_mp_count.max_value = 8
 	_mp_count.step = 1
 	_mp_count.value = 1
-	_mp_count.custom_minimum_size = Vector2(62, 0)
-	_mp_count.tooltip_text = "1 = un jugador. 2-8 = se abren esas ventanas y se conectan solas (Player1..N)."
+	_mp_count.custom_minimum_size = Vector2(58, 0)
+	_mp_count.tooltip_text = "1 = single player. 2-8 = pressing Play opens that many windows that connect to each other (Player1..N)."
 	_mp_bar.add_child(_mp_count)
 
 	_mp_device = OptionButton.new()
 	_mp_device.add_item("PC")
-	_mp_device.add_item("Movil")
-	_mp_device.add_item("Consola")
+	_mp_device.add_item("Mobile")
+	_mp_device.add_item("Console")
 	_mp_device.add_item("VR")
 	_mp_device.selected = 0
-	_mp_device.tooltip_text = "Como se ve/comporta el juego (PC por defecto)."
+	_mp_device.tooltip_text = "How the game looks/behaves (PC by default)."
 	_mp_bar.add_child(_mp_device)
 
-	var run_btn := Button.new()
-	run_btn.text = "> Jugar"
-	run_btn.tooltip_text = "Lanza el juego con la cantidad de jugadores elegida."
-	run_btn.pressed.connect(_on_mp_run)
-	_mp_bar.add_child(run_btn)
+	# Keep the host session file in sync BEFORE Play is pressed (closes the race
+	# where the native host boots before the file is written).
+	_mp_count.value_changed.connect(func(_v): _refresh_mp_session())
+	_mp_device.item_selected.connect(func(_i): _refresh_mp_session())
 
-	add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
+	# Place the controls to the LEFT of Godot's native Play button and hook its
+	# signal — we do NOT create our own Play button.
+	var run_bar := _find_node_by_class(EditorInterface.get_base_control(), "EditorRunBar")
+	if run_bar == null:
+		run_bar = _find_node_by_class(get_tree().get_root(), "EditorRunBar")
+	if run_bar and run_bar.get_parent():
+		_mp_run_bar = run_bar
+		var parent := run_bar.get_parent()
+		parent.add_child(_mp_bar)
+		parent.move_child(_mp_bar, run_bar.get_index())   # justo antes del Play
+		if not run_bar.is_connected("play_pressed", _on_native_play):
+			run_bar.connect("play_pressed", _on_native_play)
+		if not run_bar.is_connected("stop_pressed", _on_native_stop):
+			run_bar.connect("stop_pressed", _on_native_stop)
+	else:
+		# Fallback: standard plugin toolbar (still next to Play)
+		_mp_used_container = true
+		add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
 
 func _remove_mp_toolbar() -> void:
+	if _mp_run_bar and is_instance_valid(_mp_run_bar):
+		if _mp_run_bar.is_connected("play_pressed", _on_native_play):
+			_mp_run_bar.disconnect("play_pressed", _on_native_play)
+		if _mp_run_bar.is_connected("stop_pressed", _on_native_stop):
+			_mp_run_bar.disconnect("stop_pressed", _on_native_stop)
+	_mp_run_bar = null
 	if _mp_bar and is_instance_valid(_mp_bar):
-		remove_control_from_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
+		if _mp_used_container:
+			remove_control_from_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
+		elif _mp_bar.get_parent():
+			_mp_bar.get_parent().remove_child(_mp_bar)
 		_mp_bar.queue_free()
 		_mp_bar = null
 
-func _on_mp_run() -> void:
-	var count: int = int(_mp_count.value) if _mp_count else 1
+func _mp_device_name() -> String:
 	var devices := ["PC", "Mobile", "Console", "VR"]
-	var device: String = devices[_mp_device.selected] if _mp_device else "PC"
-	# Guardar antes de lanzar, así las ventanas corren el estado ACTUAL del proyecto.
+	return devices[_mp_device.selected] if _mp_device else "PC"
+
+# Keep the session file present+fresh whenever Players >= 2, so the native host
+# instance always finds it on boot (play_pressed fires AFTER the process spawns).
+func _refresh_mp_session() -> void:
+	var count: int = int(_mp_count.value) if _mp_count else 1
+	if count >= 2:
+		_write_mp_session(count, _mp_device_name())
+	else:
+		_clear_mp_session()
+
+# Native Play pressed → if Players >= 2, become a shared local session.
+func _on_native_play() -> void:
+	var count: int = int(_mp_count.value) if _mp_count else 1
+	if count < 2:
+		_clear_mp_session()   # sin sesión → la instancia nativa corre single player
+		return
+	var device := _mp_device_name()
+	# Ensure the extra windows load the CURRENT project state from disk.
 	EditorInterface.save_all_scenes()
+	# The native instance (#1) reads this file and becomes the HOST (refresh stamp).
+	_write_mp_session(count, device)
+	# Run the SAME scene the host runs (F5 main / F6 current / F7 custom) so every
+	# window shares one world instead of the clients always booting the main scene.
+	var scene := ""
+	scene = str(EditorInterface.get_playing_scene())
+	# Launch the client instances #2..N (they connect to the host on 127.0.0.1).
 	var exe := OS.get_executable_path()
 	var proj := ProjectSettings.globalize_path("res://")
-	for i in range(count):
-		var pid := OS.create_process(exe, ["--path", proj, "--", "--glindex", str(i + 1), "--glcount", str(count), "--gldevice", device])
-		if pid == -1:
-			push_warning("[GodotLuau] No se pudo lanzar la instancia %d del juego." % (i + 1))
-		# El host (i==0) arranca primero; damos un respiro antes de los clientes
-		# para que abra el puerto antes de que ellos intenten conectar.
-		if i == 0 and count > 1:
-			OS.delay_msec(600)
+	_kill_mp_children()   # por si se re-jugó sin pulsar Stop: cerrar las ventanas viejas
+	for i in range(2, count + 1):
+		var a: Array = ["--path", proj]
+		if scene != "": a.append(scene)
+		a.append_array(["--", "--glindex", str(i), "--glcount", str(count), "--gldevice", device])
+		var pid := OS.create_process(exe, a)
+		if pid > 0: _mp_child_pids.append(pid)
+		else: push_warning("[GodotLuau] Could not launch game instance %d." % i)
+
+# Native Stop pressed → close the extra windows and clear the session.
+func _on_native_stop() -> void:
+	_kill_mp_children()
+	_clear_mp_session()
+
+# Kill every client window we launched (guarded: PIDs can be dead/recycled).
+func _kill_mp_children() -> void:
+	for pid in _mp_child_pids:
+		if OS.is_process_running(pid):
+			OS.kill(pid)
+	_mp_child_pids.clear()
+
+func _write_mp_session(count: int, device: String) -> void:
+	var f := FileAccess.open("user://gl_mp_session.gl", FileAccess.WRITE)
+	if f:
+		f.store_string("%d|%s|%d" % [count, device, int(Time.get_unix_time_from_system())])
+		f.close()
+
+func _clear_mp_session() -> void:
+	var d := DirAccess.open("user://")
+	if d and d.file_exists("gl_mp_session.gl"):
+		d.remove("gl_mp_session.gl")
 
 # ── Ciclo de vida de scripts: papelera + restauración con Ctrl+Z ─────────────
 # Al borrar un nodo LocalScript/ServerScript/ModuleScript en el editor, su .lua
