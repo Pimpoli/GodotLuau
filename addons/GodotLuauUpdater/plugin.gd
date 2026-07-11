@@ -342,64 +342,108 @@ func _enter_tree() -> void:
 	_setup_luau_highlighting()
 
 # ── Colores de sintaxis Luau (como Roblox Studio, tema oscuro) ────────────────
-# El editor abre los .lua con texto plano; aquí se le engancha un CodeHighlighter
-# con los colores clásicos de Studio a cada editor de script Luau que se abra.
-var _hl_seen: Array = []
+# Mecanismo OFICIAL: un EditorSyntaxHighlighter registrado en el ScriptEditor;
+# el editor lo activa solo para scripts cuyo lenguaje sea "Luau".
+# (La version anterior reemplazaba el syntax_highlighter interno del CodeEdit
+# del editor de scripts y CRASHEABA el editor al abrir cualquier script.)
+var _luau_hl: EditorSyntaxHighlighter = null
 
-func _make_luau_highlighter() -> CodeHighlighter:
-	var ch := CodeHighlighter.new()
-	var kw := Color("#f86d7c")      # palabras clave (local, function, if...)
-	var builtin := Color("#84d6f7") # game, workspace, print, task...
-	ch.number_color = Color("#ffc600")
-	ch.symbol_color = Color("#cccccc")
-	ch.function_color = Color("#fdfbac")
-	ch.member_variable_color = Color("#9cdcfe")
-	for w in ["and","break","do","else","elseif","end","for","function","if","in",
-			  "local","not","or","repeat","return","then","until","while","continue",
-			  "type","export","self"]:
-		ch.add_keyword_color(w, kw)
-	for w in ["true","false","nil"]:
-		ch.add_keyword_color(w, Color("#ffc600"))
-	for w in ["game","workspace","script","print","warn","wait","task","spawn","delay",
-			  "require","pairs","ipairs","next","select","tostring","tonumber","typeof",
-			  "pcall","xpcall","error","assert","unpack","math","string","table","os",
-			  "coroutine","bit32","utf8","Instance","Vector2","Vector3","CFrame","Color3",
-			  "UDim","UDim2","Enum","Ray","Region3","TweenInfo","NumberRange","Random"]:
-		ch.add_keyword_color(w, builtin)
-	# Regiones: comentario de bloque ANTES que el de línea (comparten prefijo)
-	ch.add_color_region("--[[", "]]", Color("#666666"), false)
-	ch.add_color_region("--", "", Color("#666666"), true)
-	ch.add_color_region("\"", "\"", Color("#adf195"), false)
-	ch.add_color_region("'", "'", Color("#adf195"), false)
-	return ch
+class LuauHighlighter extends EditorSyntaxHighlighter:
+	const C_TEXT := Color("#cccccc")
+	const C_KW   := Color("#f86d7c")
+	const C_BI   := Color("#84d6f7")
+	const C_STR  := Color("#adf195")
+	const C_NUM  := Color("#ffc600")
+	const C_COM  := Color("#666666")
+	const C_FN   := Color("#fdfbac")
+	const KEYWORDS := {"and":1,"break":1,"do":1,"else":1,"elseif":1,"end":1,"for":1,
+		"function":1,"if":1,"in":1,"local":1,"not":1,"or":1,"repeat":1,"return":1,
+		"then":1,"until":1,"while":1,"continue":1,"export":1,"self":1}
+	const CONSTS := {"true":1,"false":1,"nil":1}
+	const BUILTINS := {"game":1,"workspace":1,"script":1,"print":1,"warn":1,"wait":1,
+		"task":1,"spawn":1,"delay":1,"require":1,"pairs":1,"ipairs":1,"next":1,
+		"select":1,"tostring":1,"tonumber":1,"typeof":1,"type":1,"pcall":1,"xpcall":1,
+		"error":1,"assert":1,"unpack":1,"math":1,"string":1,"table":1,"os":1,
+		"coroutine":1,"bit32":1,"utf8":1,"Instance":1,"Vector2":1,"Vector3":1,
+		"CFrame":1,"Color3":1,"UDim":1,"UDim2":1,"Enum":1,"Ray":1,"Region3":1,
+		"TweenInfo":1,"NumberRange":1,"Random":1}
+
+	func _get_name() -> String:
+		return "Luau"
+	func _get_supported_languages() -> PackedStringArray:
+		return PackedStringArray(["Luau"])
+
+	static func _is_word_char(c: String) -> bool:
+		return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_"
+
+	func _get_line_syntax_highlighting(p_line: int) -> Dictionary:
+		var te := get_text_edit()
+		if te == null or p_line >= te.get_line_count(): return {}
+		var text := te.get_line(p_line)
+		var n := text.length()
+		var d := {}
+		d[0] = {"color": C_TEXT}
+		var i := 0
+		while i < n:
+			var c := text[i]
+			# Comentario: -- hasta el final de la linea
+			if c == "-" and i + 1 < n and text[i + 1] == "-":
+				d[i] = {"color": C_COM}
+				break
+			# Strings "..." y '...'
+			if c == "\"" or c == "'":
+				d[i] = {"color": C_STR}
+				var q := c
+				i += 1
+				while i < n and text[i] != q:
+					i += 2 if text[i] == "\\" else 1
+				i += 1
+				if i < n: d[i] = {"color": C_TEXT}
+				continue
+			# Numeros (enteros, decimales, hex)
+			if c >= "0" and c <= "9":
+				var start := i
+				while i < n and (_is_word_char(text[i]) or text[i] == "."):
+					i += 1
+				d[start] = {"color": C_NUM}
+				if i < n: d[i] = {"color": C_TEXT}
+				continue
+			# Identificadores: keyword / builtin / constante / llamada a funcion
+			if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_":
+				var start := i
+				while i < n and _is_word_char(text[i]):
+					i += 1
+				var w := text.substr(start, i - start)
+				var col := C_TEXT
+				if KEYWORDS.has(w):   col = C_KW
+				elif CONSTS.has(w):   col = C_NUM
+				elif BUILTINS.has(w): col = C_BI
+				else:
+					var j := i
+					while j < n and text[j] == " ": j += 1
+					if j < n and text[j] == "(": col = C_FN
+				if col != C_TEXT:
+					d[start] = {"color": col}
+					if i < n: d[i] = {"color": C_TEXT}
+				continue
+			i += 1
+		return d
 
 func _setup_luau_highlighting() -> void:
 	var se := EditorInterface.get_script_editor()
 	if se == null: return
-	if not se.editor_script_changed.is_connected(_apply_luau_colors_everywhere):
-		se.editor_script_changed.connect(func(_s): _apply_luau_colors_everywhere())
-	_apply_luau_colors_everywhere()
+	_luau_hl = LuauHighlighter.new()
+	se.register_syntax_highlighter(_luau_hl)
 
-func _apply_luau_colors_everywhere() -> void:
-	var se := EditorInterface.get_script_editor()
-	if se == null: return
-	var editors := se.get_open_script_editors()
-	var scripts := se.get_open_scripts()
-	for i in editors.size():
-		var ed = editors[i]
-		var base = ed.get_base_editor()
-		if base == null or not (base is CodeEdit): continue
-		if base in _hl_seen: continue
-		# Los arrays de editores y scripts van en el mismo orden de pestañas
-		var is_luau := false
-		if i < scripts.size() and scripts[i] != null:
-			var path := String(scripts[i].resource_path)
-			is_luau = path.ends_with(".lua") or scripts[i].get_class() == "LuauScript"
-		if is_luau:
-			base.syntax_highlighter = _make_luau_highlighter()
-			_hl_seen.append(base)
+func _teardown_luau_highlighting() -> void:
+	if _luau_hl != null:
+		var se := EditorInterface.get_script_editor()
+		if se != null:
+			se.unregister_syntax_highlighter(_luau_hl)
+		_luau_hl = null
 
 func _exit_tree() -> void:
+	_teardown_luau_highlighting()
 	_disconnect_script_lifecycle()
 	for n in [_http_version, _http_download, _http_autocomplete, _http_hash, _http_aimodel, _outdated_timer]:
 		if n and is_instance_valid(n): n.queue_free()
