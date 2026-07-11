@@ -330,12 +330,26 @@ public:
 
     bool is_chat_open() const { return chat_open; }
 
+    // Busca el NetworkService para reenviar el chat por red (sesion multijugador)
+    Node* _find_netservice(Node* n) {
+        if (!n) return nullptr;
+        if (n->is_class("NetworkService")) return n;
+        for (int i = 0; i < n->get_child_count(); i++)
+            if (Node* r = _find_netservice(n->get_child(i))) return r;
+        return nullptr;
+    }
+
     // ── UI callbacks / Callbacks de UI ────────────────────────────────
     void _on_send_pressed() {
         if (!input_field) return;
         String text = input_field->get_text().strip_edges();
         if (!text.is_empty()) {
             send_message(player_name, text);
+            // Multijugador: mandar el mensaje a las demas ventanas (como Roblox)
+            if (is_inside_tree()) {
+                Node* ns = _find_netservice((Node*)get_tree()->get_root());
+                if (ns) ns->call("gl_send_chat", player_name, text);
+            }
             input_field->clear();
         }
     }

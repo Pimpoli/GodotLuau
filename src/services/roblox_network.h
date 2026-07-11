@@ -250,6 +250,9 @@ class NetworkService : public Node {
         Vector2 tpos2d;               // objetivo 2D
         float   tyaw = 0.0f;
         bool    has_target = false;
+        // Animacion de caminar (bob del visual, como el test-anim del local)
+        float   walk_phase = 0.0f;
+        float   vis_base_y = 0.0f;
     };
 
     Ref<ENetMultiplayerPeer> peer;
@@ -308,13 +311,26 @@ class NetworkService : public Node {
     }
 
     void _name_local_player(int display_num) {
+        String pname = String("Player") + String::num_int64(display_num);
         Node* p = _local_player();
         if (p) {
             // Solo DisplayName (NO renombrar el nodo: el nombre "LocalPlayer" lo
             // usa el fallback de workspace.CurrentCamera; renombrarlo lo dejaría nil).
-            p->set("DisplayName", String("Player") + String::num_int64(display_num));
+            p->set("DisplayName", pname);
             p->set_meta("PlayerIndex", display_num);
         }
+        // El chat firma con el nombre del jugador (como en Roblox)
+        Node* tcs = is_inside_tree() ? _find_by_class((Node*)get_tree()->get_root(), "TextChatService") : nullptr;
+        if (tcs) tcs->call("set_player_name", pname);
+    }
+    // Spawns separados: que los jugadores no nazcan uno dentro de otro
+    void _offset_spawn(int idx) {
+        Node* lp = _local_player();
+        if (!lp) return;
+        if (Node3D* n3 = Object::cast_to<Node3D>(lp))
+            n3->set_global_position(n3->get_global_position() + Vector3((float)(idx - 2) * 2.5f, 0.0f, 0.0f));
+        else if (Node2D* n2 = Object::cast_to<Node2D>(lp))
+            n2->set_global_position(n2->get_global_position() + Vector2((float)(idx - 2) * 90.0f, 0.0f));
     }
     // La ventana del SERVIDOR no tiene personaje (como en Roblox Studio):
     // el server observa con la camara libre; los jugadores son los clientes.
@@ -423,6 +439,8 @@ class NetworkService : public Node {
         rpc_config("_recv_state2d",  u);
         rpc_config("_relay_state2d", u);
         rpc_config("_recv_remove",   r);
+        rpc_config("_relay_chat",    r);   // chat: confiable (no se pierde ningun mensaje)
+        rpc_config("_recv_chat",     r);
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -449,6 +467,9 @@ class NetworkService : public Node {
     // ── Muñecos (representación visual de los otros jugadores) ────────────
     Node3D* _make_puppet3d(int idx) {
         AnimatableBody3D* body = memnew(AnimatableBody3D);
+        // CRITICO: con sync_to_physics (default) la fisica REVIERTE cualquier
+        // set_global_position y el muñeco queda clavado donde nacio.
+        body->set_sync_to_physics(false);
 
         CollisionShape3D* col = memnew(CollisionShape3D);
         Ref<CapsuleShape3D> cs; cs.instantiate();
@@ -472,11 +493,13 @@ class NetworkService : public Node {
         }
         if (vis) {
             float s = 2.0f / 5.187f;
+            vis->set_name("Visual");
             vis->set_scale(Vector3(s, s, s));
             vis->set_position(Vector3(0, -1.0f + 3.0f * s, 0));
             body->add_child(vis);
         } else {
             MeshInstance3D* m = memnew(MeshInstance3D);
+            m->set_name("Visual");
             Ref<CapsuleMesh> cm; cm.instantiate();
             m->set_mesh(cm);
             Ref<StandardMaterial3D> mat; mat.instantiate();
@@ -525,8 +548,10 @@ class NetworkService : public Node {
             // quitar la entrada ANTES de que el puntero quede colgando.
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
             Puppet P; P.node = pup; P.tpos = pos; P.tyaw = yaw; P.has_target = true;
+            if (Node3D* v = Object::cast_to<Node3D>(pup->get_node_or_null("Visual")))
+                P.vis_base_y = v->get_position().y;
             puppets[key] = P;
-            gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo");
+            gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo (pos " + String(pos) + ")");
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
         }
@@ -578,16 +603,39 @@ class NetworkService : public Node {
             } else {
                 Node3D* n = Object::cast_to<Node3D>(pu.node);
                 if (!n) continue;
-                n->set_global_position(n->get_global_position().lerp(pu.tpos, a));
+                Vector3 before = n->get_global_position();
+                n->set_global_position(before.lerp(pu.tpos, a));
                 Vector3 r = n->get_rotation(); r.y = pu.tyaw; n->set_rotation(r);
+                // Animacion de caminar: bob del visual cuando se esta moviendo
+                float speed = before.distance_to(pu.tpos);
+                Node3D* vis = Object::cast_to<Node3D>(n->get_node_or_null("Visual"));
+                if (vis) {
+                    if (speed > 0.05f) pu.walk_phase += (float)dt * 12.0f;
+                    else               pu.walk_phase *= 0.85f;
+                    Vector3 vp = vis->get_position();
+                    vp.y = pu.vis_base_y + Math::abs(Math::sin(pu.walk_phase)) * 0.14f;
+                    vis->set_position(vp);
+                }
             }
         }
+    }
+    double diag_timer = 0.0;   // diagnostico TX/RX (1 linea/seg, solo Modo Debug)
+    bool _diag_tick() {
+        // true ~1 vez por segundo (los broadcasts son 20/s; loguear todos seria spam)
+        return diag_timer <= 0.0;
     }
     void _broadcast_local() {
         Node* lp = _local_player();
         if (!lp) return;   // la ventana del servidor no tiene personaje: no difunde
         bool server = is_server();
         int display_num = (player_index >= 2) ? player_index - 1 : player_index;   // glindex 2..N+1 → Player1..N
+        if (_diag_tick()) {
+            Node3D* n3 = Object::cast_to<Node3D>(lp);
+            gl_mp_log(String("TX ") + (server ? "(server broadcast)" : "(a servidor)")
+                      + " pos=" + (n3 ? String(n3->get_global_position()) : String("?"))
+                      + " num=" + String::num_int64(display_num));
+            diag_timer = 1.0;
+        }
         if (is_2d) {
             Node2D* n = Object::cast_to<Node2D>(lp);
             if (!n) return;
@@ -620,6 +668,9 @@ protected:
         ClassDB::bind_method(D_METHOD("_relay_state2d", "pos", "rot", "idx"),       &NetworkService::_relay_state2d);
         ClassDB::bind_method(D_METHOD("_recv_remove", "who"),                       &NetworkService::_recv_remove);
         ClassDB::bind_method(D_METHOD("_on_puppet_gone", "key"),                    &NetworkService::_on_puppet_gone);
+        ClassDB::bind_method(D_METHOD("gl_send_chat", "name", "text"),              &NetworkService::gl_send_chat);
+        ClassDB::bind_method(D_METHOD("_relay_chat", "name", "text"),               &NetworkService::_relay_chat);
+        ClassDB::bind_method(D_METHOD("_recv_chat", "from", "name", "text"),        &NetworkService::_recv_chat);
     }
 
     void _notification(int p_what) {
@@ -648,6 +699,7 @@ public:
     // Cliente -> servidor: "aquí estoy". El servidor lo muestra y lo reenvía.
     void _relay_state(Vector3 pos, float yaw, int idx) {
         int sid = get_multiplayer()->get_remote_sender_id();
+        if (_diag_tick()) { gl_mp_log(String("RX relay de peer ") + String::num_int64(sid) + " pos=" + String(pos)); diag_timer = 1.0; }
         _update_puppet3d(sid, idx, pos, yaw);
         rpc("_recv_state", sid, pos, yaw, idx);
     }
@@ -661,6 +713,7 @@ public:
         Ref<MultiplayerAPI> m = _mp();
         int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
         if (who == myid) return;              // ese soy yo
+        if (_diag_tick()) { gl_mp_log(String("RX estado de ") + String::num_int64(who) + " pos=" + String(pos)); diag_timer = 1.0; }
         _update_puppet3d(who, idx, pos, yaw);
     }
     void _recv_state2d(int who, Vector2 pos, float rot, int idx) {
@@ -670,6 +723,34 @@ public:
         _update_puppet2d(who, idx, pos, rot);
     }
     void _recv_remove(int who) { _remove_puppet(who); }
+
+    // ── CHAT EN RED (como Roblox: todos ven los mensajes de todos) ────────
+    // El RobloxChat local llama gl_send_chat al enviar; el servidor lo muestra
+    // y lo reenvia a todos; cada ventana lo agrega a su chat.
+    void _show_chat(const String& name, const String& text) {
+        if (!is_inside_tree()) return;
+        Node* tcs = _find_by_class((Node*)get_tree()->get_root(), "TextChatService");
+        if (tcs) tcs->call("send_message", name, text);
+        gl_mp_log(String("chat << ") + name + ": " + text);
+    }
+    void gl_send_chat(const String& name, const String& text) {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;   // sin sesion: solo local
+        if (is_server()) rpc("_recv_chat", 1, name, text);
+        else             rpc_id(1, "_relay_chat", name, text);
+        gl_mp_log(String("chat >> ") + name + ": " + text);
+    }
+    void _relay_chat(String name, String text) {
+        int sid = get_multiplayer()->get_remote_sender_id();
+        _show_chat(name, text);                    // el servidor tambien lo ve
+        rpc("_recv_chat", sid, name, text);        // reenviar a todos los clientes
+    }
+    void _recv_chat(int from, String name, String text) {
+        Ref<MultiplayerAPI> m = _mp();
+        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        if (from == myid) return;                  // yo ya lo mostre al enviarlo
+        _show_chat(name, text);
+    }
 
     // ── Vista de Servidor: poner (true) o quitar (false) la cámara libre ──
     // Devuelve false si aún no se puede aplicar (sin cámara todavía) para que
@@ -755,6 +836,7 @@ public:
                 }
             }
         }
+        if (diag_timer > 0.0) diag_timer -= dt;
         // 1. Reintentos de conexión del cliente (hasta que el host abra el puerto)
         if (retry_left > 0) {
             if (net_connected) {
@@ -837,6 +919,7 @@ public:
                 connect_server("127.0.0.1", 25575);
                 retry_left = 20;
                 _name_local_player(idx - 1);   // glindex 2..N+1 → Player1..PlayerN
+                _offset_spawn(idx);            // que no nazcan uno dentro de otro
                 gl_mp_log(String("cliente Player") + String::num_int64(idx - 1) + " conectando a 127.0.0.1:25575...");
             } else {
                 // VENTANA DEL SERVIDOR: observa con camara libre, sin personaje
