@@ -931,9 +931,11 @@ func _apply_autocomplete_speed() -> void:
 # ── Cleanup old DLL backups ───────────────────────────────────────────────────
 
 func _cleanup_old_dlls() -> void:
-	# v1.11.1: la extension vive en res://GodotLuau/. Migrar instalaciones viejas:
-	# si ya existe la carpeta nueva, borrar los restos de la estructura antigua.
-	_migrate_old_layout()
+	# v1.11.2: la migracion se DIFIERE. Borrar carpetas y forzar scan() durante
+	# el PRIMER escaneo del editor crasheaba el editor entero (signal 11 en el
+	# hilo del escaner). Ahora espera a que el editor este tranquilo.
+	if is_inside_tree():
+		get_tree().create_timer(3.0).timeout.connect(_migrate_old_layout)
 	var bin_path := ProjectSettings.globalize_path("res://GodotLuau/bin/")
 	if not DirAccess.dir_exists_absolute(bin_path): return
 	var dir := DirAccess.open(bin_path)
@@ -955,8 +957,32 @@ func _cleanup_old_dlls() -> void:
 # raiz. El zip nuevo ya extrae en GodotLuau/; aqui se limpian los restos viejos
 # (solo carpetas DE LA EXTENSION, nunca contenido del usuario).
 func _migrate_old_layout() -> void:
+	if not is_inside_tree():
+		return
 	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("res://GodotLuau/bin")):
 		return   # aun no se instalo la estructura nueva
+	# ¿Hay algo viejo que borrar? (si no, salir sin tocar el filesystem)
+	var pending := false
+	for old in ["res://bin", "res://icons", "res://DefaultScripts", "res://assets/avatars/r6"]:
+		if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(old)):
+			pending = true
+	if not pending:
+		for f in ["RobloxAvatarR6.obj", "RobloxAvatarR6.mtl", "RobloxAvatarR6.obj.import",
+				  "RobloxAvatarR15.obj", "RobloxAvatarR15.mtl", "RobloxAvatarR15.obj.import",
+				  "Rig1_diff.png", "Rig1_diff.png.import"]:
+			if FileAccess.file_exists(ProjectSettings.globalize_path("res://assets/avatars/" + f)):
+				pending = true
+				break
+	if not pending:
+		return
+	# CRITICO: jamas borrar mientras el escaner del editor esta corriendo
+	# (crashea el editor). Si esta escaneando, reintentar en unos segundos.
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs == null:
+		return
+	if fs.is_scanning():
+		get_tree().create_timer(2.0).timeout.connect(_migrate_old_layout)
+		return
 	var removed := false
 	for old in ["res://bin", "res://icons", "res://DefaultScripts", "res://assets/avatars/r6"]:
 		var g := ProjectSettings.globalize_path(old)
@@ -973,7 +999,8 @@ func _migrate_old_layout() -> void:
 			removed = true
 	if removed:
 		print("[GodotLuau] Migrated to the new res://GodotLuau/ layout (old folders removed).")
-		EditorInterface.get_resource_filesystem().scan()
+		if not fs.is_scanning():
+			fs.scan()
 
 func _remove_dir_recursive(g_path: String) -> void:
 	var d := DirAccess.open(g_path)
