@@ -354,6 +354,11 @@ func _exit_tree() -> void:
 	if str(ProjectSettings.get_setting("editor/run/main_run_args", "")) != base:
 		ProjectSettings.set_setting("editor/run/main_run_args", base)
 		ProjectSettings.save()
+	_remove_res_file(".gl_mp_session")
+	_remove_res_file(".gl_view_cmd")
+	if _view_btn and is_instance_valid(_view_btn):
+		_view_btn.queue_free()
+		_view_btn = null
 	_remove_mp_toolbar()
 
 # ── Local multiplayer controls next to the NATIVE Play button ────────────────
@@ -379,10 +384,22 @@ func _find_node_by_class(root: Node, cls: String) -> Node:
 
 func _build_mp_toolbar() -> void:
 	_mp_bar = HBoxContainer.new()
-	_mp_bar.add_theme_constant_override("separation", 4)
+	_mp_bar.add_theme_constant_override("separation", 5)
+
+	_mp_bar.add_child(VSeparator.new())
+
+	# Icono de multijugador (del theme del editor, si existe)
+	var base := EditorInterface.get_base_control()
+	if base.has_theme_icon("MultiplayerSynchronizer", "EditorIcons"):
+		var ico := TextureRect.new()
+		ico.texture = base.get_theme_icon("MultiplayerSynchronizer", "EditorIcons")
+		ico.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+		ico.tooltip_text = "GodotLuau local multiplayer"
+		_mp_bar.add_child(ico)
 
 	var lbl := Label.new()
 	lbl.text = "Players"
+	lbl.add_theme_color_override("font_color", base.get_theme_color("font_color", "Editor"))
 	_mp_bar.add_child(lbl)
 
 	_mp_count = SpinBox.new()
@@ -390,8 +407,8 @@ func _build_mp_toolbar() -> void:
 	_mp_count.max_value = 8
 	_mp_count.step = 1
 	_mp_count.value = 1
-	_mp_count.custom_minimum_size = Vector2(58, 0)
-	_mp_count.tooltip_text = "1 = single player. 2-8 = pressing Play opens that many windows that connect to each other (Player1..N)."
+	_mp_count.custom_minimum_size = Vector2(54, 0)
+	_mp_count.tooltip_text = "How many players to emulate.\n1 = single player.\n2-8 = pressing Play opens that many game windows that connect to each other automatically (Player1..N see and collide with each other)."
 	_mp_bar.add_child(_mp_count)
 
 	_mp_device = OptionButton.new()
@@ -400,8 +417,11 @@ func _build_mp_toolbar() -> void:
 	_mp_device.add_item("Console")
 	_mp_device.add_item("VR")
 	_mp_device.selected = 0
-	_mp_device.tooltip_text = "How the game looks/behaves (PC by default)."
+	_mp_device.flat = true
+	_mp_device.tooltip_text = "Emulated device (PC by default).\nMobile resizes the window to phone shape; scripts can read it with net:GetDevice()."
 	_mp_bar.add_child(_mp_device)
+
+	_mp_bar.add_child(VSeparator.new())
 
 	# Keep the host run-args in sync BEFORE Play is pressed (the native instance
 	# is launched by Godot itself, so its args must already be configured).
@@ -427,9 +447,51 @@ func _build_mp_toolbar() -> void:
 		_mp_used_container = true
 		add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
 
+	# Botón Server View / Client View en la barra del panel Game del editor
+	# (funciona con 1-8 jugadores; cambia la perspectiva de la instancia
+	# host/única SIN mover al personaje, como Roblox Studio).
+	_build_view_button()
+
 	# Clean slate: sync run args with the current count (default 1 → stripped), so
 	# leftovers from a previous session/crash never turn a single-player run into a host.
 	_sync_mp_run_args()
+	_remove_res_file(".gl_view_cmd")
+	# Apagar el sistema nativo de multiples instancias para que no duplique ventanas
+	_neutralize_native_instances()
+
+# ── Botón de perspectiva Server/Client en la barra del panel Game ────────────
+var _view_btn: Button = null
+var _view_counter: int = 0
+
+func _build_view_button() -> void:
+	_view_btn = Button.new()
+	_view_btn.toggle_mode = true
+	_view_btn.text = "Server View"
+	_view_btn.tooltip_text = "Switch the game (host window) between perspectives, like Roblox Studio:\n- Server View: free camera — WASD + right mouse to fly, wheel = speed, E/Q up-down. Your player does NOT move.\n- Click again (Client View) to return to the player camera.\nWorks with 1-8 players."
+	_view_btn.toggled.connect(_on_view_btn_toggled)
+	# Barra del panel Game (la de Entrada / 2D / 3D...): su primer HBoxContainer
+	var game_view := _find_node_by_class(EditorInterface.get_base_control(), "GameView")
+	var bar: Node = _find_node_by_class(game_view, "HBoxContainer") if game_view else null
+	if bar:
+		bar.add_child(_view_btn)
+		bar.add_child(VSeparator.new())
+	elif _mp_bar:
+		# Sin panel Game: junto a nuestra barra de Players
+		_mp_bar.add_child(_view_btn)
+
+func _on_view_btn_toggled(pressed: bool) -> void:
+	_view_counter += 1
+	_view_btn.text = "Client View" if pressed else "Server View"
+	var f := FileAccess.open("res://.gl_view_cmd", FileAccess.WRITE)
+	if f:
+		f.store_string("%s|%d" % ["server" if pressed else "client", _view_counter])
+		f.close()
+
+func _reset_view_button() -> void:
+	if _view_btn and is_instance_valid(_view_btn):
+		_view_btn.set_pressed_no_signal(false)
+		_view_btn.text = "Server View"
+	_remove_res_file(".gl_view_cmd")
 
 func _remove_mp_toolbar() -> void:
 	if _mp_run_bar and is_instance_valid(_mp_run_bar):
@@ -472,6 +534,42 @@ func _sync_mp_run_args() -> void:
 	if str(ProjectSettings.get_setting("editor/run/main_run_args", "")) != val:
 		ProjectSettings.set_setting("editor/run/main_run_args", val)
 		ProjectSettings.save()
+		# El dialogo nativo de Run Instances cachea este valor en su LineEdit y
+		# solo lo relee con esta señal; sin emitirla, el Play nativo lanzaria el
+		# juego SIN nuestros args (el host arrancaria como un jugador).
+		ProjectSettings.emit_signal("settings_changed")
+	# Plan B a prueba de todo: res:// es la MISMA carpeta para el editor y para
+	# el juego lanzado desde el editor. Si los run args no llegaran, la instancia
+	# nativa lee este archivo y se vuelve el host igual.
+	if count >= 2:
+		var f := FileAccess.open("res://.gl_mp_session", FileAccess.WRITE)
+		if f:
+			f.store_string("%d|%s|%d" % [count, _mp_device_name(), int(Time.get_unix_time_from_system())])
+			f.close()
+	else:
+		_remove_res_file(".gl_mp_session")
+
+func _remove_res_file(fname: String) -> void:
+	var d := DirAccess.open("res://")
+	if d and d.file_exists(fname):
+		d.remove(fname)
+
+# El dialogo nativo "Customize Run Instances" NO debe pelear con nuestra barra:
+# si el usuario lo dejo activado con N instancias, el Play nativo lanzaria N
+# ventanas nativas ADEMAS de nuestros clientes (cuentas de ventanas absurdas).
+# Se apaga en vivo (widgets) y en su metadata persistida.
+func _neutralize_native_instances() -> void:
+	var es := EditorInterface.get_editor_settings()
+	if es:
+		es.set_project_metadata("debug_options", "multiple_instances_enabled", false)
+	var dlg := _find_node_by_class(EditorInterface.get_base_control().get_tree().get_root(), "RunInstancesDialog")
+	if dlg == null: return
+	var cb := _find_node_by_class(dlg, "CheckBox")
+	if cb and cb is CheckBox and (cb as CheckBox).button_pressed:
+		(cb as CheckBox).button_pressed = false
+	var sp := _find_node_by_class(dlg, "SpinBox")
+	if sp and sp is SpinBox and (sp as SpinBox).value > 1:
+		(sp as SpinBox).value = 1
 
 # Native Play pressed → if Players >= 2, launch the client windows #2..N.
 # (The native instance is the HOST: it already got "--glindex 1" via the synced
@@ -502,9 +600,10 @@ func _on_native_play() -> void:
 		if pid > 0: _mp_child_pids.append(pid)
 		else: push_warning("[GodotLuau] Could not launch game instance %d." % i)
 
-# Native Stop pressed → close the extra windows.
+# Native Stop pressed → close the extra windows and reset the view toggle.
 func _on_native_stop() -> void:
 	_kill_mp_children()
+	_reset_view_button()
 
 # Kill every client window we launched (guarded: PIDs can be dead/recycled).
 func _kill_mp_children() -> void:

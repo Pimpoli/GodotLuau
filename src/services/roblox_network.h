@@ -43,8 +43,6 @@
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
-#include <godot_cpp/classes/canvas_layer.hpp>
-#include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
@@ -71,24 +69,54 @@
 #include <vector>
 #include <map>
 
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/time.hpp>
+
 #include "lua.h"
 #include "lualib.h"
-#include "gl_runtime.h"   // gl_state_alive
+#include "gl_runtime.h"   // gl_state_alive, gl_freecam
+#include "gl_debug.h"     // gl_debug_on (prints internos solo en Modo Debug)
 
 using namespace godot;
 
+// Prints internos del multijugador: SOLO con el Modo Debug activo (como el
+// resto de la extension). Sin tildes: la consola de Windows los rompe.
 static inline void gl_mp_log(const String& s) {
-    UtilityFunctions::print(String("[GodotLuau MP] ") + s);
+    if (gl_debug_on()) UtilityFunctions::print(String("[GodotLuau MP] ") + s);
 }
 
-// ¿Debe auto-crearse el NetworkService al arrancar el juego? TODAS las
-// instancias (host incluido) reciben --glindex: el host lo recibe vía
-// ProjectSettings "editor/run/main_run_args" (que el botón Play nativo añade
-// después de la escena) y los clientes en su línea de comandos.
+// ── Respaldo de sesion por res:// ─────────────────────────────────────────
+// El plugin del editor escribe res://.gl_mp_session = "count|device|stamp".
+// res:// es EXACTAMENTE la misma carpeta para el editor y para el juego
+// lanzado desde el editor (corre sin pack), asi que este canal no puede
+// fallar por rutas. Es el plan B si "editor/run/main_run_args" no llega.
+static inline bool gl_mp_session_read(int& out_count, String& out_device) {
+    Ref<FileAccess> f = FileAccess::open("res://.gl_mp_session", FileAccess::READ);
+    if (f.is_null()) return false;
+    PackedStringArray parts = f->get_as_text().strip_edges().split("|");
+    f->close();
+    if (parts.size() < 3) return false;
+    int    cnt   = String(parts[0]).to_int();
+    double stamp = String(parts[2]).to_float();
+    double now   = Time::get_singleton()->get_unix_time_from_system();
+    if (cnt < 2) return false;
+    if (now - stamp > 21600.0) return false;   // 6 h: sesion de otro dia no cuenta
+    out_count  = cnt;
+    out_device = parts[1];
+    return true;
+}
+
+// ¿Debe auto-crearse el NetworkService al arrancar el juego?
+//   · hay --glindex en los user args (host via main_run_args, clientes directo)
+//   · hay una sesion res:// fresca (plan B del host)
+//   · el juego corre desde el editor (para el toggle Server/Client View del
+//     panel Game, que funciona incluso con 1 jugador)
 static inline bool gl_mp_autostart_requested() {
     PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
     for (int i = 0; i < a.size(); i++) if (String(a[i]) == "--glindex") return true;
-    return false;
+    int c; String d;
+    if (gl_mp_session_read(c, d)) return true;
+    return OS::get_singleton()->has_feature("editor");
 }
 
 // ── Cámara libre de la Vista de Servidor (como la cámara de Roblox Studio) ──
@@ -166,11 +194,13 @@ class NetworkService : public Node {
     double bcast_timer = 0.0;
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
 
-    // Vista de Servidor (cámara libre)
-    CanvasLayer* view_ui  = nullptr;
-    Button*      view_btn = nullptr;
-    uint64_t     freecam_id = 0;   // ObjectID de la cámara libre
-    uint64_t     prevcam_id = 0;   // ObjectID de la cámara del jugador
+    // Vista de Servidor (cámara libre) — comandada desde el panel Game del
+    // editor vía res://.gl_view_cmd ("server|N" / "client|N")
+    uint64_t     freecam_id = 0;    // ObjectID de la cámara libre
+    uint64_t     prevcam_id = 0;    // ObjectID de la cámara del jugador
+    int          view_last_n = -1;  // último comando aplicado
+    double       view_poll = 0.0;
+    bool         view_watch = false;
 
     static Node* _find_by_class(Node* n, const char* cls) {
         if (!n) return nullptr;
@@ -241,25 +271,23 @@ class NetworkService : public Node {
             w->set_position(pos + Vector2i(12, 40));
         }
     }
-    // Botón "Server View" (arriba al centro) para alternar cámara libre /
-    // cámara del jugador, como el toggle cliente/servidor de Roblox Studio.
-    void _build_view_toggle() {
-        if (view_ui) return;
-        view_ui = memnew(CanvasLayer);
-        view_ui->set_name("GL_ViewToggle");
-        view_ui->set_layer(95);
-        add_child(view_ui);
-        view_btn = memnew(Button);
-        view_btn->set_text("Server View");
-        view_btn->set_tooltip_text("Free camera like Roblox Studio's server view: WASD + right mouse to fly, wheel = speed. Your player does NOT move. Click again to return to the player camera.");
-        view_btn->set_anchor(SIDE_LEFT,  0.5f);
-        view_btn->set_anchor(SIDE_RIGHT, 0.5f);
-        view_btn->set_offset(SIDE_LEFT,  -76.0f);
-        view_btn->set_offset(SIDE_RIGHT,  76.0f);
-        view_btn->set_offset(SIDE_TOP,     8.0f);
-        view_btn->set_offset(SIDE_BOTTOM, 38.0f);
-        view_btn->connect("pressed", Callable(this, "_on_view_toggle"));
-        view_ui->add_child(view_btn);
+    // Vigila res://.gl_view_cmd: el botón "Server View" del panel Game del
+    // editor escribe ahí "server|N" o "client|N"; la instancia host (o la única
+    // en un jugador) aplica el cambio de perspectiva.
+    void _poll_view_cmd(double dt) {
+        view_poll += dt;
+        if (view_poll < 0.4) return;
+        view_poll = 0.0;
+        Ref<FileAccess> f = FileAccess::open("res://.gl_view_cmd", FileAccess::READ);
+        if (f.is_null()) return;
+        PackedStringArray parts = f->get_as_text().strip_edges().split("|");
+        f->close();
+        if (parts.size() < 2) return;
+        int n = String(parts[1]).to_int();
+        if (n == view_last_n) return;
+        if (player_index > 1) { view_last_n = n; return; }   // solo host / un jugador
+        bool want_server = (String(parts[0]) == "server");
+        if (_set_view(want_server)) view_last_n = n;   // si aún no hay cámara, reintenta
     }
 
     Ref<MultiplayerAPI> _mp() {
@@ -393,7 +421,7 @@ class NetworkService : public Node {
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
             Puppet P; P.node = pup; P.tpos = pos; P.tyaw = yaw; P.has_target = true;
             puppets[key] = P;
-            gl_mp_log(String("Player") + String::num_int64(idx) + " apareció en tu mundo");
+            gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo");
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
         }
@@ -486,7 +514,6 @@ protected:
         ClassDB::bind_method(D_METHOD("_relay_state2d", "pos", "rot", "idx"),       &NetworkService::_relay_state2d);
         ClassDB::bind_method(D_METHOD("_recv_remove", "who"),                       &NetworkService::_recv_remove);
         ClassDB::bind_method(D_METHOD("_on_puppet_gone", "key"),                    &NetworkService::_on_puppet_gone);
-        ClassDB::bind_method(D_METHOD("_on_view_toggle"),                           &NetworkService::_on_view_toggle);
     }
 
     void _notification(int p_what) {
@@ -495,13 +522,13 @@ protected:
 
 public:
     // ── Callbacks de señales de red ──────────────────────────────────────
-    void _on_peer_connected(int id)    { gl_mp_log(String("otro jugador entró (peer ") + String::num_int64(id) + ")"); _fire(pc_cbs, true, id); }
+    void _on_peer_connected(int id)    { gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")"); _fire(pc_cbs, true, id); }
     void _on_peer_disconnected(int id) {
         _remove_puppet(id);
         if (is_server()) rpc("_recv_remove", id);   // que los clientes también lo quiten
         _fire(pd_cbs, true, id);
     }
-    void _on_connected_ok()            { net_connected = true; gl_mp_log("¡conectado al host! sesión compartida activa"); _fire(conn_cbs, false, 0); }
+    void _on_connected_ok()            { net_connected = true; gl_mp_log("conectado al host! sesion compartida activa"); _fire(conn_cbs, false, 0); }
     void _on_connect_failed()          { mode = 0; if (retry_left > 0) return; _fire(fail_cbs, false, 0); }
     void _on_server_disconnected() {
         net_connected = false;
@@ -538,12 +565,15 @@ public:
     }
     void _recv_remove(int who) { _remove_puppet(who); }
 
-    // ── Vista de Servidor: alternar cámara libre / cámara del jugador ─────
-    void _on_view_toggle() {
-        if (!gl_freecam().active) {
+    // ── Vista de Servidor: poner (true) o quitar (false) la cámara libre ──
+    // Devuelve false si aún no se puede aplicar (sin cámara todavía) para que
+    // el watcher reintente en el próximo tick.
+    bool _set_view(bool server) {
+        if (server == gl_freecam().active) return true;   // ya está así
+        if (server) {
             Viewport* vp = get_viewport();
             Camera3D* cur = vp ? vp->get_camera_3d() : nullptr;
-            if (!cur) { gl_mp_log("Server View solo está disponible en juegos 3D por ahora"); return; }
+            if (!cur) { gl_mp_log("Server View: aun no hay camara 3D (se reintenta)"); return false; }
             prevcam_id = (uint64_t)cur->get_instance_id();
             GLFreeCamera* fc = memnew(GLFreeCamera);
             fc->set_name("GL_ServerFreeCam");
@@ -552,8 +582,7 @@ public:
             fc->make_current();
             freecam_id = (uint64_t)fc->get_instance_id();
             gl_freecam().active = true;
-            if (view_btn) view_btn->set_text("Client View");
-            gl_mp_log("Vista de Servidor: cámara libre (WASD + click derecho; el personaje no se mueve)");
+            gl_mp_log("Vista de SERVIDOR: camara libre (WASD + click derecho; el personaje no se mueve)");
         } else {
             gl_freecam().active = false;
             if (Object* o = ObjectDB::get_instance(freecam_id))
@@ -562,9 +591,9 @@ public:
             Camera3D* pc = Object::cast_to<Camera3D>(ObjectDB::get_instance(prevcam_id));
             if (pc) pc->make_current();
             Input::get_singleton()->set_mouse_mode(Input::MOUSE_MODE_VISIBLE);
-            if (view_btn) view_btn->set_text("Server View");
-            gl_mp_log("Vista de Cliente: cámara del jugador");
+            gl_mp_log("Vista de CLIENTE: camara del jugador");
         }
+        return true;
     }
 
     void add_pc_cb(lua_State* L, int ref)   { pc_cbs.push_back({L, ref}); }
@@ -588,6 +617,8 @@ public:
     }
 
     void _process(double dt) override {
+        // 0. Toggle Server/Client View pedido desde el panel Game del editor
+        if (view_watch) _poll_view_cmd(dt);
         // 1. Reintentos de conexión del cliente (hasta que el host abra el puerto)
         if (retry_left > 0) {
             if (net_connected) {
@@ -599,7 +630,7 @@ public:
                     retry_left--;
                     if (retry_left > 0) connect_server("127.0.0.1", 25575);
                     else if (!net_connected && player_index >= 2 && is_inside_tree()) {
-                        gl_mp_log("no se encontró el host; cerrando esta ventana");
+                        gl_mp_log("no se encontro el host; cerrando esta ventana");
                         get_tree()->quit();   // cliente huérfano: el host nunca abrió el puerto
                     }
                 }
@@ -616,9 +647,8 @@ public:
         }
     }
 
-    // Lee --glindex/--glcount/--gldevice de los user args (el host los recibe
-    // vía "editor/run/main_run_args"; los clientes en su línea de comandos)
-    // y auto-conecta el multijugador local.
+    // Resuelve el rol de esta instancia y auto-conecta el multijugador local.
+    // Prioridad: user args (--glindex...) → sesion res:// (plan B del host).
     void _auto_init() {
         PackedStringArray args = OS::get_singleton()->get_cmdline_user_args();
         int idx = 0, cnt = 1;
@@ -628,24 +658,39 @@ public:
             else if (a == "--glcount"  && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
             else if (a == "--gldevice" && i + 1 < args.size()) device = args[i + 1];
         }
+        String role_src = "user args";
+        if (idx == 0) {
+            // Sin args: ¿hay sesion multijugador escrita por el editor? → HOST
+            int scnt; String sdev;
+            if (gl_mp_session_read(scnt, sdev)) {
+                idx = 1; cnt = scnt; device = sdev;
+                role_src = "res://.gl_mp_session (plan B)";
+            }
+        }
+        // Diagnostico (solo Modo Debug): con esto se ve EXACTAMENTE que llego
+        gl_mp_log(String("user args = [") + String(", ").join(args) + "]");
+        gl_mp_log(String("rol: idx=") + String::num_int64(idx) + " count=" + String::num_int64(cnt)
+                  + " device=" + device + " (fuente: " + role_src + ")");
         player_index = idx;
         if (idx >= 1 && cnt >= 2) {
             bool as_client = (idx != 1);
             if (idx == 1) {
-                // Elección de host por puerto: si otra instancia ya abrió el 25575,
-                // esta se une como cliente (robusto ante un doble anfitrión).
-                if (!start_server(25575, cnt)) as_client = true;
+                // Eleccion de host por puerto: si otra instancia ya abrio el 25575,
+                // esta se une como cliente (robusto ante un doble anfitrion).
+                if (!start_server(25575, cnt)) { as_client = true; gl_mp_log("puerto 25575 ocupado -> me uno como cliente"); }
             }
-            if (as_client) { connect_server("127.0.0.1", 25575); retry_left = 12; }
-            set_process(true);   // difundir estado / suavizar muñecos
+            if (as_client) { connect_server("127.0.0.1", 25575); retry_left = 20; }
             gl_mp_log(as_client
                 ? (String("cliente Player") + String::num_int64(idx) + " conectando a 127.0.0.1:25575...")
-                : (String("host Player1 escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, disp. " + device + ")"));
+                : (String("HOST Player1 escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, dispositivo " + device + ")"));
             _apply_window_layout(idx, cnt);
-            _build_view_toggle();
         } else {
-            gl_mp_log("modo un jugador (Players = 1)");
+            gl_mp_log("modo un jugador");
         }
+        // El watcher del toggle Server/Client corre siempre que el juego se
+        // lanzo desde el editor (tambien con 1 jugador, como pide Roblox Studio).
+        view_watch = OS::get_singleton()->has_feature("editor");
+        set_process(true);
         if (idx >= 1) _name_local_player(idx);
         _apply_device();
     }
