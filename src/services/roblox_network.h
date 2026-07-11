@@ -98,7 +98,7 @@ static inline void gl_mp_log(const String& s) {
 // lanzado desde el editor (corre sin pack), asi que este canal no puede
 // fallar por rutas. count>=2 => la ventana NATIVA es el SERVIDOR; count==1
 // el archivo solo transporta el dispositivo emulado.
-static inline bool gl_mp_session_read(int& out_count, String& out_device) {
+static inline bool gl_mp_session_read_ex(int& out_count, String& out_device, double& out_age) {
     Ref<FileAccess> f = FileAccess::open("res://.gl_mp_session", FileAccess::READ);
     if (f.is_null()) return false;
     PackedStringArray parts = f->get_as_text().strip_edges().split("|");
@@ -108,10 +108,15 @@ static inline bool gl_mp_session_read(int& out_count, String& out_device) {
     double stamp = String(parts[2]).to_float();
     double now   = Time::get_singleton()->get_unix_time_from_system();
     if (cnt < 1) return false;
-    if (now - stamp > 21600.0) return false;   // 6 h: sesion de otro dia no cuenta
+    out_age = now - stamp;
+    if (out_age > 21600.0) return false;   // 6 h: sesion de otro dia no cuenta
     out_count  = cnt;
     out_device = parts[1];
     return true;
+}
+static inline bool gl_mp_session_read(int& out_count, String& out_device) {
+    double age;
+    return gl_mp_session_read_ex(out_count, out_device, age);
 }
 
 // ¿Debe auto-crearse el NetworkService al arrancar el juego?
@@ -184,11 +189,10 @@ class GLVRPreview : public Control {
 protected:
     static void _bind_methods() {}
 public:
+    HBoxContainer* hb = nullptr;
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
-        set_anchors_preset(Control::PRESET_FULL_RECT);
-        HBoxContainer* hb = memnew(HBoxContainer);
-        hb->set_anchors_preset(Control::PRESET_FULL_RECT);
+        hb = memnew(HBoxContainer);
         hb->add_theme_constant_override("separation", 4);
         add_child(hb);
         for (int i = 0; i < 2; i++) {
@@ -198,6 +202,9 @@ public:
             svc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
             hb->add_child(svc);
             SubViewport* sv = memnew(SubViewport);
+            // Tamano inicial REAL: sin esto el primer render sale con un buffer
+            // diminuto y el glow del look Roblox spamea errores de mipmaps.
+            sv->set_size(Vector2i(600, 560));
             sv->set_update_mode(SubViewport::UPDATE_ALWAYS);
             svc->add_child(sv);
             Camera3D* c = memnew(Camera3D);
@@ -212,7 +219,16 @@ public:
     void _process(double) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         Viewport* root = get_viewport();
-        Camera3D* main_cam = root ? root->get_camera_3d() : nullptr;
+        if (!root) return;
+        // Tamano forzado por codigo (los anchors dentro de un CanvasLayer pueden
+        // quedarse en 0 el primer frame y el render de los ojos explota)
+        Vector2 vs = root->get_visible_rect().size;
+        if (vs.x >= 2.0f && !get_size().is_equal_approx(vs)) {
+            set_position(Vector2());
+            set_size(vs);
+            if (hb) { hb->set_position(Vector2()); hb->set_size(vs); }
+        }
+        Camera3D* main_cam = root->get_camera_3d();
         if (!main_cam || !cam_l || !cam_r) return;
         Transform3D t = main_cam->get_global_transform();
         Vector3 right = t.basis.get_column(0).normalized() * 0.032f;   // ~IPD/2
@@ -261,6 +277,7 @@ class NetworkService : public Node {
     double       view_poll = 0.0;
     bool         view_watch = false;
     bool         boot_server_view = false;   // la ventana del servidor arranca en cámara libre
+    double       xform_poll = 0.0;           // vigilancia de sesión para transformarse en servidor
 
     static Node* _find_by_class(Node* n, const char* cls) {
         if (!n) return nullptr;
@@ -717,6 +734,27 @@ public:
         if (boot_server_view && _set_view(true)) boot_server_view = false;
         // 0b. Toggle Server/Client View pedido desde el panel Game del editor
         if (view_watch) _poll_view_cmd(dt);
+        // 0c. TRANSFORMACION EN VIVO: una ventana del editor sin rol (la nativa,
+        //     incluso si quedo corriendo de una prueba anterior) se convierte en
+        //     el SERVIDOR cuando detecta una sesion recien creada por el Play.
+        //     Eleccion por puerto: solo UNA gana; si el puerto ya es de otro, nada.
+        if (view_watch && mode == 0 && player_index == 0) {
+            xform_poll += dt;
+            if (xform_poll >= 0.5) {
+                xform_poll = 0.0;
+                int scnt; String sdev; double sage;
+                if (gl_mp_session_read_ex(scnt, sdev, sage) && scnt >= 2 && sage < 30.0) {
+                    if (start_server(25575, scnt + 2)) {
+                        device = sdev;
+                        player_index = 1;
+                        _remove_local_player();
+                        boot_server_view = true;
+                        _apply_window_layout(1, scnt);
+                        gl_mp_log("sesion multijugador detectada -> esta ventana ahora es el SERVIDOR");
+                    }
+                }
+            }
+        }
         // 1. Reintentos de conexión del cliente (hasta que el host abra el puerto)
         if (retry_left > 0) {
             if (net_connected) {
@@ -726,6 +764,16 @@ public:
                 if (retry_timer >= 1.5) {
                     retry_timer = 0.0;
                     retry_left--;
+                    // Red de seguridad final: si tras ~6s nadie hostea, el PRIMER
+                    // jugador se promueve a host (sigue jugando como Player1) para
+                    // que la sesion SIEMPRE se forme.
+                    if (retry_left == 16 && player_index == 2 && !net_connected) {
+                        if (start_server(25575, 10)) {
+                            retry_left = 0;
+                            gl_mp_log("nadie hostea; Player1 se promueve a HOST de respaldo (sigue jugando)");
+                            return;
+                        }
+                    }
                     if (retry_left > 0) connect_server("127.0.0.1", 25575);
                     else if (!net_connected && player_index >= 2 && is_inside_tree()) {
                         gl_mp_log("no se encontro el host; cerrando esta ventana");
@@ -763,10 +811,14 @@ public:
         if (idx == 0) {
             // Ventana nativa: la sesion res:// dice si hay prueba multijugador
             // (count>=2 → esta ventana es el SERVIDOR) y el dispositivo emulado.
-            int scnt; String sdev;
-            if (gl_mp_session_read(scnt, sdev)) {
+            int scnt; String sdev; double sage;
+            if (gl_mp_session_read_ex(scnt, sdev, sage)) {
                 device = sdev;
                 if (scnt >= 2) { idx = 1; cnt = scnt; role_src = "res://.gl_mp_session"; }
+                gl_mp_log(String("sesion res:// leida: count=") + String::num_int64(scnt)
+                          + " device=" + sdev + " edad=" + String::num_int64((int64_t)sage) + "s");
+            } else {
+                gl_mp_log("sin sesion res:// al arrancar (la vigilo por si aparece)");
             }
         }
         // Diagnostico (solo Modo Debug): con esto se ve EXACTAMENTE que llego
