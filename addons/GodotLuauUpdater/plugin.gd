@@ -424,6 +424,11 @@ func _build_mp_toolbar() -> void:
 		_mp_used_container = true
 		add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _mp_bar)
 
+	# Clean slate: sync the session file with the current count (default 1 → cleared),
+	# so a leftover file from a previous session/crash never turns a single-player run
+	# into a host.
+	_refresh_mp_session()
+
 func _remove_mp_toolbar() -> void:
 	if _mp_run_bar and is_instance_valid(_mp_run_bar):
 		if _mp_run_bar.is_connected("play_pressed", _on_native_play):
@@ -454,6 +459,9 @@ func _refresh_mp_session() -> void:
 
 # Native Play pressed → if Players >= 2, become a shared local session.
 func _on_native_play() -> void:
+	# Always close the windows we launched before (so a previous run's client
+	# windows never linger and inflate the count on the next Play).
+	_kill_mp_children()
 	var count: int = int(_mp_count.value) if _mp_count else 1
 	if count < 2:
 		_clear_mp_session()   # sin sesión → la instancia nativa corre single player
@@ -464,25 +472,25 @@ func _on_native_play() -> void:
 	# The native instance (#1) reads this file and becomes the HOST (refresh stamp).
 	_write_mp_session(count, device)
 	# Run the SAME scene the host runs (F5 main / F6 current / F7 custom) so every
-	# window shares one world instead of the clients always booting the main scene.
-	var scene := ""
-	scene = str(EditorInterface.get_playing_scene())
+	# window shares one world. Only a real scene path is forwarded (an unexpected
+	# value would make the client fail to boot).
+	var scene := str(EditorInterface.get_playing_scene())
+	var pass_scene := scene.begins_with("res://") and (scene.ends_with(".tscn") or scene.ends_with(".scn"))
 	# Launch the client instances #2..N (they connect to the host on 127.0.0.1).
 	var exe := OS.get_executable_path()
 	var proj := ProjectSettings.globalize_path("res://")
-	_kill_mp_children()   # por si se re-jugó sin pulsar Stop: cerrar las ventanas viejas
 	for i in range(2, count + 1):
 		var a: Array = ["--path", proj]
-		if scene != "": a.append(scene)
+		if pass_scene: a.append(scene)
 		a.append_array(["--", "--glindex", str(i), "--glcount", str(count), "--gldevice", device])
 		var pid := OS.create_process(exe, a)
 		if pid > 0: _mp_child_pids.append(pid)
 		else: push_warning("[GodotLuau] Could not launch game instance %d." % i)
 
-# Native Stop pressed → close the extra windows and clear the session.
+# Native Stop pressed → close the extra windows. The session file is kept in sync
+# with the SpinBox (NOT cleared here) so replaying with the same count still hosts.
 func _on_native_stop() -> void:
 	_kill_mp_children()
-	_clear_mp_session()
 
 # Kill every client window we launched (guarded: PIDs can be dead/recycled).
 func _kill_mp_children() -> void:

@@ -80,7 +80,10 @@ static inline bool gl_mp_session_read(int& out_count, String& out_device) {
     String dev   = parts[1];
     double stamp = String(parts[2]).to_float();
     double now   = Time::get_singleton()->get_unix_time_from_system();
-    if (now - stamp > 45.0) return false;   // sesión vieja (corrida anterior)
+    // Ventana amplia: el archivo lo mantiene sincronizado el editor (se escribe al
+    // elegir >=2 jugadores y se borra al volver a 1 o al cerrar). Solo se rechaza
+    // si es antiquísimo (editor que crasheó hace mucho).
+    if (now - stamp > 86400.0) return false;
     if (cnt < 2) return false;
     out_count = cnt;
     out_device = dev;
@@ -90,9 +93,8 @@ static inline bool gl_mp_session_active() {
     int c; String d;
     return gl_mp_session_read(c, d);
 }
-static inline void gl_mp_session_consume() {
-    Ref<DirAccess> d = DirAccess::open("user://");
-    if (d.is_valid() && d->file_exists("gl_mp_session.gl")) d->remove("gl_mp_session.gl");
+static inline void gl_mp_log(const String& s) {
+    UtilityFunctions::print(String("[GodotLuau MP] ") + s);
 }
 
 // ¿Debe auto-crearse el NetworkService al arrancar el juego?
@@ -308,6 +310,7 @@ class NetworkService : public Node {
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
             Puppet P; P.node = pup; P.tpos = pos; P.tyaw = yaw; P.has_target = true;
             puppets[key] = P;
+            gl_mp_log(String("Player") + String::num_int64(idx) + " apareció en tu mundo");
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
         }
@@ -408,13 +411,13 @@ protected:
 
 public:
     // ── Callbacks de señales de red ──────────────────────────────────────
-    void _on_peer_connected(int id)    { _fire(pc_cbs, true, id); }
+    void _on_peer_connected(int id)    { gl_mp_log(String("otro jugador entró (peer ") + String::num_int64(id) + ")"); _fire(pc_cbs, true, id); }
     void _on_peer_disconnected(int id) {
         _remove_puppet(id);
         if (is_server()) rpc("_recv_remove", id);   // que los clientes también lo quiten
         _fire(pd_cbs, true, id);
     }
-    void _on_connected_ok()            { net_connected = true; _fire(conn_cbs, false, 0); }
+    void _on_connected_ok()            { net_connected = true; gl_mp_log("¡conectado al host! sesión compartida activa"); _fire(conn_cbs, false, 0); }
     void _on_connect_failed()          { mode = 0; if (retry_left > 0) return; _fire(fail_cbs, false, 0); }
     void _on_server_disconnected() {
         net_connected = false;
@@ -482,8 +485,10 @@ public:
                     retry_timer = 0.0;
                     retry_left--;
                     if (retry_left > 0) connect_server("127.0.0.1", 25575);
-                    else if (!net_connected && player_index >= 2 && is_inside_tree())
+                    else if (!net_connected && player_index >= 2 && is_inside_tree()) {
+                        gl_mp_log("no se encontró el host; cerrando esta ventana");
                         get_tree()->quit();   // cliente huérfano: el host nunca abrió el puerto
+                    }
                 }
             }
         }
@@ -511,18 +516,27 @@ public:
             else if (a == "--gldevice" && i + 1 < args.size()) device = args[i + 1];
         }
         if (!have_idx) {
-            // ¿Instancia anfitriona nativa? (lanzada por el botón Play de Godot)
+            // ¿Instancia anfitriona nativa? (la lanzó el botón Play de Godot).
+            // NO se consume el archivo: debe seguir disponible en cada Play (el
+            // editor lo mantiene sincronizado y lo borra al salir / volver a 1).
             int scnt; String sdev;
-            if (gl_mp_session_read(scnt, sdev)) {
-                idx = 1; cnt = scnt; device = sdev;
-                gl_mp_session_consume();   // que no afecte a futuras corridas de un jugador
-            }
+            if (gl_mp_session_read(scnt, sdev)) { idx = 1; cnt = scnt; device = sdev; }
         }
         player_index = idx;
         if (idx >= 1 && cnt >= 2) {
-            if (idx == 1) start_server(25575, cnt);
-            else { connect_server("127.0.0.1", 25575); retry_left = 12; }
+            bool as_client = (idx != 1);
+            if (idx == 1) {
+                // Elección de host por puerto: si otra instancia ya abrió el 25575,
+                // esta se une como cliente (robusto ante un doble anfitrión).
+                if (!start_server(25575, cnt)) as_client = true;
+            }
+            if (as_client) { connect_server("127.0.0.1", 25575); retry_left = 12; }
             set_process(true);   // difundir estado / suavizar muñecos
+            gl_mp_log(as_client
+                ? (String("cliente Player") + String::num_int64(idx) + " conectando a 127.0.0.1:25575...")
+                : (String("host Player1 escuchando en 25575 (") + String::num_int64(cnt) + " jugadores, disp. " + device + ")"));
+        } else {
+            gl_mp_log("modo un jugador (Players = 1)");
         }
         if (idx >= 1) _name_local_player(idx);
         _apply_device();
