@@ -11,8 +11,19 @@ config_version=5
 [application]
 
 config/name="GodotLuau"
-config/features=PackedStringArray("4.6")
+config/features=PackedStringArray("4.7")
 
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/GodotLuauUpdater/plugin.cfg")
+
+[physics]
+
+jolt_physics_3d/limits/temporary_memory_buffer_size=128
+jolt_physics_3d/limits/max_bodies=262144
+jolt_physics_3d/limits/max_body_pairs=131072
+jolt_physics_3d/limits/max_contact_constraints=40960
+
+[rendering]
+
+rendering_device/d3d12/max_resource_descriptors=131072

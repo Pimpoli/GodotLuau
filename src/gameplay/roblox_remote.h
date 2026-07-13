@@ -7,6 +7,7 @@
 #include "lualib.h"
 #include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
+#include "gl_net_bridge.h" // serializador Lua<->red (Fase 2)
 #include <vector>
 #include <algorithm>
 #include <functional>
@@ -29,6 +30,42 @@ static inline Node* _gl_find_local_player(Node* from) {
         return nullptr;
     };
     return rec((Node*)from->get_tree()->get_root());
+}
+
+// Localiza el NetworkService (singleton bajo el DataModel) en el árbol.
+// RemoteEvent lo usa para preguntar el modo de red y enviar por ENet, SIN
+// incluir roblox_network.h (evita ciclo de includes): se habla por call().
+static inline Node* _gl_find_network_service(Node* from) {
+    if (!from || !from->is_inside_tree()) return nullptr;
+    std::function<Node*(Node*)> rec = [&](Node* n) -> Node* {
+        if (!n) return nullptr;
+        if (n->is_class("NetworkService")) return n;
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* r = rec(n->get_child(i));
+            if (r) return r;
+        }
+        return nullptr;
+    };
+    return rec((Node*)from->get_tree()->get_root());
+}
+
+// Extrae el Node* envuelto en un argumento Luau (GodotObject) o nullptr.
+static inline Node* _gl_node_from_lua(lua_State* L, int idx) {
+    if (lua_type(L, idx) != LUA_TUSERDATA) return nullptr;
+    if (!lua_getmetatable(L, idx)) return nullptr;
+    luaL_getmetatable(L, "GodotObject");
+    bool ok = lua_rawequal(L, -1, -2);
+    lua_pop(L, 2);
+    if (!ok) return nullptr;
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, idx);
+    return w ? gow_node(w) : nullptr;
+}
+
+// Devuelve el modo de red del NetworkService (0 single / 1 host / 2 client).
+static inline int _gl_net_mode(Node* ns) {
+    if (!ns) return 0;
+    Variant m = ns->call("get_mode");
+    return (int)m;
 }
 
 // Empuja un nodo como GodotObject (o nil) en el estado dst.
@@ -123,36 +160,33 @@ protected:
 public:
     std::vector<LuaCB> server_cbs;
     std::vector<LuaCB> client_cbs;
+    bool reliable = true;   // false en UnreliableRemoteEvent (canal no confiable)
 
     void add_server_cb(lua_State* L, int ref) { server_cbs.push_back({L, ref}); }
     void add_client_cb(lua_State* L, int ref) { client_cbs.push_back({L, ref}); }
 
-    // FireServer: call all server listeners with (player, ...args).
-    // El primer argumento es el jugador que disparó (igual que Roblox); en el
-    // modelo de una sola máquina es el LocalPlayer. Antes se pasaba nil y la
-    // plantilla GameManager petaba al hacer player.Name.
-    void fire_server(lua_State* L, int stack_base, int nargs) {
-        Node* player = _gl_find_local_player(this);
-        for (auto& cb : server_cbs) {
+    // ── Entrega LOCAL (mismo proceso) ───────────────────────────────────────
+    // Cada listener corre en su propio hilo (como el resto del motor) para que
+    // pueda usar wait/task.wait sin "yield across C-call boundary".
+    void _run_server_cbs(lua_State* L, int stack_base, int nargs, Node* player) {
+        std::vector<LuaCB> snapshot = server_cbs;  // copia defensiva: un :Connect dentro del handler no invalida el bucle
+        for (auto& cb : snapshot) {
             if (!cb.active || !gl_state_alive(cb.L)) continue;
-            // Cada handler corre en su propio hilo (como el resto del motor):
-            // así puede usar wait/task.wait sin "yield across C-call boundary".
             lua_State* th = lua_newthread(cb.L);
             lua_rawgeti(cb.L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.L, -1)) {
                 lua_xmove(cb.L, th, 1);
-                _gl_push_node(th, player);              // arg1: player (LocalPlayer) o nil
+                _gl_push_node(th, player);              // arg1: player que disparó
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
                 gl_check_resume(th, lua_resume(th, nullptr, 1 + nargs));
             } else lua_pop(cb.L, 1);
-            lua_pop(cb.L, 1);  // quitar el hilo
+            lua_pop(cb.L, 1);
         }
     }
-
-    // FireClient: call all client listeners with (...args)  (player ignored in single-machine)
-    void fire_client(lua_State* L, int stack_base, int nargs) {
-        for (auto& cb : client_cbs) {
+    void _run_client_cbs(lua_State* L, int stack_base, int nargs) {
+        std::vector<LuaCB> snapshot = client_cbs;  // copia defensiva (ver _run_server_cbs)
+        for (auto& cb : snapshot) {
             if (!cb.active || !gl_state_alive(cb.L)) continue;
             lua_State* th = lua_newthread(cb.L);
             lua_rawgeti(cb.L, LUA_REGISTRYINDEX, cb.ref);
@@ -166,6 +200,76 @@ public:
         }
     }
 
+    // ── Entrega desde la RED (args ya llegaron como Array) ──────────────────
+    // Las invoca el NetworkService al recibir el RPC en la máquina destino.
+    void deliver_to_server_cbs(const Array& args, Node* player, Node* ctx) {
+        std::vector<LuaCB> snapshot = server_cbs;  // copia defensiva (ver _run_server_cbs)
+        for (auto& cb : snapshot) {
+            if (!cb.active || !gl_state_alive(cb.L)) continue;
+            lua_State* th = lua_newthread(cb.L);
+            lua_rawgeti(cb.L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.L, -1)) {
+                lua_xmove(cb.L, th, 1);
+                _gl_push_node(th, player);
+                int n = gl_net_decode_args(th, args, ctx);
+                gl_check_resume(th, lua_resume(th, nullptr, 1 + n));
+            } else lua_pop(cb.L, 1);
+            lua_pop(cb.L, 1);
+        }
+    }
+    void deliver_to_client_cbs(const Array& args, Node* ctx) {
+        std::vector<LuaCB> snapshot = client_cbs;  // copia defensiva (ver _run_server_cbs)
+        for (auto& cb : snapshot) {
+            if (!cb.active || !gl_state_alive(cb.L)) continue;
+            lua_State* th = lua_newthread(cb.L);
+            lua_rawgeti(cb.L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.L, -1)) {
+                lua_xmove(cb.L, th, 1);
+                int n = gl_net_decode_args(th, args, ctx);
+                gl_check_resume(th, lua_resume(th, nullptr, n));
+            } else lua_pop(cb.L, 1);
+            lua_pop(cb.L, 1);
+        }
+    }
+
+    // ── API pública (desde Luau) — decide red vs local según el modo ────────
+    // FireServer: cliente → servidor. En host/single entrega localmente.
+    void fire_server(lua_State* L, int stack_base, int nargs) {
+        Node* ns = _gl_find_network_service(this);
+        if (_gl_net_mode(ns) == 2 && is_inside_tree()) {
+            Array args = gl_net_encode_args(L, stack_base, nargs);
+            ns->call("net_send_event", String(get_path()), args, 0, reliable);
+            return;
+        }
+        _run_server_cbs(L, stack_base, nargs, _gl_find_local_player(this));
+    }
+    // FireClient(player, ...): servidor → un cliente concreto.
+    void fire_client(lua_State* L, int player_idx, int stack_base, int nargs) {
+        Node* ns = _gl_find_network_service(this);
+        int mode = _gl_net_mode(ns);
+        if (mode == 0 || !ns || !is_inside_tree()) { _run_client_cbs(L, stack_base, nargs); return; }
+        if (mode == 2) return;   // un cliente no puede FireClient
+        Node* player = _gl_node_from_lua(L, player_idx);
+        if (!player) return;     // FireClient(nil/no-nodo): descartar (Roblox lo trataría como error)
+        int peer = (int)(ns->call("peer_for_player_node", player));
+        int myid = (int)(ns->call("get_peer_id"));
+        if (peer == myid && myid != 0) { _run_client_cbs(L, stack_base, nargs); return; }  // el jugador del host: local
+        if (peer == 0) return;   // destino no resuelto o referencia obsoleta: NO entregar local ni enviar
+        Array args = gl_net_encode_args(L, stack_base, nargs);
+        ns->call("net_send_event", String(get_path()), args, peer, reliable);
+    }
+    // FireAllClients(...): servidor → todos los clientes (incl. el host).
+    void fire_all_clients(lua_State* L, int stack_base, int nargs) {
+        Node* ns = _gl_find_network_service(this);
+        int mode = _gl_net_mode(ns);
+        if (mode == 2) return;   // un cliente no puede FireAllClients
+        _run_client_cbs(L, stack_base, nargs);   // host/single: entrega local
+        if (mode == 1 && is_inside_tree()) {
+            Array args = gl_net_encode_args(L, stack_base, nargs);
+            ns->call("net_send_event", String(get_path()), args, -1, reliable);
+        }
+    }
+
     void cleanup_state(lua_State* L) {
         auto pred = [L](const LuaCB& c){ return c.L == L; };
         server_cbs.erase(std::remove_if(server_cbs.begin(), server_cbs.end(), pred), server_cbs.end());
@@ -175,6 +279,18 @@ public:
         for (auto& cb : server_cbs) if (cb.ref == ref) cb.active = false;
         for (auto& cb : client_cbs) if (cb.ref == ref) cb.active = false;
     }
+};
+
+// ════════════════════════════════════════════════════════════════════
+//  UnreliableRemoteEventNode — igual que RemoteEvent pero por canal NO
+//  confiable (para estado de alta frecuencia que puede perder paquetes).
+// ════════════════════════════════════════════════════════════════════
+class UnreliableRemoteEventNode : public RemoteEventNode {
+    GDCLASS(UnreliableRemoteEventNode, RemoteEventNode);
+protected:
+    static void _bind_methods() {}
+public:
+    UnreliableRemoteEventNode() { reliable = false; }
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -281,7 +397,8 @@ public:
     void _gl_disconnect(int ref) { for (auto& cb : cbs) if (cb.ref == ref) cb.active = false; }
 
     void fire(lua_State* L, int stack_base, int nargs) {
-        for (auto& cb : cbs) {
+        std::vector<LuaCB> snapshot = cbs;  // copia defensiva: un :Connect dentro del handler no invalida el bucle
+        for (auto& cb : snapshot) {
             if (!cb.active || !gl_state_alive(cb.L)) continue;
             lua_State* th = lua_newthread(cb.L);
             lua_rawgeti(cb.L, LUA_REGISTRYINDEX, cb.ref);

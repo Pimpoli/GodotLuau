@@ -295,6 +295,23 @@ public:
     }
 
     TypedArray<Node> get_players() const {
+        // Con sesión de red, el roster completo lo tiene el NetworkService
+        // (jugador local + los demás peers). Sin red, solo el jugador local.
+        if (is_inside_tree()) {
+            Node* ns = _find_network_service((Node*)get_tree()->get_root());
+            if (ns) {
+                Variant rv = ns->call("get_players_roster");
+                if (rv.get_type() == Variant::ARRAY) {
+                    TypedArray<Node> out;
+                    Array a = rv;
+                    for (int i = 0; i < a.size(); i++) {
+                        Node* n = Object::cast_to<Node>(a[i]);
+                        if (n) out.push_back(n);
+                    }
+                    return out;
+                }
+            }
+        }
         TypedArray<Node> result;
         Node* lp = get_local_player();
         if (lp) result.push_back(lp);
@@ -302,6 +319,15 @@ public:
     }
 
 private:
+    static Node* _find_network_service(Node* n) {
+        if (!n) return nullptr;
+        if (n->is_class("NetworkService")) return n;
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* r = _find_network_service(n->get_child(i));
+            if (r) return r;
+        }
+        return nullptr;
+    }
     void _fire_player_event(std::vector<LuaCallback>& list, Node* player) {
         for (int i = (int)list.size()-1; i >= 0; --i) {
             auto& cb = list[i];
@@ -882,6 +908,8 @@ protected:
                              &TextChatService::send_message_from_luau);
         ClassDB::bind_method(D_METHOD("set_player_name", "name"),
                              &TextChatService::set_player_name);
+        ClassDB::bind_method(D_METHOD("gl_fire_message_received", "player", "text"),
+                             &TextChatService::gl_fire_message_received);
     }
 
 public:
@@ -914,6 +942,38 @@ public:
     }
 
     RobloxChat* get_chat() const { return chat_window; }
+
+    // ── MessageReceived (como Roblox) ─────────────────────────────────
+    // Los scripts conectan TextChatService.MessageReceived; RobloxChat nos
+    // avisa de CADA mensaje visible (local o de red) y aqui se resume cada
+    // callback con el texto ya formateado ("Nombre: mensaje").
+    struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
+    std::vector<LuaCallback> msg_received_cbs;
+
+    void gl_connect_message_received(lua_State* main_L, int ref) {
+        msg_received_cbs.push_back({ main_L, ref, true });
+    }
+
+    void gl_fire_message_received(const String& player, const String& text) {
+        String full = player.is_empty() ? text : player + String(": ") + text;
+        for (int i = (int)msg_received_cbs.size() - 1; i >= 0; --i) {
+            LuaCallback& cb = msg_received_cbs[i];
+            if (!cb.active || !gl_state_alive(cb.main_L)) {
+                msg_received_cbs.erase(msg_received_cbs.begin() + i);
+                continue;
+            }
+            lua_State* th = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, th, 1);
+                lua_pushstring(th, full.utf8().get_data());
+                gl_check_resume(th, lua_resume(th, nullptr, 1));
+            } else {
+                lua_pop(cb.main_L, 1);
+            }
+            lua_pop(cb.main_L, 1);
+        }
+    }
 };
 
 // ════════════════════════════════════════════════════════════════════

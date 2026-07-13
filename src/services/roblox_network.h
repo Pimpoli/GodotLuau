@@ -242,6 +242,8 @@ public:
     GLVRPreview() {}
 };
 
+#include "roblox_remote.h"   // RemoteEventNode (entrega de eventos que llegan por red)
+
 class NetworkService : public Node {
     GDCLASS(NetworkService, Node);
 
@@ -449,6 +451,11 @@ class NetworkService : public Node {
         rpc_config("_recv_chat",     r);
         rpc_config("_ping_req",      u);   // medicion de ping (para el menu de ajustes)
         rpc_config("_ping_res",      u);
+        // RemoteEvent por red (Fase 2): confiables y no-confiables, ambos sentidos
+        rpc_config("_re_deliver_server",  r);
+        rpc_config("_re_deliver_client",  r);
+        rpc_config("_ure_deliver_server", u);
+        rpc_config("_ure_deliver_client", u);
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -685,6 +692,19 @@ protected:
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
         ClassDB::bind_method(D_METHOD("get_player_count"),                          &NetworkService::get_player_count);
         ClassDB::bind_method(D_METHOD("get_player_index"),                          &NetworkService::get_player_index);
+        // Fase 2: estado de red + RemoteEvent por red + roster de jugadores
+        ClassDB::bind_method(D_METHOD("is_server"),                                 &NetworkService::is_server);
+        ClassDB::bind_method(D_METHOD("is_client"),                                 &NetworkService::is_client);
+        ClassDB::bind_method(D_METHOD("get_mode"),                                  &NetworkService::get_mode);
+        ClassDB::bind_method(D_METHOD("get_peer_id"),                               &NetworkService::get_peer_id);
+        ClassDB::bind_method(D_METHOD("net_send_event", "path", "args", "target", "reliable"), &NetworkService::net_send_event);
+        ClassDB::bind_method(D_METHOD("player_node_for_peer", "peer"),              &NetworkService::player_node_for_peer);
+        ClassDB::bind_method(D_METHOD("peer_for_player_node", "player"),            &NetworkService::peer_for_player_node);
+        ClassDB::bind_method(D_METHOD("get_players_roster"),                        &NetworkService::get_players_roster);
+        ClassDB::bind_method(D_METHOD("_re_deliver_server", "path", "args"),        &NetworkService::_re_deliver_server);
+        ClassDB::bind_method(D_METHOD("_re_deliver_client", "path", "args"),        &NetworkService::_re_deliver_client);
+        ClassDB::bind_method(D_METHOD("_ure_deliver_server", "path", "args"),       &NetworkService::_ure_deliver_server);
+        ClassDB::bind_method(D_METHOD("_ure_deliver_client", "path", "args"),       &NetworkService::_ure_deliver_client);
     }
 
     void _notification(int p_what) {
@@ -707,6 +727,61 @@ public:
         // Cliente local: si el host (editor) se detiene, cerrar esta ventana para
         // que no queden ventanas huérfanas conectándose a la nada.
         if (player_index >= 2 && is_inside_tree()) get_tree()->quit();
+    }
+
+    // ── RemoteEvent por red (Fase 2) ─────────────────────────────────────
+    // Lo llama RemoteEventNode vía call(). target: 0 = al servidor,
+    // -1 = a todos los clientes, >0 = a un peer concreto.
+    void net_send_event(const String& path, const Array& args, int target, bool reliable) {
+        const char* m_srv = reliable ? "_re_deliver_server" : "_ure_deliver_server";
+        const char* m_cli = reliable ? "_re_deliver_client" : "_ure_deliver_client";
+        if (target == 0)       rpc_id(1, m_srv, path, args);
+        else if (target == -1) rpc(m_cli, path, args);
+        else                   rpc_id(target, m_cli, path, args);
+    }
+    void _deliver_event(const String& path, const Array& args, bool to_server) {
+        if (!is_inside_tree()) return;
+        // Autoridad (como Roblox): OnServerEvent solo se dispara en el servidor;
+        // OnClientEvent solo si el emisor es el servidor (peer 1). Evita que un
+        // cliente modificado falsifique eventos por RPC crudo saltándose el sandbox.
+        if (to_server) { if (!is_server()) return; }
+        else           { if (get_multiplayer()->get_remote_sender_id() != 1) return; }
+        RemoteEventNode* rev = Object::cast_to<RemoteEventNode>(get_node_or_null(NodePath(path)));
+        if (!rev) return;
+        if (to_server) {
+            int sid = get_multiplayer()->get_remote_sender_id();
+            rev->deliver_to_server_cbs(args, player_node_for_peer(sid), this);
+        } else {
+            rev->deliver_to_client_cbs(args, this);
+        }
+    }
+    void _re_deliver_server(String path, Array args)  { _deliver_event(path, args, true); }
+    void _re_deliver_client(String path, Array args)  { _deliver_event(path, args, false); }
+    void _ure_deliver_server(String path, Array args) { _deliver_event(path, args, true); }
+    void _ure_deliver_client(String path, Array args) { _deliver_event(path, args, false); }
+
+    // ── Roster de jugadores (Players:GetPlayers / FireClient targeting) ───
+    // v1 pragmático: el "jugador" es el nodo-personaje local o el muñeco
+    // (Puppet) del peer remoto. Un objeto Player propio + PlayerAdded por red
+    // llegan en la siguiente tanda.
+    Node* player_node_for_peer(int peer_id) {
+        if (peer_id == get_peer_id()) return _local_player();
+        auto it = puppets.find(peer_id);
+        if (it != puppets.end() && _valid(it->second.node)) return it->second.node;
+        return nullptr;
+    }
+    int peer_for_player_node(Node* player) {
+        if (!player) return 0;
+        if (player == _local_player()) return get_peer_id();
+        for (auto& kv : puppets) if (kv.second.node == player) return kv.first;
+        return 0;
+    }
+    TypedArray<Node> get_players_roster() {
+        TypedArray<Node> r;
+        Node* lp = _local_player();
+        if (lp) r.push_back(lp);
+        for (auto& kv : puppets) if (_valid(kv.second.node)) r.push_back(kv.second.node);
+        return r;
     }
 
     // ── RPCs de réplica ──────────────────────────────────────────────────

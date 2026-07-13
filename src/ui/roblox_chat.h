@@ -288,6 +288,12 @@ public:
             message_count--;
         }
 
+        // Avisar al TextChatService (padre) para el evento MessageReceived
+        // de los scripts. Llamada dinamica para no acoplar headers.
+        Node* par = get_parent();
+        if (par && par->has_method("gl_fire_message_received"))
+            par->call("gl_fire_message_received", p_player, p_msg);
+
         // Scroll to bottom / Scroll al final
         if (scroll) {
             scroll->set_v_scroll((int)scroll->get_v_scroll_bar()->get_max());
@@ -295,6 +301,8 @@ public:
 
         emit_signal("MessageSent", p_player, p_msg);
     }
+
+    String gl_get_player_name() const { return player_name; }
 
     void set_player_name(String name) {
         player_name = name.is_empty() ? "Player" : name;

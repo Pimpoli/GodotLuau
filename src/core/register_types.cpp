@@ -130,6 +130,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<Teams>();
         ClassDB::register_class<Folder>();
         ClassDB::register_class<RemoteEventNode>();
+        ClassDB::register_class<UnreliableRemoteEventNode>();
         ClassDB::register_class<RemoteFunctionNode>();
         ClassDB::register_class<BindableEventNode>();
         ClassDB::register_class<SoundService>();

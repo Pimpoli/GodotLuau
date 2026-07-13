@@ -1,0 +1,27 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://test_chat/chat_test.lua" id="1"]
+
+[sub_resource type="GDScript" id="tester"]
+script/source = "extends Node
+var t := 0.0
+func _process(delta):
+	t += delta
+	if t > 3.0:
+		print(\"__TEST_DONE__\")
+		get_tree().quit()
+"
+
+[node name="Game" type="Node3D"]
+
+[node name="Workspace" type="RobloxWorkspace" parent="."]
+
+[node name="TextChatService" type="TextChatService" parent="."]
+
+[node name="ServerScriptService" type="ServerScriptService" parent="."]
+
+[node name="ChatTest" type="ServerScript" parent="ServerScriptService"]
+codigo_luau = ExtResource("1")
+
+[node name="Tester" type="Node" parent="."]
+script = SubResource("tester")

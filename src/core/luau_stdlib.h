@@ -652,7 +652,7 @@ end
 
 function HttpService:GetAsync(url, noCache, headers)
     if _HTTP then
-        local ok, r = pcall(_HTTP.get, url)
+        local ok, r = pcall(_HTTP.get, url, headers)
         if ok then return r end
     end
     warn("[HttpService] GetAsync sin conexión: " .. tostring(url))
@@ -661,7 +661,7 @@ end
 
 function HttpService:PostAsync(url, data, contentType, compress, headers)
     if _HTTP then
-        local ok, r = pcall(_HTTP.post, url, data or "", contentType or "application/json")
+        local ok, r = pcall(_HTTP.post, url, data or "", contentType or "application/json", headers)
         if ok then return r end
     end
     warn("[HttpService] PostAsync sin conexión: " .. tostring(url))
@@ -669,15 +669,24 @@ function HttpService:PostAsync(url, data, contentType, compress, headers)
 end
 
 function HttpService:RequestAsync(options)
-    local method = (options.Method or "GET"):upper()
-    local url    = options.Url or ""
-    local body   = options.Body or ""
-    if method == "GET" then
-        return { Success = true, StatusCode = 200, StatusMessage = "OK", Body = self:GetAsync(url) }
-    elseif method == "POST" then
-        return { Success = true, StatusCode = 200, StatusMessage = "OK", Body = self:PostAsync(url, body) }
+    local method  = (options.Method or "GET"):upper()
+    local url     = options.Url or ""
+    local body    = options.Body
+    local headers = options.Headers
+    if _HTTP and _HTTP.request then
+        local ok, r = pcall(_HTTP.request, method, url, body, headers)
+        if ok and type(r) == "table" then
+            return {
+                Success       = r.Success,
+                StatusCode    = r.StatusCode,
+                StatusMessage = r.StatusMessage,
+                Body          = r.Body,
+                Headers       = {},
+            }
+        end
     end
-    return { Success = false, StatusCode = 0, StatusMessage = "Unsupported", Body = "" }
+    warn("[HttpService] RequestAsync sin conexión: " .. tostring(url))
+    return { Success = false, StatusCode = 0, StatusMessage = "No HTTP", Body = "" }
 end
 
 function HttpService:GenerateGUID(wrapInCurlyBraces)
@@ -1402,7 +1411,8 @@ local _cls_map = {
     Humanoid="Humanoid", Humanoid2D="Humanoid2D",
     PointLight="OmniLight3D", SpotLight="SpotLight3D",
     DirectionalLight="DirectionalLight3D", SurfaceLight="OmniLight3D",
-    RemoteEvent="RemoteEventNode", RemoteFunction="RemoteFunctionNode",
+    RemoteEvent="RemoteEventNode", UnreliableRemoteEvent="UnreliableRemoteEventNode",
+    RemoteFunction="RemoteFunctionNode",
     BindableEvent="BindableEventNode", BindableFunction="BindableEventNode",
     Script="ServerScript", LocalScript="LocalScript", ModuleScript="ModuleScript",
     -- Objetos de valor (se representan como Folder genérico con metadatos)
@@ -2135,7 +2145,7 @@ do
             function bf:Invoke(...) if bf.OnInvoke then return bf.OnInvoke(...) end end
             return bf
         elseif className == "UnreliableRemoteEvent" then
-            local ev = _prev_new("RemoteEvent", parent)
+            local ev = _prev_new("UnreliableRemoteEvent", parent)
             if ev then pcall(function() ev.Name = "UnreliableRemoteEvent" end) end
             return ev
         end

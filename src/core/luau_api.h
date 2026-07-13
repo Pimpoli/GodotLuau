@@ -833,12 +833,36 @@ static int godot_object_index(lua_State* L) {
                 GodotObjectWrapper* w2 = (GodotObjectWrapper*)lua_touserdata(pL, 1);
                 TextChatService* t = w2 ? Object::cast_to<TextChatService>(gow_node(w2)) : nullptr;
                 if (t) {
-                    String player = luaL_checkstring(pL, 2);
-                    String msg    = luaL_checkstring(pL, 3);
-                    t->send_message_from_luau(player, msg);
+                    // SendMessage(texto) usa el nombre del jugador local;
+                    // SendMessage(nombre, texto) sigue funcionando.
+                    if (lua_gettop(pL) >= 3 && !lua_isnil(pL, 3)) {
+                        t->send_message_from_luau(luaL_checkstring(pL, 2), luaL_checkstring(pL, 3));
+                    } else {
+                        String msg = luaL_checkstring(pL, 2);
+                        String who = t->get_chat() ? t->get_chat()->gl_get_player_name() : String("Player");
+                        t->send_message_from_luau(who, msg);
+                    }
                 }
                 return 0;
             }, "SendMessage");
+            return 1;
+        }
+        if (strcmp(key, "MessageReceived") == 0) {
+            // Evento como Roblox: TextChatService.MessageReceived:Connect(f)
+            // El callback recibe el mensaje como string "Nombre: texto".
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)tcs);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                TextChatService* t = (TextChatService*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (t && lua_isfunction(pL, 2)) {
+                    lua_pushvalue(pL, 2);
+                    int ref = lua_ref(pL, -1);
+                    lua_pop(pL, 1);
+                    t->gl_connect_message_received(gl_main_of(pL), ref);
+                }
+                return 0;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
             return 1;
         }
         if (strcmp(key, "SetPlayerName") == 0) {
@@ -1790,7 +1814,7 @@ static int godot_object_index(lua_State* L) {
                 RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!rev) return 0;
                 int nargs = lua_gettop(pL) - 2;
-                rev->fire_client(pL, 3, nargs < 0 ? 0 : nargs);
+                rev->fire_client(pL, 2, 3, nargs < 0 ? 0 : nargs);
                 return 0;
             }, "FireClient", 1);
             return 1;
@@ -1801,7 +1825,7 @@ static int godot_object_index(lua_State* L) {
                 RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!rev) return 0;
                 int nargs = lua_gettop(pL) - 1;
-                rev->fire_client(pL, 2, nargs < 0 ? 0 : nargs);
+                rev->fire_all_clients(pL, 2, nargs < 0 ? 0 : nargs);
                 return 0;
             }, "FireAllClients", 1);
             return 1;

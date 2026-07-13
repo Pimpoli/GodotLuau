@@ -588,6 +588,8 @@ static const char* LUAU_TEMPLATE_MODULE_OOP =
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/json.hpp>
+#include <godot_cpp/classes/http_client.hpp>
+#include <godot_cpp/classes/tls_options.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "lua.h"
@@ -669,6 +671,156 @@ static Variant _gdluau_lua_to_variant(lua_State* L, int idx, int depth = 0) {
         return dict;
     }
     return Variant();
+}
+
+// ── Helpers para _HTTP: cliente HTTP real (bloqueante) sobre HTTPClient ─────
+//// Fase 1 de la capa de red: HttpService:GetAsync/PostAsync/RequestAsync ya
+//// no son un stub. Bloquea el hilo hasta completar o timeout; contra Nakama
+//// local son milisegundos. La versión NO bloqueante (yield) llegará con el
+//// NakamaService en C++ (WebSocket + HTTP asíncrono).
+
+struct GLHttpResult {
+    int    status = 0;      // código HTTP (200, 404…); 0 = fallo de red/conexión
+    String status_msg;      // "OK", "Timeout al conectar"…
+    String body;            // cuerpo de la respuesta (o texto de error si status==0)
+    bool   ok    = false;   // true si status ∈ [200, 299]
+};
+
+// ¿Está presente el argumento idx (no none ni nil)? Evita depender de luaL_opt*.
+static bool gl_arg_present(lua_State* L, int idx) {
+    int t = lua_type(L, idx);
+    return t != LUA_TNONE && t != LUA_TNIL;
+}
+
+static HTTPClient::Method gl_http_method_from_string(const String& m) {
+    String u = m.to_upper();
+    if (u == "GET")     return HTTPClient::METHOD_GET;
+    if (u == "POST")    return HTTPClient::METHOD_POST;
+    if (u == "PUT")     return HTTPClient::METHOD_PUT;
+    if (u == "DELETE")  return HTTPClient::METHOD_DELETE;
+    if (u == "PATCH")   return HTTPClient::METHOD_PATCH;
+    if (u == "HEAD")    return HTTPClient::METHOD_HEAD;
+    if (u == "OPTIONS") return HTTPClient::METHOD_OPTIONS;
+    return HTTPClient::METHOD_GET;
+}
+
+// Convierte una tabla Luau {["Nombre"]="Valor", …} en el formato "Nombre: Valor"
+// que espera HTTPClient::request. Ignora claves/valores no representables.
+static PackedStringArray gl_lua_headers_to_array(lua_State* L, int idx) {
+    PackedStringArray out;
+    if (idx < 0) idx = lua_gettop(L) + idx + 1;
+    if (!lua_istable(L, idx)) return out;
+    lua_pushnil(L);
+    while (lua_next(L, idx) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            String key = String(lua_tostring(L, -2));
+            String val;
+            int vt = lua_type(L, -1);
+            if (vt == LUA_TSTRING)      val = String(lua_tostring(L, -1));
+            else if (vt == LUA_TNUMBER) val = String::num(lua_tonumber(L, -1));
+            else { lua_pop(L, 1); continue; }
+            out.push_back(key + ": " + val);
+        }
+        lua_pop(L, 1);  // deja la clave para el próximo lua_next
+    }
+    return out;
+}
+
+// Petición HTTP síncrona. Parsea la URL (http/https, host[:port]/path), conecta,
+// envía y lee el body, con un tope de tiempo total (timeout_sec).
+static GLHttpResult gl_http_perform(HTTPClient::Method method, const String& url,
+                                    const PackedStringArray& headers, const String& body,
+                                    double timeout_sec = 10.0) {
+    GLHttpResult res;
+
+    // ── Parsear URL: scheme://host[:port]/path?query ──────────────────────
+    String u = url.strip_edges();
+    bool use_tls = false;
+    if (u.begins_with("https://"))     { use_tls = true;  u = u.substr(8); }
+    else if (u.begins_with("http://")) { use_tls = false; u = u.substr(7); }
+    else { res.status_msg = "URL sin esquema http(s)://"; res.body = res.status_msg; return res; }
+
+    int slash = u.find("/");
+    String authority = (slash == -1) ? u : u.substr(0, slash);
+    String path      = (slash == -1) ? String("/") : u.substr(slash);
+    if (path.is_empty()) path = "/";
+
+    String host = authority;
+    int port = use_tls ? 443 : 80;
+    int colon = authority.rfind(":");   // host:puerto (no soporta IPv6 con corchetes)
+    if (colon != -1) {
+        String p = authority.substr(colon + 1);
+        if (p.is_valid_int()) { host = authority.substr(0, colon); port = (int)p.to_int(); }
+    }
+
+    // ── Conectar ──────────────────────────────────────────────────────────
+    Ref<HTTPClient> client; client.instantiate();
+    Ref<TLSOptions> tls = use_tls ? TLSOptions::client() : Ref<TLSOptions>();
+    if (client->connect_to_host(host, port, tls) != OK) {
+        res.status_msg = "connect_to_host falló"; res.body = res.status_msg; return res;
+    }
+
+    OS* os = OS::get_singleton();
+    Time* clock = Time::get_singleton();   // en Godot 4 get_ticks_msec vive en Time, no en OS
+    uint64_t start = clock->get_ticks_msec();
+    uint64_t timeout_ms = (uint64_t)(timeout_sec * 1000.0);
+
+    // Esperar a que la conexión quede establecida
+    while (true) {
+        client->poll();
+        HTTPClient::Status st = client->get_status();
+        if (st == HTTPClient::STATUS_CONNECTED) break;
+        if (st == HTTPClient::STATUS_RESOLVING || st == HTTPClient::STATUS_CONNECTING) {
+            if (clock->get_ticks_msec() - start > timeout_ms) {
+                res.status_msg = "Timeout al conectar"; res.body = res.status_msg; return res;
+            }
+            os->delay_msec(1);
+            continue;
+        }
+        res.status_msg = "No se pudo conectar (status " + String::num_int64((int)st) + ")";
+        res.body = res.status_msg; return res;
+    }
+
+    // ── Enviar petición ───────────────────────────────────────────────────
+    if (client->request(method, path, headers, body) != OK) {
+        res.status_msg = "request() falló"; res.body = res.status_msg; return res;
+    }
+    while (true) {
+        client->poll();
+        HTTPClient::Status st = client->get_status();
+        if (st == HTTPClient::STATUS_BODY || st == HTTPClient::STATUS_CONNECTED) break;
+        if (st == HTTPClient::STATUS_REQUESTING) {
+            if (clock->get_ticks_msec() - start > timeout_ms) {
+                res.status_msg = "Timeout esperando respuesta"; res.body = res.status_msg; return res;
+            }
+            os->delay_msec(1);
+            continue;
+        }
+        res.status_msg = "Error de conexión en la petición (status " + String::num_int64((int)st) + ")";
+        res.body = res.status_msg; return res;
+    }
+
+    res.status = client->get_response_code();
+    res.ok = (res.status >= 200 && res.status < 300);
+
+    // ── Leer el body por trozos ───────────────────────────────────────────
+    PackedByteArray data;
+    while (client->get_status() == HTTPClient::STATUS_BODY) {
+        client->poll();
+        PackedByteArray chunk = client->read_response_body_chunk();
+        if (chunk.size() == 0) {
+            if (clock->get_ticks_msec() - start > timeout_ms) break;
+            os->delay_msec(1);
+        } else {
+            data.append_array(chunk);
+        }
+    }
+    client->close();
+
+    res.body = data.size() > 0 ? String::utf8((const char*)data.ptr(), (int)data.size()) : String();
+    if (res.status_msg.is_empty())
+        res.status_msg = res.ok ? "OK" : ("HTTP " + String::num_int64(res.status));
+    return res;
 }
 
 class LuauScript : public ScriptExtension {
@@ -1711,13 +1863,40 @@ public:
         }, "decode");   lua_setfield(L_main, -2, "decode");
         lua_setglobal(L_main, "_JSON");
 
-        // ── _HTTP — stub (sin HTTPClient bloqueante) ──────────────────────────
+        // ── _HTTP — cliente HTTP real (bloqueante, vía HTTPClient) ────────────
         lua_newtable(L_main);
+        // _HTTP.request(method, url, body?, headers?) → {Success,StatusCode,StatusMessage,Body}
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            lua_pushstring(L, ""); return 1;
+            String method = gl_arg_present(L, 1) ? String(luaL_checkstring(L, 1)) : String("GET");
+            const char* url = luaL_checkstring(L, 2);
+            String body = gl_arg_present(L, 3) ? String(luaL_checkstring(L, 3)) : String();
+            PackedStringArray headers = gl_lua_headers_to_array(L, 4);
+            GLHttpResult r = gl_http_perform(gl_http_method_from_string(method), String(url), headers, body);
+            lua_newtable(L);
+            lua_pushboolean(L, r.ok ? 1 : 0);                  lua_setfield(L, -2, "Success");
+            lua_pushnumber(L, (double)r.status);               lua_setfield(L, -2, "StatusCode");
+            lua_pushstring(L, r.status_msg.utf8().get_data()); lua_setfield(L, -2, "StatusMessage");
+            lua_pushstring(L, r.body.utf8().get_data());       lua_setfield(L, -2, "Body");
+            return 1;
+        }, "request");  lua_setfield(L_main, -2, "request");
+        // _HTTP.get(url, headers?) → body
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            const char* url = luaL_checkstring(L, 1);
+            PackedStringArray headers = gl_lua_headers_to_array(L, 2);
+            GLHttpResult r = gl_http_perform(HTTPClient::METHOD_GET, String(url), headers, String());
+            lua_pushstring(L, r.body.utf8().get_data());
+            return 1;
         }, "get");     lua_setfield(L_main, -2, "get");
+        // _HTTP.post(url, body?, contentType?, headers?) → body
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            lua_pushstring(L, ""); return 1;
+            const char* url = luaL_checkstring(L, 1);
+            String body  = gl_arg_present(L, 2) ? String(luaL_checkstring(L, 2)) : String();
+            String ctype = gl_arg_present(L, 3) ? String(luaL_checkstring(L, 3)) : String("application/json");
+            PackedStringArray headers = gl_lua_headers_to_array(L, 4);
+            headers.push_back(String("Content-Type: ") + ctype);
+            GLHttpResult r = gl_http_perform(HTTPClient::METHOD_POST, String(url), headers, body);
+            lua_pushstring(L, r.body.utf8().get_data());
+            return 1;
         }, "post");    lua_setfield(L_main, -2, "post");
         lua_setglobal(L_main, "_HTTP");
 

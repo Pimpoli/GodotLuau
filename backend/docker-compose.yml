@@ -1,0 +1,67 @@
+# GodotLuau — backend local (Fase 2)
+# Nakama (backend de juego) + PostgreSQL, todo en tu PC para desarrollo.
+#
+#   Arrancar:   cd backend && docker compose up -d
+#   Ver logs:   docker compose logs -f nakama
+#   Parar:      docker compose down          (los datos persisten en el volumen)
+#   Borrar todo: docker compose down -v      (¡borra la base de datos!)
+#
+#   Consola web de administración:  http://127.0.0.1:7351   (usuario: admin / contraseña: password)
+#   API HTTP (a esto apunta HttpService de GodotLuau):  http://127.0.0.1:7350
+#
+# Nota: la imagen está fijada a la versión verificada (server v3.39.0, may-2026).
+# Si el tag fallara al descargar, mira los disponibles en:
+#   https://hub.docker.com/r/heroiclabs/nakama/tags
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: godotluau-postgres
+    environment:
+      POSTGRES_DB: nakama
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: localdb
+    volumes:
+      - godotluau_db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nakama"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  nakama:
+    image: heroiclabs/nakama:3.39.0
+    container_name: godotluau-nakama
+    entrypoint:
+      - "/bin/sh"
+      - "-ecx"
+      - >
+        /nakama/nakama migrate up
+        --database.address postgres:localdb@postgres:5432/nakama &&
+        exec /nakama/nakama
+        --name godotluau1
+        --database.address postgres:localdb@postgres:5432/nakama
+        --logger.level INFO
+        --session.token_expiry_sec 7200
+        --console.port 7351
+        --socket.server_key defaultkey
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/nakama/data          # aquí irán los módulos de servidor (Lua/Go/TS) en la Fase 3
+    ports:
+      - "7349:7349"   # gRPC API
+      - "7350:7350"   # HTTP API  ← HttpService de GodotLuau habla por aquí
+      - "7351:7351"   # Consola web de administración
+    healthcheck:
+      test: ["CMD", "/nakama/nakama", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  godotluau_db:
