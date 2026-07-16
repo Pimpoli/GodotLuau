@@ -2036,11 +2036,11 @@ public:
 
             String cache_id = "CACHED_MOD_" + String::num(mod_node->get_instance_id());
             lua_getfield(L, LUA_REGISTRYINDEX, cache_id.utf8().get_data());
-            if (!lua_isnil(L, -1)) return 1;
+            if (!lua_isnil(L, -1)) { lua_pushboolean(L, 1); lua_insert(L, -2); return 2; }   // (true, valorCacheado)
             lua_pop(L, 1);
 
             ScriptNodeBase* mod_ptr = Object::cast_to<ScriptNodeBase>(mod_node);
-            if (!mod_ptr) return 0;
+            if (!mod_ptr) { luaL_error(L, "Attempted to call require with invalid argument(s)."); return 0; }
 
             Ref<LuauScript> res = mod_ptr->get_codigo_luau();
             if (res.is_null()) {
@@ -2060,45 +2060,56 @@ public:
                 return 0;
             }
 
-            // Save script global, set it to this module so script.X works inside it
-            lua_getglobal(L, "script");
-            int saved_script = lua_ref(L, -1); // <-- Usamos la API nativa de Luau
-            lua_pop(L, 1); // <-- Luau requiere sacar el valor manualmente
+            // La EJECUCIÓN del cuerpo del módulo la hace el wrapper Lua `require`
+            // con pcall (yieldable en Luau) — aquí solo devolvemos la función
+            // cargada. Correrla desde C con lua_pcall rompía cualquier yield
+            // interno (WaitForChild/task.wait) con "yield across C-call boundary".
+            // stack: [target, moduleFn]
+            lua_pushboolean(L, 0);                            // isCached = false
+            lua_insert(L, -2);                                // [target, false, moduleFn]
+            lua_pushstring(L, cache_id.utf8().get_data());    // cacheKey
+            wrap_node(L, mod_node);                           // modScript (para el 'script' del módulo)
+            return 4;                                         // (false, moduleFn, cacheKey, modScript)
+        }, "__gl_req_load");
+        lua_setglobal(L, "__gl_req_load");
 
-            wrap_node(L, mod_node);
-            lua_setglobal(L, "script");
-
-            // Handler debajo de la funcion: captura el stack DENTRO del modulo
-            int fidx = lua_gettop(L);
-            lua_pushcfunction(L, gl_trace_handler, "errh");
-            lua_insert(L, fidx);
-            int call_status = lua_pcall(L, 0, 1, fidx);
-            lua_remove(L, fidx);
-
-            // Restore script global (always, even on error)
-            lua_rawgeti(L, LUA_REGISTRYINDEX, saved_script);
-            lua_setglobal(L, "script");
-            lua_unref(L, saved_script); // <-- Usamos lua_unref de Luau
-
-            if (call_status == LUA_OK) {
-                if (lua_isnil(L, -1)) {
-                    // Roblox exige que el modulo devuelva exactamente un valor
-                    lua_pop(L, 1);
-                    luaL_error(L, "Module code did not return exactly one value");
-                    return 0;
-                }
-                lua_pushvalue(L, -1);
-                lua_setfield(L, LUA_REGISTRYINDEX, cache_id.utf8().get_data());
-                return 1;
-            }
-            // Como Roblox: el error del modulo se imprime con su stack y el
-            // require lanza el error generico en la linea del caller.
-            gl_report_script_error_with_trace(L, gl_pcall_trace());
-            lua_pop(L, 1);
-            luaL_error(L, "Requested module experienced an error while loading");
+        // Guardar el valor devuelto por un módulo en la caché de la VM.
+        lua_pushcfunction(L, [](lua_State* L) -> int {
+            const char* key = luaL_checkstring(L, 1);
+            lua_pushvalue(L, 2);
+            lua_setfield(L, LUA_REGISTRYINDEX, key);
             return 0;
-        }, "require");
-        lua_setglobal(L, "require");
+        }, "__gl_req_store");
+        lua_setglobal(L, "__gl_req_store");
+
+        // Reportar en rojo (como Roblox) el error de un módulo, con su ubicación.
+        lua_pushcfunction(L, [](lua_State* L) -> int {
+            gl_report_error_line(String::utf8(luaL_optstring(L, 1, "")));
+            return 0;
+        }, "__gl_req_err");
+        lua_setglobal(L, "__gl_req_err");
+
+        // `require` en LUA: corre el cuerpo del módulo con pcall (yieldable), así
+        // WaitForChild/task.wait DENTRO de un módulo ceden como corrutina normal.
+        static const char* GL_REQUIRE_LUA =
+            "local _load, _store, _err = __gl_req_load, __gl_req_store, __gl_req_err\n"
+            "__gl_req_load, __gl_req_store, __gl_req_err = nil, nil, nil\n"
+            "function require(target)\n"
+            "  local cached, fn, key, mod = _load(target)\n"
+            "  if cached then return fn end\n"
+            "  local prev = script\n"
+            "  script = mod\n"
+            "  local ok, result = pcall(fn)\n"
+            "  script = prev\n"
+            "  if not ok then _err(tostring(result)) error('Requested module experienced an error while loading', 0) end\n"
+            "  if result == nil then error('Module code did not return exactly one value', 0) end\n"
+            "  _store(key, result)\n"
+            "  return result\n"
+            "end\n";
+        std::string _rbc = Luau::compile(GL_REQUIRE_LUA);
+        if (luau_load(L, "=__gl_require", _rbc.data(), _rbc.size(), 0) == 0) {
+            if (lua_pcall(L, 0, 0, 0) != LUA_OK) { UtilityFunctions::print("[GodotLuau require setup] ", lua_tostring(L, -1)); lua_pop(L, 1); }
+        } else { UtilityFunctions::print("[GodotLuau require syntax] ", lua_tostring(L, -1)); lua_pop(L, 1); }
     }
 
     void resume() {
