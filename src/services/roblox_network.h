@@ -930,7 +930,11 @@ public:
         if (!rev) return;
         if (to_server) {
             int sid = get_multiplayer()->get_remote_sender_id();
-            rev->deliver_to_server_cbs(args, player_node_for_peer(sid), this);
+            // Como Roblox: OnServerEvent SIEMPRE recibe un Player válido. El objeto
+            // Player de un peer se crea perezosamente al llegar su personaje, pero un
+            // cliente puede FireServer antes de eso (p.ej. "ClienteListo" al arrancar).
+            // _ensure_peer_player lo crea en el acto para que el emisor nunca sea nil.
+            rev->deliver_to_server_cbs(args, _ensure_peer_player(sid), this);
         } else {
             rev->deliver_to_client_cbs(args, this);
         }
