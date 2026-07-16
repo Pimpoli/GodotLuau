@@ -575,6 +575,9 @@ class NetworkService : public Node {
         rpc_config("_rep_reparent",       r);   // replicación: mover de padre
         rpc_config("_rep_destroy",        r);   // replicación: destruir instancia
         rpc_config("_gl_peer_uid",        r);   // UserId secuencial: servidor → clientes
+        rpc_config("_rf_invoke_server",   r);   // RemoteFunction (1.14.6): invocar server
+        rpc_config("_rf_invoke_client",   r);   // RemoteFunction: invocar cliente
+        rpc_config("_rf_return",          r);   // RemoteFunction: respuesta al invocador
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -870,6 +873,13 @@ protected:
         ClassDB::bind_method(D_METHOD("_rep_reparent", "id", "parent_ref"),         &NetworkService::_rep_reparent);
         ClassDB::bind_method(D_METHOD("_rep_destroy", "id"),                        &NetworkService::_rep_destroy);
         ClassDB::bind_method(D_METHOD("_gl_peer_uid", "peer", "uid"),               &NetworkService::_gl_peer_uid);
+        // RemoteFunction por red (1.14.6)
+        ClassDB::bind_method(D_METHOD("net_invoke_server", "path", "call_id", "args"),          &NetworkService::net_invoke_server);
+        ClassDB::bind_method(D_METHOD("net_invoke_client", "peer", "path", "call_id", "args"),  &NetworkService::net_invoke_client);
+        ClassDB::bind_method(D_METHOD("net_rf_respond", "reply_peer", "call_id", "ok", "rets"), &NetworkService::net_rf_respond);
+        ClassDB::bind_method(D_METHOD("_rf_invoke_server", "path", "call_id", "args"),          &NetworkService::_rf_invoke_server);
+        ClassDB::bind_method(D_METHOD("_rf_invoke_client", "path", "call_id", "args"),          &NetworkService::_rf_invoke_client);
+        ClassDB::bind_method(D_METHOD("_rf_return", "call_id", "ok", "rets"),                   &NetworkService::_rf_return);
     }
 
     void _notification(int p_what) {
@@ -982,6 +992,69 @@ public:
     void _re_deliver_client(String path, Array args)  { _deliver_event(path, args, false); }
     void _ure_deliver_server(String path, Array args) { _deliver_event(path, args, true); }
     void _ure_deliver_client(String path, Array args) { _deliver_event(path, args, false); }
+
+    // ── RemoteFunction por red (1.14.6) ──────────────────────────────────
+    // El invocador (InvokeServer/InvokeClient en luau_api.h) llama estos net_*
+    // para mandar la petición; corre el handler remoto con soporte de yield vía
+    // el wrapper Lua __gl_rf_serve y devuelve el resultado con _rf_return, que el
+    // ScriptNodeBase que cedió recoge de gl_net_responses() en su _process.
+    void net_invoke_server(String path, int call_id, Array args) {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;
+        if (mode == 2 && !net_connected) return;   // cliente aún conectándose
+        rpc_id(1, "_rf_invoke_server", path, call_id, args);
+    }
+    void net_invoke_client(int peer, String path, int call_id, Array args) {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;
+        if (!m->get_peers().has(peer)) return;
+        rpc_id(peer, "_rf_invoke_client", path, call_id, args);
+    }
+    // Enviar la respuesta al invocador (peer 1 = servidor, o un cliente concreto).
+    void _rf_send_return(int reply_peer, int call_id, bool ok, const Array& rets) {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;
+        if (reply_peer == 1 || m->get_peers().has(reply_peer))
+            rpc_id(reply_peer, "_rf_return", call_id, ok, rets);
+    }
+    // Lo llama __gl_rf_respond (C) cuando el handler termina.
+    void net_rf_respond(int reply_peer, int call_id, bool ok, Array rets) {
+        _rf_send_return(reply_peer, call_id, ok, rets);
+    }
+    // Corre el handler (OnServerInvoke/OnClientInvoke) vía __gl_rf_serve, que lo
+    // envuelve en task.spawn (soporta yield) y responde al terminar.
+    void _rf_run_handler(lua_State* L, int handler_ref, Node* player, int call_id, int reply_peer, const Array& args, bool is_server) {
+        if (!gl_state_alive(L) || handler_ref == LUA_NOREF) { _rf_send_return(reply_peer, call_id, true, Array()); return; }
+        lua_State* th = lua_newthread(L);
+        lua_getglobal(th, "__gl_rf_serve");
+        if (!lua_isfunction(th, -1)) { lua_pop(L, 1); _rf_send_return(reply_peer, call_id, true, Array()); return; }
+        lua_rawgeti(th, LUA_REGISTRYINDEX, handler_ref);   // handler
+        if (player) _gl_push_node(th, player); else lua_pushnil(th);   // player
+        lua_pushnumber(th, (double)call_id);               // callId
+        lua_pushnumber(th, (double)reply_peer);            // replyPeer
+        lua_pushboolean(th, is_server ? 1 : 0);            // isServer
+        int n = gl_net_decode_args(th, args, this);        // ...args
+        gl_check_resume(th, lua_resume(th, nullptr, 5 + n));
+        lua_pop(L, 1);   // quitar el hilo wrapper (el handler corre en su propio hilo de task.spawn)
+    }
+    void _rf_invoke_server(String path, int call_id, Array args) {
+        if (!is_server()) return;
+        int sender = get_multiplayer()->get_remote_sender_id();
+        RemoteFunctionNode* rfn = Object::cast_to<RemoteFunctionNode>(get_node_or_null(NodePath(path)));
+        if (!rfn) { _rf_send_return(sender, call_id, true, Array()); return; }
+        Node* player = _ensure_peer_player(sender);   // como OnServerEvent: Player válido
+        _rf_run_handler(rfn->server_invoke_L, rfn->server_invoke_ref, player, call_id, sender, args, true);
+    }
+    void _rf_invoke_client(String path, int call_id, Array args) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor invoca al cliente
+        RemoteFunctionNode* rfn = Object::cast_to<RemoteFunctionNode>(get_node_or_null(NodePath(path)));
+        if (!rfn) { _rf_send_return(1, call_id, true, Array()); return; }
+        _rf_run_handler(rfn->client_invoke_L, rfn->client_invoke_ref, nullptr, call_id, 1, args, false);
+    }
+    void _rf_return(int call_id, bool ok, Array rets) {
+        GLNetResponse& r = gl_net_responses()[(int64_t)call_id];
+        r.rets = rets; r.ok = ok; r.ready = true; r.age = 0.0;
+    }
 
     // ── Replicación automática de instancias/propiedades (1.14.5) ─────────
     // El SERVIDOR es autoridad: cuando un script del servidor crea una instancia

@@ -2254,8 +2254,26 @@ static int godot_object_index(lua_State* L) {
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 RemoteFunctionNode* rfn = (RemoteFunctionNode*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!rfn) { lua_pushnil(pL); return 1; }
-                int nargs = lua_gettop(pL) - 1;
-                return rfn->invoke_server(pL, 2, nargs < 0 ? 0 : nargs);
+                int nargs = lua_gettop(pL) - 1; if (nargs < 0) nargs = 0;
+                Node* ns = _gl_find_network_service(rfn);
+                // Cliente en sesión de red: mandar al servidor, ceder el hilo y
+                // reanudar con la respuesta (1.14.6). Host/single: correr local.
+                if (_gl_net_mode(ns) == 2 && rfn->is_inside_tree() && gl_add_invoke_wait_hook()) {
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_SCRIPT_NODE");
+                    Node* sn = (Node*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* main_L = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+                    if (!sn) { lua_pushnil(pL); return 1; }
+                    if (!main_L) main_L = pL;
+                    int64_t call_id = gl_net_new_call_id();
+                    Array args = gl_net_encode_args(pL, 2, nargs);
+                    ns->call("net_invoke_server", String(rfn->get_path()), (int)call_id, args);
+                    lua_pushthread(pL); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
+                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 10.0);
+                    lua_pushstring(pL, "__WAIT_INVOKE__");
+                    return lua_yield(pL, 1);
+                }
+                return rfn->invoke_server(pL, 2, nargs);
             }, "InvokeServer", 1);
             return 1;
         }
@@ -2264,8 +2282,32 @@ static int godot_object_index(lua_State* L) {
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 RemoteFunctionNode* rfn = (RemoteFunctionNode*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!rfn) { lua_pushnil(pL); return 1; }
-                int nargs = lua_gettop(pL) - 2;
-                return rfn->invoke_client(pL, 3, nargs < 0 ? 0 : nargs);
+                int nargs = lua_gettop(pL) - 2; if (nargs < 0) nargs = 0;
+                Node* ns = _gl_find_network_service(rfn);
+                // Servidor invocando a un cliente concreto por red (1.14.6). Si el
+                // destino es el jugador del host, se corre local.
+                if (_gl_net_mode(ns) == 1 && rfn->is_inside_tree() && gl_add_invoke_wait_hook()) {
+                    Node* player = _gl_node_from_lua(pL, 2);
+                    if (!player) { lua_pushnil(pL); return 1; }
+                    int peer = (int)(ns->call("peer_for_player_node", player));
+                    int myid = (int)(ns->call("get_peer_id"));
+                    if (peer == myid && myid != 0) return rfn->invoke_client(pL, 3, nargs);
+                    if (peer <= 0) { lua_pushnil(pL); return 1; }
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_SCRIPT_NODE");
+                    Node* sn = (Node*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* main_L = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+                    if (!sn) { lua_pushnil(pL); return 1; }
+                    if (!main_L) main_L = pL;
+                    int64_t call_id = gl_net_new_call_id();
+                    Array args = gl_net_encode_args(pL, 3, nargs);
+                    ns->call("net_invoke_client", peer, String(rfn->get_path()), (int)call_id, args);
+                    lua_pushthread(pL); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
+                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 10.0);
+                    lua_pushstring(pL, "__WAIT_INVOKE__");
+                    return lua_yield(pL, 1);
+                }
+                return rfn->invoke_client(pL, 3, nargs);
             }, "InvokeClient", 1);
             return 1;
         }

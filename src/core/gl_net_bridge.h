@@ -266,7 +266,7 @@ static inline int gl_net_decode_args(lua_State* L, const Array& a, Node* ctx) {
 // El invocador (cliente) genera un call_id, cede su hilo y espera; cuando la
 // respuesta llega por RPC, NetworkService la deposita aquí; el ScriptNodeBase
 // que esperaba la recoge en su _process, la decodifica y reanuda el hilo.
-struct GLNetResponse { Array rets; bool ready = false; };
+struct GLNetResponse { Array rets; bool ok = true; bool ready = false; double age = 0.0; };
 static inline std::unordered_map<int64_t, GLNetResponse>& gl_net_responses() {
     static std::unordered_map<int64_t, GLNetResponse> m;
     return m;

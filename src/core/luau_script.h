@@ -881,6 +881,18 @@ public:
         bool       warned = false; // "Infinite yield possible" ya impreso
     };
 
+    // Coroutina esperando la respuesta de un RemoteFunction:InvokeServer/Client por
+    // red. El call_id la casa con la respuesta que deposita el NetworkService en
+    // gl_net_responses(); _process la recoge, decodifica y reanuda el hilo.
+    struct WaitingInvoke {
+        lua_State* thread;
+        lua_State* main_L;
+        int        ref;
+        int64_t    call_id;
+        double     timeout;   // s antes de rendirse (devuelve nil)
+        double     elapsed;
+    };
+
 private:
     Ref<LuauScript> codigo_luau;
     lua_State* L_main   = nullptr;
@@ -894,6 +906,19 @@ private:
 public:
     std::vector<WaitingChild> waiting_children;
     std::vector<SpawnedThread> spawned_threads;
+    std::vector<WaitingInvoke> waiting_invokes;
+
+    // Registrar un hilo que cede esperando la respuesta de un InvokeServer/Client
+    // por red (mismo mecanismo de suspensión que WaitForChild).
+    void add_waiting_invoke(lua_State* th, lua_State* mL, int ref, int64_t call_id, double timeout) {
+        waiting_invokes.push_back({th, mL, ref, call_id, timeout, 0.0});
+        if (th == L_thread) {
+            is_external_wait = true;
+        } else {
+            for (auto& st : spawned_threads)
+                if (st.L == th) { st.timer = -1.0; break; }
+        }
+    }
 
     // Called by WaitForChild closures in luau_api.h (or the local __index override)
     void add_waiting_child(lua_State* th, lua_State* mL, int ref,
@@ -1406,6 +1431,12 @@ public:
         // (reentra al __newindex real). Idempotente; el NetworkService lo llama
         // por puntero al recibir _rep_new/_rep_prop.
         gl_apply_prop_hook() = gl_rep_apply_prop;
+        // Hook para que InvokeServer/Client (en luau_api.h, sin ver ScriptNodeBase)
+        // registre el hilo que cede esperando la respuesta por red.
+        gl_add_invoke_wait_hook() = [](Node* n, lua_State* th, lua_State* mL, int ref, int64_t cid, double to) {
+            if (ScriptNodeBase* sn = Object::cast_to<ScriptNodeBase>(n))
+                sn->add_waiting_invoke(th, mL, ref, cid, to);
+        };
 
         // ── Math metatables ───────────────────────────────────────────────────
         //// ── Metatables matemáticas ────────────────────────────────────────────
@@ -1894,6 +1925,7 @@ public:
 
         // ── require ───────────────────────────────────────────────────────────
         setup_require_system(L_main);
+        setup_remotefunction_system(L_main);
 
         // ── _FileAccess — I/O de archivos para DataStoreService ───────────────
         lua_newtable(L_main);
@@ -2112,6 +2144,46 @@ public:
         } else { UtilityFunctions::print("[GodotLuau require syntax] ", lua_tostring(L, -1)); lua_pop(L, 1); }
     }
 
+    // RemoteFunction por red (1.14.6): corre el handler (OnServerInvoke/
+    // OnClientInvoke) en la máquina remota con soporte de yield y devuelve el
+    // resultado al invocador. El invocador cede su hilo (add_waiting_invoke) y
+    // _process lo reanuda con la respuesta (gl_net_responses).
+    void setup_remotefunction_system(lua_State* L) {
+        // C: tras correr el handler, empaqueta sus retornos y pide al
+        // NetworkService que los mande al invocador. (callId, replyPeer, ok, ...rets)
+        lua_pushcfunction(L, [](lua_State* L) -> int {
+            int64_t call_id = (int64_t)luaL_checknumber(L, 1);
+            int     reply_peer = (int)luaL_checknumber(L, 2);
+            bool    ok = lua_toboolean(L, 3) != 0;
+            Array rets;
+            int top = lua_gettop(L);
+            for (int i = 4; i <= top; i++) rets.push_back(gl_net_encode(L, i));
+            if (Node* ns = Object::cast_to<Node>(ObjectDB::get_instance(gl_net_service_id())))
+                ns->call("net_rf_respond", reply_peer, (int)call_id, ok, rets);
+            return 0;
+        }, "__gl_rf_respond");
+        lua_setglobal(L, "__gl_rf_respond");
+
+        // Lua: corre el handler en un task.spawn (así puede ceder: WaitForChild,
+        // task.wait, DataStore...) y al terminar responde. isServer decide si el
+        // handler recibe el Player (OnServerInvoke(player,...) vs OnClientInvoke(...)).
+        static const char* GL_RF_LUA =
+            "function __gl_rf_serve(handler, player, callId, replyPeer, isServer, ...)\n"
+            "  local args = table.pack(...)\n"
+            "  task.spawn(function()\n"
+            "    local packed\n"
+            "    if isServer then packed = table.pack(pcall(handler, player, table.unpack(args, 1, args.n)))\n"
+            "    else packed = table.pack(pcall(handler, table.unpack(args, 1, args.n))) end\n"
+            "    if not packed[1] then warn('RemoteFunction handler error: ' .. tostring(packed[2])) end\n"
+            "    __gl_rf_respond(callId, replyPeer, table.unpack(packed, 1, packed.n))\n"
+            "  end)\n"
+            "end\n";
+        std::string bc = Luau::compile(GL_RF_LUA);
+        if (luau_load(L, "=__gl_rf", bc.data(), bc.size(), 0) == 0) {
+            if (lua_pcall(L, 0, 0, 0) != LUA_OK) { UtilityFunctions::print("[GodotLuau rf setup] ", lua_tostring(L, -1)); lua_pop(L, 1); }
+        } else { UtilityFunctions::print("[GodotLuau rf syntax] ", lua_tostring(L, -1)); lua_pop(L, 1); }
+    }
+
     void resume() {
         int status = lua_resume(L_thread, nullptr, 0);
         if (status == LUA_YIELD) {
@@ -2246,6 +2318,38 @@ public:
             else if (pr.node_arg) { wrap_node(pr.thread, pr.node_arg); resume_external_thread(pr.thread, 1); }
             else                  { lua_pushnumber(pr.thread, pr.delta); resume_external_thread(pr.thread, 1); }
             pending.erase(pending.begin() + i);
+        }
+
+        // ── 5. Respuestas de RemoteFunction por red (InvokeServer/Client) ──
+        if (!waiting_invokes.empty()) {
+            auto& resp = gl_net_responses();
+            Node* nsctx = gl_net_service_id() ? Object::cast_to<Node>(ObjectDB::get_instance(gl_net_service_id())) : nullptr;
+            for (int i = (int)waiting_invokes.size()-1; i >= 0; --i) {
+                WaitingInvoke& wi = waiting_invokes[i];
+                wi.elapsed += delta;
+                auto it = resp.find(wi.call_id);
+                if (it != resp.end() && it->second.ready) {
+                    if (it->second.ok) {
+                        int n = gl_net_decode_args(wi.thread, it->second.rets, nsctx);
+                        resp.erase(it);
+                        if (wi.main_L) lua_unref(wi.main_L, wi.ref);
+                        resume_external_thread(wi.thread, n);
+                    } else {
+                        // El handler remoto falló: InvokeServer/Client devuelve nil
+                        // (v1: el error no se propaga como error; se avisó del lado remoto).
+                        resp.erase(it);
+                        if (wi.main_L) lua_unref(wi.main_L, wi.ref);
+                        lua_pushnil(wi.thread);
+                        resume_external_thread(wi.thread, 1);
+                    }
+                    waiting_invokes.erase(waiting_invokes.begin() + i);
+                } else if (wi.timeout > 0 && wi.elapsed >= wi.timeout) {
+                    if (wi.main_L) lua_unref(wi.main_L, wi.ref);
+                    lua_pushnil(wi.thread);
+                    resume_external_thread(wi.thread, 1);
+                    waiting_invokes.erase(waiting_invokes.begin() + i);
+                }
+            }
         }
     }
 

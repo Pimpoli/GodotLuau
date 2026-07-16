@@ -131,6 +131,11 @@ inline int64_t& gl_local_user_id() { static int64_t v = 0; return v; }
 //  ver luau_api.h por el orden de includes) lo llama por puntero.
 typedef void (*GLApplyPropFn)(Node* target, const String& key, const Variant& enc);
 inline GLApplyPropFn& gl_apply_prop_hook() { static GLApplyPropFn f = nullptr; return f; }
+// Hook para registrar en el ScriptNodeBase un hilo que cede esperando la
+// respuesta de un RemoteFunction por red. luau_api.h (que NO ve ScriptNodeBase,
+// se incluye antes) lo llama; luau_script.h lo instala tras definir la clase.
+typedef void (*GLAddInvokeWaitFn)(Node* sn, lua_State* th, lua_State* main_L, int ref, int64_t call_id, double timeout);
+inline GLAddInvokeWaitFn& gl_add_invoke_wait_hook() { static GLAddInvokeWaitFn f = nullptr; return f; }
 
 // ── Modelo server-authoritative (1.14.5) ─────────────────────────────────────
 //  ¿Esta ventana arrancó como CLIENTE de una sesión de red? Se decide por los
