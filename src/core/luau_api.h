@@ -1727,6 +1727,66 @@ static int godot_object_index(lua_State* L) {
                 lua_pushstring(pL, s ? s->get_connection_state().utf8().get_data() : "Disconnected"); return 1;
             }, "GetConnectionState", 1); return 1;
         }
+        if (strcmp(key, "IsDedicatedServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushboolean(pL, s && s->is_dedicated_server()); return 1;
+            }, "IsDedicatedServer", 1); return 1;
+        }
+        if (strcmp(key, "GetLocalIP") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushstring(pL, s ? s->get_local_ip().utf8().get_data() : "127.0.0.1"); return 1;
+            }, "GetLocalIP", 1); return 1;
+        }
+        // ── Lista de servidores guardados (estilo lista de Minecraft) ──
+        if (strcmp(key, "GetServers") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_newtable(pL);
+                if (s) {
+                    Array list = s->get_server_list();
+                    for (int i = 0; i < list.size(); i++) {
+                        Dictionary d = list[i];
+                        lua_newtable(pL);
+                        lua_pushstring(pL, String(d.get("name", "")).utf8().get_data()); lua_setfield(pL, -2, "Name");
+                        lua_pushstring(pL, String(d.get("ip", "")).utf8().get_data());   lua_setfield(pL, -2, "IP");
+                        lua_pushnumber(pL, (double)(int)d.get("port", 25565));           lua_setfield(pL, -2, "Port");
+                        lua_rawseti(pL, -2, i + 1);
+                    }
+                }
+                return 1;
+            }, "GetServers", 1); return 1;
+        }
+        if (strcmp(key, "AddServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                const char* name = luaL_checkstring(pL, 2);
+                const char* ip   = luaL_checkstring(pL, 3);
+                int port = (int)luaL_optnumber(pL, 4, 25565);
+                if (s) s->add_server(String(name), String(ip), port);
+                return 0;
+            }, "AddServer", 1); return 1;
+        }
+        if (strcmp(key, "RemoveServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (s) s->remove_server(String(luaL_checkstring(pL, 2)));
+                return 0;
+            }, "RemoveServer", 1); return 1;
+        }
+        if (strcmp(key, "JoinServer") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushboolean(pL, s && s->join_server(String(luaL_checkstring(pL, 2)))); return 1;
+            }, "JoinServer", 1); return 1;
+        }
         if (strcmp(key, "PlayerConnected") == 0 || strcmp(key, "PlayerDisconnected") == 0 ||
             strcmp(key, "Connected") == 0       || strcmp(key, "ConnectionFailed") == 0) {
             int which = (strcmp(key,"PlayerConnected")==0) ? 0 :

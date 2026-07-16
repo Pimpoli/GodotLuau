@@ -86,6 +86,7 @@
 
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/json.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -298,6 +299,7 @@ class NetworkService : public Node {
     bool   net_connected = false;
     int    retry_left = 0;
     String target_address = "";   // "ip:puerto" del servidor al que se conectó (para GetServerAddress)
+    bool   is_dedicated = false;   // servidor dedicado (sin jugador local, estilo minecraft_server.jar)
     double retry_timer = 0.0;
 
     // Réplica de jugadores
@@ -778,6 +780,12 @@ protected:
         ClassDB::bind_method(D_METHOD("is_connected_net"),                          &NetworkService::is_connected_net);
         ClassDB::bind_method(D_METHOD("get_server_address"),                        &NetworkService::get_server_address);
         ClassDB::bind_method(D_METHOD("get_connection_state"),                      &NetworkService::get_connection_state);
+        ClassDB::bind_method(D_METHOD("is_dedicated_server"),                       &NetworkService::is_dedicated_server);
+        ClassDB::bind_method(D_METHOD("get_local_ip"),                              &NetworkService::get_local_ip);
+        ClassDB::bind_method(D_METHOD("get_server_list"),                           &NetworkService::get_server_list);
+        ClassDB::bind_method(D_METHOD("add_server", "name", "ip", "port"),          &NetworkService::add_server);
+        ClassDB::bind_method(D_METHOD("remove_server", "name"),                     &NetworkService::remove_server);
+        ClassDB::bind_method(D_METHOD("join_server", "name"),                       &NetworkService::join_server);
         // Fase 2: estado de red + RemoteEvent por red + roster de jugadores
         ClassDB::bind_method(D_METHOD("is_server"),                                 &NetworkService::is_server);
         ClassDB::bind_method(D_METHOD("is_client"),                                 &NetworkService::is_client);
@@ -1154,8 +1162,20 @@ public:
             return;
         }
         if (dedicated_port > 0) {
-            start_server(dedicated_port, 32);
-            gl_mp_log(String("Servidor (arg) escuchando en ") + String::num_int64(dedicated_port));
+            // Servidor DEDICADO (estilo minecraft_server.jar): corre los
+            // ServerScripts del creador y acepta clientes, SIN jugador local.
+            // Con --headless corre sin ventana; si no, deja cámara libre para verlo.
+            if (start_server(dedicated_port, 64)) {
+                is_dedicated = true;
+                player_index = 1;
+                _remove_local_player();     // servidor puro: sin personaje
+                boot_server_view = true;    // cámara libre (ignorada en headless)
+                UtilityFunctions::print(String("[GodotLuau] SERVIDOR DEDICADO escuchando en el puerto ")
+                    + String::num_int64(dedicated_port) + " (sin jugador local).");
+            } else {
+                UtilityFunctions::push_warning(String("[GodotLuau] No se pudo abrir el servidor dedicado en el puerto ")
+                    + String::num_int64(dedicated_port));
+            }
             view_watch = false; set_process(true); _apply_device();
             return;
         }
@@ -1251,6 +1271,62 @@ public:
         if (m.is_null() || !m->has_multiplayer_peer()) return 1;
         return (int)m->get_peers().size() + 1;   // + uno mismo
     }
+    bool is_dedicated_server() const { return is_dedicated; }
+
+    // IP local (LAN) para que el host se la pase a sus amigos ("hospedar en mi PC").
+    // Devuelve la primera IPv4 no-loopback; "127.0.0.1" si no hay red.
+    String get_local_ip() {
+        PackedStringArray addrs = IP::get_singleton()->get_local_addresses();
+        for (int i = 0; i < addrs.size(); i++) {
+            String a = addrs[i];
+            if (a.is_valid_ip_address() && a.get_slice_count(".") == 4 && a != "127.0.0.1")
+                return a;
+        }
+        return "127.0.0.1";
+    }
+
+    // ── Lista de servidores guardados (estilo lista de Minecraft) ────────
+    // Persistida en user://gl_servers.json: [{"name","ip","port"}].
+    static String _servers_path() { return "user://gl_servers.json"; }
+    Array get_server_list() {
+        Ref<FileAccess> f = FileAccess::open(_servers_path(), FileAccess::READ);
+        if (f.is_null()) return Array();
+        String txt = f->get_as_text();
+        f->close();
+        Variant v = JSON::parse_string(txt);
+        return (v.get_type() == Variant::ARRAY) ? (Array)v : Array();
+    }
+    void _save_server_list(const Array& list) {
+        Ref<FileAccess> f = FileAccess::open(_servers_path(), FileAccess::WRITE);
+        if (f.is_valid()) { f->store_string(JSON::stringify(list, "  ")); f->close(); }
+    }
+    void add_server(const String& name, const String& ip, int port) {
+        Array list = get_server_list();
+        for (int i = 0; i < list.size(); i++) {   // reemplazar si el nombre ya existe
+            Dictionary d = list[i];
+            if (String(d.get("name", "")) == name) { list.remove_at(i); break; }
+        }
+        Dictionary d; d["name"] = name; d["ip"] = ip; d["port"] = port;
+        list.push_back(d);
+        _save_server_list(list);
+    }
+    void remove_server(const String& name) {
+        Array list = get_server_list();
+        for (int i = 0; i < list.size(); i++) {
+            Dictionary d = list[i];
+            if (String(d.get("name", "")) == name) { list.remove_at(i); _save_server_list(list); return; }
+        }
+    }
+    bool join_server(const String& name) {
+        Array list = get_server_list();
+        for (int i = 0; i < list.size(); i++) {
+            Dictionary d = list[i];
+            if (String(d.get("name", "")) == name)
+                return connect_server(String(d.get("ip", "127.0.0.1")), (int)d.get("port", 25565));
+        }
+        return false;
+    }
+
     // ¿Hay una sesión de red activa? El host siempre; el cliente al conectar.
     bool is_connected_net() { return mode == 1 || (mode == 2 && net_connected); }
     // "ip:puerto" del servidor al que se conectó el cliente ("" si es host/single).
