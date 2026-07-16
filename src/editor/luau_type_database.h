@@ -278,6 +278,17 @@ static const std::vector<RobloxMember>& roblox_get_members(const std::string& p_
         {"PGSIsEnabled",      "() -> boolean",    "Check PGS solver status", 1},
     }},
 
+    {"Terrain", {
+        {"WaterColor",        "Color3",           "Color of terrain water", 4},
+        {"WaterTransparency", "number",           "Transparency of terrain water 0-1", 4},
+        {"FillBlock",         "(cframe: CFrame, size: Vector3, material: Enum.Material) -> ()", "Fill an axis-aligned block of terrain", 1},
+        {"FillBall",          "(center: Vector3, radius: number, material: Enum.Material) -> ()", "Fill a sphere of terrain", 1},
+        {"FillRegion",        "(min: Vector3, max: Vector3, material: Enum.Material) -> ()", "Fill a box region of terrain", 1},
+        {"ReadVoxels",        "(region: Region3, resolution: number) -> (any, any)", "Read terrain voxels", 1},
+        {"WriteVoxels",       "(region: Region3, resolution: number, materials: any, occupancy: any) -> ()", "Write terrain voxels", 1},
+        {"Clear",             "() -> ()",         "Remove all terrain", 1},
+    }},
+
     {"Lighting", {
         {"Ambient",           "Color3",           "Ambient shadow tint color", 4},
         {"Brightness",        "number",           "Global light intensity multiplier", 4},

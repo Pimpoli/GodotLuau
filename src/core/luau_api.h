@@ -8,6 +8,7 @@
 #include "roblox_player.h"
 #include "roblox_player2d.h"
 #include "roblox_part.h"
+#include "roblox_terrain.h"
 #include "roblox_services.h"
 #include "roblox_network.h"
 #include "roblox_remote.h"
@@ -221,6 +222,7 @@ static const char* gl_roblox_classname(Node* n) {
         {"ProximityPrompt","ProximityPrompt"},{"SpawnLocation","SpawnLocation"},{"BillboardGui","BillboardGui"},
         {"SurfaceGui","SurfaceGui"},{"Motor6D","Motor6D"},{"AnimationObject","Animation"},{"AnimationTrack","AnimationTrack"},
         {"RobloxWorkspace","Workspace"},{"RobloxWorkspace2D","Workspace"},{"RobloxChat","TextChatService"},
+        {"RobloxTerrain","Terrain"},{"RobloxValue","NumberValue"},
         {"BodyVelocity","BodyVelocity"},{"BodyPosition","BodyPosition"},{"BodyForce","BodyForce"},
         {"BodyAngularVelocity","BodyAngularVelocity"},{"BodyGyro","BodyGyro"},
         {"WeldConstraint","WeldConstraint"},{"HingeConstraint","HingeConstraint"},
@@ -635,7 +637,133 @@ static int godot_object_index(lua_State* L) {
                 lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, 1); return 1; }, "IsLoaded"); return 1;
             }
             if (strcmp(key,"BindToClose")==0) {
-                lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "BindToClose"); return 1;
+                lua_pushcfunction(L, [](lua_State* pL) -> int {
+                    // Acepta game:BindToClose(fn) (self+fn) o game.BindToClose(fn)
+                    int fnidx = lua_isfunction(pL, 2) ? 2 : (lua_isfunction(pL, 1) ? 1 : 0);
+                    if (!fnidx) return 0;
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                    lua_pop(pL, 1);
+                    if (!mL) mL = pL;
+                    int ref = lua_ref(pL, fnidx);   // ref en el registro compartido
+                    gl_add_close_cb(mL, ref);
+                    return 0;
+                }, "BindToClose"); return 1;
+            }
+        }
+    }
+
+    // ── RobloxTerrain (Workspace.Terrain): FillBlock/FillBall/FillRegion/Clear ─
+    {
+        RobloxTerrain* terr = Object::cast_to<RobloxTerrain>(n);
+        if (terr) {
+            if (strcmp(key, "FillBlock") == 0) {
+                lua_pushlightuserdata(L, (void*)terr);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxTerrain* t = (RobloxTerrain*)lua_touserdata(LL, lua_upvalueindex(1));
+                    if (!t) return 0;
+                    // arg2 = CFrame (tabla con X/Y/Z), arg3 = size (Vector3), arg4 = material
+                    float px = 0; float py = 0; float pz = 0;
+                    if (lua_istable(LL, 2)) {
+                        lua_getfield(LL, 2, "X"); px = (float)lua_tonumber(LL, -1); lua_pop(LL, 1);
+                        lua_getfield(LL, 2, "Y"); py = (float)lua_tonumber(LL, -1); lua_pop(LL, 1);
+                        lua_getfield(LL, 2, "Z"); pz = (float)lua_tonumber(LL, -1); lua_pop(LL, 1);
+                    }
+                    Vector3 size(4, 4, 4);
+                    if (LuauVector3* v = check_vector3(LL, 3)) size = Vector3(v->x, v->y, v->z);
+                    t->fill_block(Vector3(px, py, pz), size, (int)luaL_optnumber(LL, 4, 0));
+                    return 0;
+                }, "FillBlock", 1); return 1;
+            }
+            if (strcmp(key, "FillBall") == 0) {
+                lua_pushlightuserdata(L, (void*)terr);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxTerrain* t = (RobloxTerrain*)lua_touserdata(LL, lua_upvalueindex(1));
+                    if (!t) return 0;
+                    Vector3 c(0, 0, 0);
+                    if (LuauVector3* v = check_vector3(LL, 2)) c = Vector3(v->x, v->y, v->z);
+                    t->fill_ball(c, (float)luaL_optnumber(LL, 3, 4), (int)luaL_optnumber(LL, 4, 0));
+                    return 0;
+                }, "FillBall", 1); return 1;
+            }
+            if (strcmp(key, "FillRegion") == 0) {
+                lua_pushlightuserdata(L, (void*)terr);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxTerrain* t = (RobloxTerrain*)lua_touserdata(LL, lua_upvalueindex(1));
+                    if (!t) return 0;
+                    Vector3 mn(0, 0, 0); Vector3 mx(0, 0, 0);
+                    if (LuauVector3* v = check_vector3(LL, 2)) mn = Vector3(v->x, v->y, v->z);
+                    if (LuauVector3* v = check_vector3(LL, 3)) mx = Vector3(v->x, v->y, v->z);
+                    t->fill_region(mn, mx, (int)luaL_optnumber(LL, 4, 0));
+                    return 0;
+                }, "FillRegion", 1); return 1;
+            }
+            if (strcmp(key, "Clear") == 0) {
+                lua_pushlightuserdata(L, (void*)terr);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxTerrain* t = (RobloxTerrain*)lua_touserdata(LL, lua_upvalueindex(1));
+                    if (t) t->clear_terrain();
+                    return 0;
+                }, "Clear", 1); return 1;
+            }
+            // ReadVoxels devuelve (materials, occupancy) vacíos; el resto no-op.
+            // (MundoVoxel construye su propia malla; estos evitan que scripts que
+            //  los llamen se rompan.)
+            if (strcmp(key, "ReadVoxels") == 0) {
+                lua_pushcfunction(L, [](lua_State* LL) -> int {
+                    lua_newtable(LL); lua_newtable(LL); return 2;
+                }, "ReadVoxels"); return 1;
+            }
+            if (strcmp(key, "WriteVoxels") == 0 || strcmp(key, "SetMaterialColor") == 0 ||
+                strcmp(key, "GetMaterialColor") == 0 || strcmp(key, "ReplaceMaterial") == 0) {
+                lua_pushcfunction(L, [](lua_State* LL) -> int { return 0; }, "TerrainNoop"); return 1;
+            }
+        }
+    }
+
+    // ── RobloxValue (NumberValue/IntValue/StringValue/…): .Changed, ClassName, IsA ─
+    // .Value se resuelve por el puente _gl_bridge más abajo; aquí solo lo específico.
+    {
+        RobloxValue* rval = Object::cast_to<RobloxValue>(n);
+        if (rval) {
+            if (strcmp(key, "ClassName") == 0) {
+                lua_pushstring(L, rval->roblox_class.utf8().get_data()); return 1;
+            }
+            if (strcmp(key, "Changed") == 0) {
+                lua_newtable(L);
+                lua_pushlightuserdata(L, (void*)rval);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxValue* d = (RobloxValue*)lua_touserdata(LL, lua_upvalueindex(1));
+                    if (!d || !lua_isfunction(LL, 2)) { lua_pushnil(LL); return 1; }
+                    int ref = lua_ref(LL, 2);
+                    d->add_changed_cb(gl_main_of(LL), ref); _gl_push_connection(LL, d, ref); return 1;
+                }, "Connect", 1);
+                lua_setfield(L, -2, "Connect"); return 1;
+            }
+            if (strcmp(key, "GetPropertyChangedSignal") == 0) {
+                lua_pushlightuserdata(L, (void*)rval);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxValue* d = (RobloxValue*)lua_touserdata(LL, lua_upvalueindex(1));
+                    lua_newtable(LL);
+                    lua_pushlightuserdata(LL, (void*)d);
+                    lua_pushcclosure(LL, [](lua_State* L2) -> int {
+                        RobloxValue* d2 = (RobloxValue*)lua_touserdata(L2, lua_upvalueindex(1));
+                        if (!d2 || !lua_isfunction(L2, 2)) { lua_pushnil(L2); return 1; }
+                        int ref = lua_ref(L2, 2);
+                        d2->add_changed_cb(gl_main_of(L2), ref); _gl_push_connection(L2, d2, ref); return 1;
+                    }, "Connect", 1);
+                    lua_setfield(LL, -2, "Connect"); return 1;
+                }, "GetPropertyChangedSignal", 1); return 1;
+            }
+            if (strcmp(key, "IsA") == 0) {
+                lua_pushlightuserdata(L, (void*)rval);
+                lua_pushcclosure(L, [](lua_State* LL) -> int {
+                    RobloxValue* d = (RobloxValue*)lua_touserdata(LL, lua_upvalueindex(1));
+                    const char* q = luaL_checkstring(LL, 2);
+                    bool ok = d && (d->roblox_class == String(q) ||
+                                    strcmp(q, "Instance") == 0 || strcmp(q, "ValueBase") == 0);
+                    lua_pushboolean(LL, ok ? 1 : 0); return 1;
+                }, "IsA", 1); return 1;
             }
         }
     }
@@ -3312,14 +3440,23 @@ static int godot_instance_new(lua_State* L) {
              strcmp(cls, "TrussPart")         == 0 ||
              strcmp(cls, "UnionOperation")    == 0) nn = memnew(RobloxPart);
     else if (strcmp(cls, "Folder")            == 0 ||
-             strcmp(cls, "Configuration")     == 0 ||
-             strcmp(cls, "StringValue")       == 0 ||
+             strcmp(cls, "Configuration")     == 0) nn = memnew(Folder);
+    else if (strcmp(cls, "StringValue")       == 0 ||
              strcmp(cls, "IntValue")          == 0 ||
              strcmp(cls, "NumberValue")       == 0 ||
              strcmp(cls, "BoolValue")         == 0 ||
              strcmp(cls, "ObjectValue")       == 0 ||
              strcmp(cls, "Vector3Value")      == 0 ||
-             strcmp(cls, "CFrameValue")       == 0) nn = memnew(Folder);
+             strcmp(cls, "Color3Value")       == 0 ||
+             strcmp(cls, "CFrameValue")       == 0) {
+        RobloxValue* rv = memnew(RobloxValue);
+        rv->roblox_class = String(cls);
+        // Valor por defecto tipado (como Roblox): número 0, texto "", bool false.
+        if (strcmp(cls,"NumberValue")==0 || strcmp(cls,"IntValue")==0) rv->set_value((double)0);
+        else if (strcmp(cls,"StringValue")==0) rv->set_value(String(""));
+        else if (strcmp(cls,"BoolValue")==0)   rv->set_value(false);
+        nn = rv;
+    }
     else if (strcmp(cls, "Model")             == 0) nn = memnew(Node3D);
     else if (strcmp(cls, "Humanoid")          == 0) nn = memnew(Humanoid);
     else if (strcmp(cls, "Humanoid2D")        == 0) nn = memnew(Humanoid2D);

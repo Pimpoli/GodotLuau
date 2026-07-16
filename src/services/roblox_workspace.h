@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include "roblox_network.h"
+#include "roblox_terrain.h"
 #include <godot_cpp/classes/physics_server3d.hpp>
 #include <godot_cpp/classes/world3d.hpp>
 #include <godot_cpp/variant/variant.hpp>
@@ -233,6 +234,15 @@ protected:
                     bp->gl_apply_grid_texture(grid_tex, 125.0f);   // celda menor = 2 studs
                 }
 
+                // 3b. TERRAIN — Workspace.Terrain (como Roblox): vacío al inicio,
+                // se llena por código con Terrain:FillBlock/FillBall (p.ej. MundoVoxel).
+                {
+                    RobloxTerrain* terr = memnew(RobloxTerrain);
+                    terr->set_name("Terrain");
+                    add_child(terr);
+                    terr->set_owner(root);
+                }
+
                 // 4. CURRENT CAMERA — visible in the scene tree like Roblox
                 // workspace.CurrentCamera is the camera that renders the game.
                 // At runtime the player controls it; in the editor you can see its position.
@@ -309,6 +319,13 @@ public:
                     ResourceSaver::get_singleton()->save(env, env_path);
                 }
             }
+        }
+
+        // ── Terrain: asegurar que exista (escenas viejas sin Terrain guardado) ──
+        if (!get_node_or_null("Terrain")) {
+            RobloxTerrain* terr = memnew(RobloxTerrain);
+            terr->set_name("Terrain");
+            call_deferred("add_child", terr);   // el padre está montando hijos en _ready
         }
 
         // ── RunService oculto: como en Roblox, existe pero no se ve en el editor ──

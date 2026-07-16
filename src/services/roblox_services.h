@@ -42,6 +42,77 @@ inline std::vector<LuauPendingResume>& get_pending_resumes() {
 using namespace godot;
 
 // ════════════════════════════════════════════════════════════════════
+//  RobloxValue — objetos de valor (NumberValue/IntValue/StringValue/
+//  BoolValue/ObjectValue/Vector3Value/…). Es un NODO REAL (antes eran
+//  tablas Lua que rompían Parent/FindFirstChild → leaderstats no funcionaba).
+//  .Value se lee/escribe por el puente _gl_bridge; .Changed y
+//  :GetPropertyChangedSignal("Value") disparan al cambiar (como Roblox).
+// ════════════════════════════════════════════════════════════════════
+class RobloxValue : public Node {
+    GDCLASS(RobloxValue, Node);
+    Variant _value;
+public:
+    String roblox_class = "NumberValue";   // clase Roblox original (para ClassName/IsA)
+    struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
+    std::vector<LuaCallback> changed_cbs;
+
+    void add_changed_cb(lua_State* L, int ref) { changed_cbs.push_back({ L, ref, true }); }
+    void _gl_disconnect(int ref) { for (auto& cb : changed_cbs) if (cb.ref == ref) cb.active = false; }
+
+    void set_value(const Variant& v) {
+        bool changed = (_value != v);
+        _value = v;
+        if (changed) fire_changed();
+    }
+    Variant get_value() const { return _value; }
+
+    void _push_value(lua_State* th) {
+        switch (_value.get_type()) {
+            case Variant::BOOL:   lua_pushboolean(th, (bool)_value); break;
+            case Variant::INT:    lua_pushnumber(th, (double)(int64_t)_value); break;
+            case Variant::FLOAT:  lua_pushnumber(th, (double)_value); break;
+            case Variant::STRING: { String s = _value; lua_pushstring(th, s.utf8().get_data()); } break;
+            case Variant::OBJECT: {
+                Node* nd = Object::cast_to<Node>((Object*)(_value.operator Object*()));
+                if (nd) {
+                    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
+                    gow_set(w, nd);
+                    luaL_getmetatable(th, "GodotObject");
+                    lua_setmetatable(th, -2);
+                } else lua_pushnil(th);
+            } break;
+            default: lua_pushnil(th);
+        }
+    }
+
+    void fire_changed() {
+        std::vector<LuaCallback> snap = changed_cbs;
+        for (auto& cb : snap) {
+            if (!cb.active || !gl_state_alive(cb.main_L)) continue;
+            lua_State* th = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, th, 1);
+                _push_value(th);
+                gl_check_resume(th, lua_resume(th, nullptr, 1));
+            } else lua_pop(cb.main_L, 1);
+            lua_pop(cb.main_L, 1);
+        }
+    }
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &RobloxValue::_gl_disconnect);
+        ClassDB::bind_method(D_METHOD("set_value", "v"), &RobloxValue::set_value);
+        ClassDB::bind_method(D_METHOD("get_value"),      &RobloxValue::get_value);
+        ADD_PROPERTY(PropertyInfo(Variant::NIL, "Value", PROPERTY_HINT_NONE, "",
+                     PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT),
+                     "set_value", "get_value");
+    }
+public:
+    RobloxValue() { set_meta("_gl_bridge", true); }
+};
+
+// ════════════════════════════════════════════════════════════════════
 //  Service placement protection: in Roblox, services only exist under
 //  the DataModel. These helpers enforce that in the editor: if someone
 //  tries to add a service to an invalid parent, it is deleted and an
@@ -247,9 +318,17 @@ public:
     std::vector<LuaCallback> player_removing_cbs;
     int max_players = 50;
 
+    // PlayerAdded del jugador LOCAL: se dispara una sola vez, cuando el personaje
+    // ya existe y tras un breve margen para que los scripts alcancen a :Connect.
+    // (Los peers remotos los dispara el NetworkService al conectar/desconectar.)
+    bool   _gl_local_added_fired = false;
+    double _gl_ready_time = 0.0;
+
 protected:
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
+        else if (p_what == NOTIFICATION_READY && !Engine::get_singleton()->is_editor_hint())
+            set_process(true);
     }
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &Players::_gl_disconnect);
@@ -264,6 +343,17 @@ protected:
     }
 
 public:
+    void _process(double delta) override {
+        if (_gl_local_added_fired) { set_process(false); return; }
+        Node* lp = get_local_player();
+        if (!lp) { _gl_ready_time = 0.0; return; }  // aún sin personaje: reiniciar margen
+        _gl_ready_time += delta;
+        if (_gl_ready_time < 0.25) return;          // margen para PlayerAdded:Connect
+        _gl_local_added_fired = true;
+        set_process(false);
+        fire_player_added(lp);
+    }
+
     int  get_max_players() const { return max_players; }
     void set_max_players(int v)  { max_players = v; }
 

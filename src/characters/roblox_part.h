@@ -75,6 +75,10 @@ private:
     //           10=Metal 11=CorrodedMetal 12=DiamondPlate 13=Foil
     //           14=Grass 15=Ice 16=Glass 17=Sand 18=Fabric
     //           19=Rock 20=Snow 21=Cobblestone 22=Pebble
+    //           23=Ground 24=Mud 25=Sandstone 26=Basalt 27=CrackedLava
+    //           28=Glacier 29=LeafyGrass 30=Salt 31=Limestone 32=Pavement
+    //           33=Asphalt 34=ForceField 35=Water 36=Air
+    // (0-22 no se reordenan: escenas y Enum.Material existentes dependen de ellos)
     int     roblox_material = 0;
 
     // Surface types per face (0=Smooth 1=Glue 2=Weld 3=Studs 4=Inlet 5=Universal 6=Hinge 7=Motor)
@@ -238,6 +242,40 @@ private:
             case 20: material->set_roughness(0.90f); break; // Snow
             case 21: material->set_roughness(0.95f); break; // Cobblestone
             case 22: material->set_roughness(0.85f); break; // Pebble
+            case 23: material->set_roughness(1.00f); break; // Ground
+            case 24: material->set_roughness(0.85f); break; // Mud (algo húmedo)
+            case 25: material->set_roughness(0.95f); break; // Sandstone
+            case 26: material->set_roughness(0.90f); break; // Basalt
+            case 27: // CrackedLava — roca con brasas incandescentes
+                material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                material->set_emission(Color(1.0f, 0.35f, 0.05f));
+                material->set_emission_energy_multiplier(1.6f);
+                material->set_roughness(0.80f);
+                break;
+            case 28: // Glacier — hielo compacto ligeramente translúcido
+                material->set_roughness(0.10f);
+                material->set_metallic(0.05f);
+                break;
+            case 29: material->set_roughness(0.98f); break; // LeafyGrass
+            case 30: material->set_roughness(0.85f); break; // Salt
+            case 31: material->set_roughness(0.90f); break; // Limestone
+            case 32: material->set_roughness(0.92f); break; // Pavement
+            case 33: material->set_roughness(0.95f); break; // Asphalt
+            case 34: // ForceField — campo de energía translúcido y brillante
+                material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+                material->set_emission(Color(0.3f, 0.7f, 1.0f));
+                material->set_emission_energy_multiplier(1.4f);
+                material->set_roughness(0.20f);
+                material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+                break;
+            case 35: // Water — agua translúcida
+                material->set_roughness(0.05f);
+                material->set_metallic(0.10f);
+                material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+                break;
+            case 36: // Air — invisible (bloque vacío, como en Terrain)
+                material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+                break;
             default: material->set_roughness(0.55f); break;
         }
         // Specular base ~0.5 (brillo tipo plastico de Roblox); reflectance lo
@@ -250,6 +288,15 @@ private:
         if (transparency > 0.001f)
             material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
         _update_albedo();
+        // Materiales con transparencia inherente: conservan el Color de la pieza
+        // pero fuerzan un alfa característico si el usuario no definió Transparency.
+        if (roblox_material == 36) {                                  // Air: invisible
+            material->set_albedo(Color(color.r, color.g, color.b, 0.0f));
+        } else if (roblox_material == 35 && transparency < 0.01f) {   // Water
+            material->set_albedo(Color(color.r, color.g, color.b, 0.55f));
+        } else if (roblox_material == 34 && transparency < 0.01f) {   // ForceField
+            material->set_albedo(Color(color.r, color.g, color.b, 0.35f));
+        }
         _apply_part_texture();   // la textura persistida sobrevive re-aplicados
     }
 
@@ -391,7 +438,10 @@ protected:
             "Marble:5,Slate:6,Concrete:7,Granite:8,Brick:9,"
             "Metal:10,CorrodedMetal:11,DiamondPlate:12,Foil:13,"
             "Grass:14,Ice:15,Glass:16,Sand:17,Fabric:18,"
-            "Rock:19,Snow:20,Cobblestone:21,Pebble:22"),
+            "Rock:19,Snow:20,Cobblestone:21,Pebble:22,"
+            "Ground:23,Mud:24,Sandstone:25,Basalt:26,CrackedLava:27,"
+            "Glacier:28,LeafyGrass:29,Salt:30,Limestone:31,Pavement:32,"
+            "Asphalt:33,ForceField:34,Water:35,Air:36"),
             "set_roblox_material","get_roblox_material");
 
         // ── Collision flags ─────────────────────────────────────────

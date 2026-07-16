@@ -409,11 +409,43 @@ private:
         } else if (p=="text") {
             add("\"Your text here\"", "\"Your text here\"", "Visible label or button text.", kStr);
         } else if (p=="material") {
-            add("Enum.Material.SmoothPlastic","Enum.Material.SmoothPlastic","Default smooth plastic.", kEnum);
+            add("Enum.Material.Plastic",      "Enum.Material.Plastic",      "Default plastic.",        kEnum);
+            add("Enum.Material.SmoothPlastic","Enum.Material.SmoothPlastic","Smooth plastic.",         kEnum);
             add("Enum.Material.Neon",         "Enum.Material.Neon",         "Glowing neon.",           kEnum);
             add("Enum.Material.Metal",        "Enum.Material.Metal",        "Metallic sheen.",         kEnum);
             add("Enum.Material.Wood",         "Enum.Material.Wood",         "Wooden texture.",         kEnum);
+            add("Enum.Material.WoodPlanks",   "Enum.Material.WoodPlanks",   "Wooden planks.",          kEnum);
             add("Enum.Material.Glass",        "Enum.Material.Glass",        "Transparent glass.",      kEnum);
+            add("Enum.Material.Marble",       "Enum.Material.Marble",       "Polished marble.",        kEnum);
+            add("Enum.Material.Slate",        "Enum.Material.Slate",        "Rough slate.",            kEnum);
+            add("Enum.Material.Concrete",     "Enum.Material.Concrete",     "Concrete.",               kEnum);
+            add("Enum.Material.Granite",      "Enum.Material.Granite",      "Granite.",                kEnum);
+            add("Enum.Material.Brick",        "Enum.Material.Brick",        "Brick.",                  kEnum);
+            add("Enum.Material.CorrodedMetal","Enum.Material.CorrodedMetal","Rusted metal.",           kEnum);
+            add("Enum.Material.DiamondPlate", "Enum.Material.DiamondPlate", "Diamond plate metal.",    kEnum);
+            add("Enum.Material.Foil",         "Enum.Material.Foil",         "Shiny foil.",             kEnum);
+            add("Enum.Material.Grass",        "Enum.Material.Grass",        "Grass.",                  kEnum);
+            add("Enum.Material.LeafyGrass",   "Enum.Material.LeafyGrass",   "Leafy grass.",            kEnum);
+            add("Enum.Material.Ice",          "Enum.Material.Ice",          "Ice.",                    kEnum);
+            add("Enum.Material.Glacier",      "Enum.Material.Glacier",      "Compact glacier ice.",    kEnum);
+            add("Enum.Material.Sand",         "Enum.Material.Sand",         "Sand.",                   kEnum);
+            add("Enum.Material.Sandstone",    "Enum.Material.Sandstone",    "Sandstone.",              kEnum);
+            add("Enum.Material.Fabric",       "Enum.Material.Fabric",       "Fabric.",                 kEnum);
+            add("Enum.Material.Rock",         "Enum.Material.Rock",         "Rock.",                   kEnum);
+            add("Enum.Material.Basalt",       "Enum.Material.Basalt",       "Dark basalt.",            kEnum);
+            add("Enum.Material.Snow",         "Enum.Material.Snow",         "Snow.",                   kEnum);
+            add("Enum.Material.Cobblestone",  "Enum.Material.Cobblestone",  "Cobblestone.",            kEnum);
+            add("Enum.Material.Pebble",       "Enum.Material.Pebble",       "Pebbles.",                kEnum);
+            add("Enum.Material.Ground",       "Enum.Material.Ground",       "Dirt ground.",            kEnum);
+            add("Enum.Material.Mud",          "Enum.Material.Mud",          "Mud.",                    kEnum);
+            add("Enum.Material.Salt",         "Enum.Material.Salt",         "Salt.",                   kEnum);
+            add("Enum.Material.Limestone",    "Enum.Material.Limestone",    "Limestone.",              kEnum);
+            add("Enum.Material.Pavement",     "Enum.Material.Pavement",     "Pavement.",               kEnum);
+            add("Enum.Material.Asphalt",      "Enum.Material.Asphalt",      "Asphalt.",                kEnum);
+            add("Enum.Material.CrackedLava",  "Enum.Material.CrackedLava",  "Glowing cracked lava.",   kEnum);
+            add("Enum.Material.ForceField",   "Enum.Material.ForceField",   "Energy force field.",     kEnum);
+            add("Enum.Material.Water",        "Enum.Material.Water",        "Translucent water.",      kEnum);
+            add("Enum.Material.Air",          "Enum.Material.Air",          "Invisible / empty.",      kEnum);
         } else if (p=="zindex") {
             add("1", "1",  "Default layer.",  kNum);
             add("2", "2",  "Above layer 1.",  kNum);

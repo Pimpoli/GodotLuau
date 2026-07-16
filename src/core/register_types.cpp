@@ -7,6 +7,7 @@
 #include "roblox_player.h"
 #include "roblox_player2d.h"
 #include "roblox_part.h"
+#include "roblox_terrain.h"
 #include "humanoid.h"
 #include "humanoid2d.h"
 #include "folder.h"
@@ -101,6 +102,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<RobloxWorkspace>();
         ClassDB::register_class<RobloxPlayer>();
         ClassDB::register_class<RobloxPart>();
+        ClassDB::register_class<RobloxTerrain>();   // Workspace.Terrain
 
         // 2D characters and physics
         //// Personajes y físicas 2D
@@ -124,6 +126,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<StarterGui>();
         ClassDB::register_class<StarterPack>();
         ClassDB::register_class<Players>();
+        ClassDB::register_class<RobloxValue>();   // NumberValue/IntValue/StringValue/…
         ClassDB::register_class<Lighting>();
         ClassDB::register_class<MaterialService>();
         ClassDB::register_class<NetworkClient>();

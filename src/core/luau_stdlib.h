@@ -87,19 +87,24 @@ Enum = {
         KeypadPlus = 270, KeypadEnter = 271,
     },
     Material = {
-        -- Índices internos 0-22 (coinciden con RobloxPart::_apply_material_visual).
+        -- Índices internos (coinciden con RobloxPart::_configure_material).
         -- Antes usaban los valores de Roblox (Neon=288…) y ningún material se
-        -- aplicaba porque el switch interno espera 0-22.
+        -- aplicaba porque el switch interno espera estos índices.
+        -- NOTA: había una SEGUNDA tabla Material más abajo que sobreescribía a
+        -- esta (en Lua la última clave gana) y borraba Water/Air/Ground/… → nil.
+        -- Ahora es la única. TODOS los Enum.Material de Roblox resuelven aquí.
         Plastic = 0, SmoothPlastic = 1, Neon = 2, Wood = 3, WoodPlanks = 4,
         Marble = 5, Slate = 6, Concrete = 7, Granite = 8, Brick = 9,
         Metal = 10, CorrodedMetal = 11, Corrodedmetal = 11, DiamondPlate = 12,
         Foil = 13, Grass = 14, Ice = 15, Glass = 16, Sand = 17, Fabric = 18,
         Rock = 19, Snow = 20, Cobblestone = 21, Pebble = 22,
-        -- Materiales sin visual propio → se aproximan al más cercano
-        SandStone = 17, Sandstone = 17, Ground = 17, Mud = 17, Salt = 20,
-        Glacier = 15, Basalt = 19, Limestone = 7, Pavement = 7, Asphalt = 7,
-        LeafyGrass = 14, CrackedLava = 2, ForceField = 2, Forcefield = 2,
-        Fire = 2, Air = 0, Water = 16,
+        -- Materiales con visual propio (añadidos en 1.14)
+        Ground = 23, Mud = 24, Sandstone = 25, SandStone = 25, Basalt = 26,
+        CrackedLava = 27, Glacier = 28, LeafyGrass = 29, Salt = 30,
+        Limestone = 31, Pavement = 32, Asphalt = 33,
+        ForceField = 34, Forcefield = 34, Water = 35, Air = 36,
+        -- Compat: alias sin índice propio
+        Fire = 27,
     },
     NormalId = { Top = 1, Bottom = 2, Front = 3, Back = 4, Right = 5, Left = 6 },
     FillDirection = { Horizontal = 0, Vertical = 1 },
@@ -139,14 +144,8 @@ Enum = {
     RunContext = { Legacy = 0, Server = 1, Client = 2 },
     RenderFidelity = { Automatic = 0, Precise = 1, Performance = 2 },
     CollisionFidelity = { Default = 0, Box = 1, Hull = 2, Disabled = 3, PreciseConvexDecomposition = 4 },
-    -- Indices EXACTOS de RobloxPart:set_roblox_material (no reordenar)
-    Material = {
-        Plastic = 0, SmoothPlastic = 1, Neon = 2, Wood = 3, WoodPlanks = 4,
-        Marble = 5, Slate = 6, Concrete = 7, Granite = 8, Brick = 9,
-        Metal = 10, CorrodedMetal = 11, DiamondPlate = 12, Foil = 13,
-        Grass = 14, Ice = 15, Glass = 16, Sand = 17, Fabric = 18,
-        Rock = 19, Snow = 20, Cobblestone = 21, Pebble = 22,
-    },
+    -- (La tabla Material está definida una sola vez, más arriba, con TODOS los
+    --  materiales. La duplicada que había aquí borraba Water/Air/Ground → nil.)
     PartType = { Ball = 0, Block = 1, Cylinder = 2, Wedge = 3, CornerWedge = 4 },
 }
 
@@ -602,6 +601,27 @@ local function _make_datastore(name)
             AdvanceToNextPageAsync = function() if idx < #pages then idx = idx + 1 end end,
             IsFinished = (#pages <= 1),
         }
+    end
+
+    -- Versionado: sin backend de versiones, se expone la versión actual como
+    -- única, para que ProfileService-like que llama ListVersionsAsync no rompa.
+    function store:ListVersionsAsync(key, sortDirection, minDate, maxDate, pageSize)
+        local val = self:GetAsync(key)
+        local page = {}
+        if val ~= nil then
+            page[1] = { Version = "1", CreatedTime = 0, IsDeleted = false }
+        end
+        return {
+            GetCurrentPage = function() return page end,
+            AdvanceToNextPageAsync = function() end,
+            IsFinished = true,
+        }
+    end
+    function store:GetVersionAsync(key, version)
+        return self:GetAsync(key)
+    end
+    function store:RemoveVersionAsync(key, version)
+        return self:RemoveAsync(key)
     end
 
     return store
@@ -1415,10 +1435,10 @@ local _cls_map = {
     RemoteFunction="RemoteFunctionNode",
     BindableEvent="BindableEventNode", BindableFunction="BindableEventNode",
     Script="ServerScript", LocalScript="LocalScript", ModuleScript="ModuleScript",
-    -- Objetos de valor (se representan como Folder genérico con metadatos)
-    StringValue="Folder", IntValue="Folder", NumberValue="Folder",
-    BoolValue="Folder", ObjectValue="Folder", Vector3Value="Folder",
-    Color3Value="Folder", CFrameValue="Folder",
+    -- Objetos de valor: nodo REAL RobloxValue con .Value/.Changed
+    StringValue="RobloxValue", IntValue="RobloxValue", NumberValue="RobloxValue",
+    BoolValue="RobloxValue", ObjectValue="RobloxValue", Vector3Value="RobloxValue",
+    Color3Value="RobloxValue", CFrameValue="RobloxValue",
     -- UI tipo Roblox
     ScreenGui="ScreenGui", Frame="RobloxFrame", TextLabel="RobloxTextLabel",
     TextButton="RobloxTextButton", TextBox="RobloxTextBox",
@@ -1448,10 +1468,10 @@ local _cls_map = {
     Motor6D="Motor6D", Tool="RobloxTool", Backpack="Backpack",
     -- Animation
     Animation="AnimationObject", AnimationTrack="AnimationTrack",
-    -- Value objects
-    NumberValue="Folder", StringValue="Folder", IntValue="Folder",
-    BoolValue="Folder", ObjectValue="Folder", Vector3Value="Folder",
-    Color3Value="Folder", CFrameValue="Folder",
+    -- Value objects: nodo REAL RobloxValue con .Value/.Changed
+    NumberValue="RobloxValue", StringValue="RobloxValue", IntValue="RobloxValue",
+    BoolValue="RobloxValue", ObjectValue="RobloxValue", Vector3Value="RobloxValue",
+    Color3Value="RobloxValue", CFrameValue="RobloxValue",
 }
 
 Instance = Instance or {}
@@ -1488,70 +1508,12 @@ end
 )LUAU"
 R"LUAU(
 -- ══════════════════════════════════════════════════════════════════════
---  Value Objects — NumberValue, StringValue, BoolValue, etc. con Changed
---  Uso: local v = Instance.new("NumberValue")
---       v.Value = 42
---       v.Changed:Connect(function(newVal) end)
+--  Value Objects — NumberValue, StringValue, BoolValue, etc.
+--  Ahora son NODOS REALES (clase C++ RobloxValue): Instance.new los crea por
+--  el mapeo C++/_cls_map, así Parent/FindFirstChild/leaderstats funcionan y
+--  .Value / .Changed andan como en Roblox. (Antes eran tablas Lua que, al
+--  hacer obj.Parent = nodoReal, NO se añadían al árbol → leaderstats vacío.)
 -- ══════════════════════════════════════════════════════════════════════
-local function _make_value_object(className, defaultVal)
-    local obj = {
-        _value = defaultVal,
-        _cbs   = {},
-        Name   = className,
-        ClassName = className,
-    }
-    obj.Changed = {
-        Connect = function(_, fn)
-            table.insert(obj._cbs, fn)
-            -- Retornar conexión desconectable
-            return {
-                Disconnect = function()
-                    for i, f in ipairs(obj._cbs) do
-                        if f == fn then table.remove(obj._cbs, i); break end
-                    end
-                end
-            }
-        end
-    }
-    local mt = {}
-    mt.__index = function(t, k)
-        if k == "Value" then return t._value end
-        return rawget(t, k)
-    end
-    mt.__newindex = function(t, k, v)
-        if k == "Value" then
-            local old = t._value
-            rawset(t, "_value", v)
-            if old ~= v then
-                for _, fn in ipairs(t._cbs) do
-                    local ok, err = pcall(fn, v)
-                    if not ok then warn("[ValueObject] Changed error:", err) end
-                end
-            end
-        else
-            rawset(t, k, v)
-        end
-    end
-    return setmetatable(obj, mt)
-end
-
--- Parchar Instance.new para crear value objects reales
-local _inst_new_prev = Instance.new
-Instance.new = function(className, parent)
-    local valueDefaults = {
-        NumberValue = 0, IntValue = 0, BoolValue = false,
-        StringValue = "", ObjectValue = nil,
-        Vector3Value = nil, Color3Value = nil, CFrameValue = nil,
-    }
-    if valueDefaults[className] ~= nil then
-        local obj = _make_value_object(className, valueDefaults[className])
-        if parent ~= nil then
-            pcall(function() obj.Parent = parent end)
-        end
-        return obj
-    end
-    return _inst_new_prev(className, parent)
-end
 
 -- ══════════════════════════════════════════════════════════════════════
 --  Color3 extras — missing methods

@@ -965,6 +965,31 @@ public:
     bool script_enabled = true;
     bool script_started = false;
 
+    // Duplicado (Ctrl+D / copiar-pegar) detectado en ENTER_TREE: código heredado
+    // del original que se escribe en el archivo NUEVO en vez de un template.
+    String _gl_dup_source;
+    bool   _gl_is_dup = false;
+
+    // ¿Otro ScriptNodeBase VIVO (distinto de este) ya usa este script_id?
+    // Es la señal inequívoca de un DUPLICADO en el editor: Godot copió el
+    // script_id exportado y compartió la MISMA Ref<LuauScript> (mismo .lua),
+    // por eso "abren el mismo script". Un proyecto recién abierto no dispara
+    // esto: cada nodo trae su id único persistido.
+    ScriptNodeBase* _gl_find_id_twin() {
+        if (!get_tree() || !get_tree()->get_root()) return nullptr;
+        ScriptNodeBase* found = nullptr;
+        std::function<void(Node*)> rec = [&](Node* n) {
+            if (found || !n) return;
+            if (n != (Node*)this) {
+                ScriptNodeBase* s = Object::cast_to<ScriptNodeBase>(n);
+                if (s && !s->script_id.is_empty() && s->script_id == script_id) { found = s; return; }
+            }
+            for (int i = 0; i < n->get_child_count(); i++) rec(n->get_child(i));
+        };
+        rec(get_tree()->get_root());
+        return found;
+    }
+
 public:
     void set_enabled(bool b) {
         script_enabled = b;
@@ -1041,6 +1066,24 @@ protected:
     void _notification(int p_what) {
         if (Engine::get_singleton()->is_editor_hint()) {
             if (p_what == NOTIFICATION_ENTER_TREE) {
+                // ── Detección de DUPLICADO (Ctrl+D / copiar-pegar) ─────────
+                // Si otro nodo vivo ya usa este script_id, este es una copia:
+                // se le da identidad y archivo PROPIOS copiando el código actual
+                // del original, para que dejen de "abrir el mismo script" y cada
+                // uno ejecute sus funciones de forma independiente.
+                if (!script_id.is_empty() && _gl_find_id_twin()) {
+                    if (codigo_luau.is_valid()) {
+                        _gl_dup_source = codigo_luau->_get_source_code();
+                        if (_gl_dup_source.is_empty() && !codigo_luau->get_path().is_empty()) {
+                            Ref<FileAccess> rf = FileAccess::open(codigo_luau->get_path(), FileAccess::READ);
+                            if (rf.is_valid()) { _gl_dup_source = rf->get_as_text(); rf->close(); }
+                        }
+                    }
+                    _gl_is_dup = true;
+                    script_id = String();               // fuerza id nuevo abajo
+                    codigo_luau = Ref<LuauScript>();     // suelta el recurso compartido
+                }
+
                 // ── Asignar ID persistente la primera vez ──────────────────
                 if (script_id.is_empty()) {
                     String cls_id = get_class();
@@ -1131,6 +1174,11 @@ protected:
                         template_code = String(LUAU_TEMPLATE_LOCAL_SCRIPT);
                     }
 
+                    // Un duplicado hereda el código EXACTO del original (no un
+                    // template): así la copia conserva lo que el usuario escribió.
+                    if (_gl_is_dup && !_gl_dup_source.is_empty())
+                        template_code = _gl_dup_source;
+
                     // Sustituir el ID único del script en la plantilla (para poder
                     // localizarlo al buscar por su ID). Los templates de sistema
                     // (Health/Animate…) no tienen el placeholder → quedan intactos.
@@ -1142,6 +1190,10 @@ protected:
                     ResourceSaver::get_singleton()->save(new_script, file_path);
                     set_codigo_luau(new_script);
                     GL_DEBUG_PRINT("[GodotLuau] Script creado: ", file_path);
+                    if (_gl_is_dup)
+                        GL_DEBUG_PRINT("[GodotLuau] Duplicado con identidad propia: ", script_id);
+                    _gl_is_dup = false;          // consumido: no repetir en re-entradas
+                    _gl_dup_source = String();
                 }
             }
             // NOTA: el borrado/restauración del archivo al borrar el nodo (con soporte
@@ -1179,6 +1231,7 @@ protected:
                 spawned_threads.clear();
 
                 if (L_main) {
+                    gl_run_close_cbs_for(L_main);  // BindToClose: guardar datos antes de cerrar
                     gl_unregister_state(L_main);   // baja del registro ANTES de cerrar la VM
                     lua_close(L_main);
                     L_main = nullptr;
@@ -1194,6 +1247,7 @@ public:
     ScriptNodeBase() {}
     ~ScriptNodeBase() {
         if (L_main) {
+            gl_run_close_cbs_for(L_main);   // por si no pasó por EXIT_TREE (ya vacío si sí)
             gl_unregister_state(L_main);
             lua_close(L_main);
             L_main = nullptr;
