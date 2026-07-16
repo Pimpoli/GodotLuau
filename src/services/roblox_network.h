@@ -745,6 +745,7 @@ class NetworkService : public Node {
         return diag_timer <= 0.0;
     }
     void _broadcast_local() {
+        if (mode == 2 && !net_connected) return;   // cliente aún negociando: nada de RPC
         Node* lp = _local_player();
         if (!lp) return;   // la ventana del servidor no tiene personaje: no difunde
         bool server = is_server();
@@ -882,9 +883,21 @@ public:
     void net_send_event(const String& path, const Array& args, int target, bool reliable) {
         const char* m_srv = reliable ? "_re_deliver_server" : "_ure_deliver_server";
         const char* m_cli = reliable ? "_re_deliver_client" : "_ure_deliver_client";
-        if (target == 0)       rpc_id(1, m_srv, path, args);
-        else if (target == -1) rpc(m_cli, path, args);
-        else                   rpc_id(target, m_cli, path, args);
+        // La red puede no estar lista cuando un script dispara un RemoteEvent al
+        // arrancar: en Roblox el cliente ya está replicado antes de correr scripts,
+        // pero aquí los scripts corren mientras ENet aún negocia la conexión. Sin
+        // esta guarda, rpc_id lanzaría "peer not connected". Ignoramos el envío.
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;
+        if (target == 0) {
+            if (mode == 2 && !net_connected) return;   // cliente aún conectándose al host
+            rpc_id(1, m_srv, path, args);
+        } else if (target == -1) {
+            rpc(m_cli, path, args);                     // servidor → todos (0 peers = no-op)
+        } else {
+            if (!m->get_peers().has(target)) return;    // ese peer ya no está conectado
+            rpc_id(target, m_cli, path, args);
+        }
     }
     void _deliver_event(const String& path, const Array& args, bool to_server) {
         if (!is_inside_tree()) return;
