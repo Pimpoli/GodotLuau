@@ -6,8 +6,15 @@
 //
 //  Fase 0: conectividad real (ENet/UDP) con la red nativa de Godot.
 //    net:StartServer(port, maxPlayers)   → tu PC como servidor (host)
-//    net:Connect(ip, port)               → unirse a un servidor
+//    net:Connect(ip, port)               → unirse a un servidor (acepta IP o hostname)
 //    net:Disconnect()                    → volver a un jugador
+//    net:IsConnected() / net:GetConnectionState() / net:GetServerAddress()
+//
+//  Direct Connect por IP (juegos exportados, sin escribir Lua) vía args:
+//    --glconnect <ip>:<port>   → arrancar uniéndose a ese servidor
+//    --glserver  <port>        → arrancar hospedando en ese puerto
+//    --glhost    <ip>          → host al que apuntan las ventanas cliente del
+//                                test local (por defecto 127.0.0.1; o res://.gl_host)
 //
 //  Fase 1 (ESTE archivo): RÉPLICA de jugadores. Cada instancia difunde la
 //  posición de su propio personaje y ve a los demás como "muñecos" (puppets)
@@ -38,6 +45,7 @@
 #include <godot_cpp/classes/multiplayer_api.hpp>
 #include <godot_cpp/classes/multiplayer_peer.hpp>
 #include <godot_cpp/classes/e_net_multiplayer_peer.hpp>
+#include <godot_cpp/classes/ip.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/classes/viewport.hpp>
@@ -121,12 +129,32 @@ static inline bool gl_mp_session_read(int& out_count, String& out_device) {
     return gl_mp_session_read_ex(out_count, out_device, age);
 }
 
+// Host al que se conectan las ventanas cliente del test local. Por defecto
+// 127.0.0.1 (misma máquina); se puede apuntar a OTRA PC con el arg
+// "--glhost <ip>" o el archivo res://.gl_host, para probar entre máquinas.
+static inline String gl_mp_host() {
+    PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
+    for (int i = 0; i < a.size(); i++)
+        if (String(a[i]) == "--glhost" && i + 1 < a.size()) return a[i + 1];
+    Ref<FileAccess> f = FileAccess::open("res://.gl_host", FileAccess::READ);
+    if (f.is_valid()) {
+        String h = f->get_as_text().strip_edges();
+        f->close();
+        if (!h.is_empty()) return h;
+    }
+    return "127.0.0.1";
+}
+
 // ¿Debe auto-crearse el NetworkService al arrancar el juego?
 // Siempre que el juego corra desde el editor (toggle de vista, dispositivo,
 // sesiones) o que lleve --glindex (ventanas cliente).
 static inline bool gl_mp_autostart_requested() {
     PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
-    for (int i = 0; i < a.size(); i++) if (String(a[i]) == "--glindex") return true;
+    for (int i = 0; i < a.size(); i++) {
+        const String arg = a[i];
+        // Juegos EXPORTADOS que se unen/hospedan por IP (Direct Connect).
+        if (arg == "--glindex" || arg == "--glconnect" || arg == "--glserver") return true;
+    }
     int c; String d;
     if (gl_mp_session_read(c, d)) return true;
     return OS::get_singleton()->has_feature("editor");
@@ -269,6 +297,7 @@ class NetworkService : public Node {
     int    player_index = 0;
     bool   net_connected = false;
     int    retry_left = 0;
+    String target_address = "";   // "ip:puerto" del servidor al que se conectó (para GetServerAddress)
     double retry_timer = 0.0;
 
     // Réplica de jugadores
@@ -692,6 +721,9 @@ protected:
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
         ClassDB::bind_method(D_METHOD("get_player_count"),                          &NetworkService::get_player_count);
         ClassDB::bind_method(D_METHOD("get_player_index"),                          &NetworkService::get_player_index);
+        ClassDB::bind_method(D_METHOD("is_connected_net"),                          &NetworkService::is_connected_net);
+        ClassDB::bind_method(D_METHOD("get_server_address"),                        &NetworkService::get_server_address);
+        ClassDB::bind_method(D_METHOD("get_connection_state"),                      &NetworkService::get_connection_state);
         // Fase 2: estado de red + RemoteEvent por red + roster de jugadores
         ClassDB::bind_method(D_METHOD("is_server"),                                 &NetworkService::is_server);
         ClassDB::bind_method(D_METHOD("is_client"),                                 &NetworkService::is_client);
@@ -961,7 +993,7 @@ public:
                             return;
                         }
                     }
-                    if (retry_left > 0) connect_server("127.0.0.1", 25575);
+                    if (retry_left > 0) connect_server(gl_mp_host(), 25575);
                     else if (!net_connected && player_index >= 2 && is_inside_tree()) {
                         gl_mp_log("no se encontro el host; cerrando esta ventana");
                         get_tree()->quit();   // cliente huérfano: el host nunca abrió el puerto
@@ -996,11 +1028,15 @@ public:
     void _auto_init() {
         PackedStringArray args = OS::get_singleton()->get_cmdline_user_args();
         int idx = 0, cnt = 1;
+        String direct_connect = "";   // --glconnect <ip>:<port>  (unirse por IP)
+        int    dedicated_port = 0;    // --glserver  <port>       (hospedar por IP)
         for (int i = 0; i < args.size(); i++) {
             String a = args[i];
-            if      (a == "--glindex"  && i + 1 < args.size()) idx = String(args[i + 1]).to_int();
-            else if (a == "--glcount"  && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
-            else if (a == "--gldevice" && i + 1 < args.size()) device = args[i + 1];
+            if      (a == "--glindex"   && i + 1 < args.size()) idx = String(args[i + 1]).to_int();
+            else if (a == "--glcount"   && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
+            else if (a == "--gldevice"  && i + 1 < args.size()) device = args[i + 1];
+            else if (a == "--glconnect" && i + 1 < args.size()) direct_connect = args[i + 1];
+            else if (a == "--glserver"  && i + 1 < args.size()) dedicated_port = String(args[i + 1]).to_int();
         }
         String role_src = "user args";
         if (idx == 0) {
@@ -1021,6 +1057,29 @@ public:
         gl_mp_log(String("rol: idx=") + String::num_int64(idx) + " count=" + String::num_int64(cnt)
                   + " device=" + device + " (fuente: " + role_src + ")");
         player_index = idx;
+
+        // ── Direct Connect / servidor por argumento (juegos exportados) ─────
+        // Permite unir/hospedar por IP entre máquinas distintas sin escribir
+        // Lua (Minecraft-style). Tiene prioridad sobre el test local por glindex.
+        //   --glconnect <ip>:<port>   → cliente que se une a ese servidor
+        //   --glserver  <port>        → host escuchando en ese puerto
+        if (!direct_connect.is_empty()) {
+            String host = direct_connect; int cport = 25565;
+            int colon = direct_connect.rfind(":");
+            if (colon > 0) { host = direct_connect.substr(0, colon); cport = direct_connect.substr(colon + 1).to_int(); }
+            connect_server(host, cport);
+            retry_left = 20;
+            gl_mp_log(String("Direct Connect a ") + host + String(":") + String::num_int64(cport));
+            view_watch = false; set_process(true); _apply_device();
+            return;
+        }
+        if (dedicated_port > 0) {
+            start_server(dedicated_port, 32);
+            gl_mp_log(String("Servidor (arg) escuchando en ") + String::num_int64(dedicated_port));
+            view_watch = false; set_process(true); _apply_device();
+            return;
+        }
+
         if (idx >= 1 && cnt >= 2) {
             bool as_client = (idx != 1);
             if (idx == 1) {
@@ -1029,11 +1088,12 @@ public:
                 if (!start_server(25575, cnt + 2)) { as_client = true; gl_mp_log("puerto 25575 ocupado -> me uno como cliente"); }
             }
             if (as_client) {
-                connect_server("127.0.0.1", 25575);
+                String host = gl_mp_host();
+                connect_server(host, 25575);
                 retry_left = 20;
                 _name_local_player(idx - 1);   // glindex 2..N+1 → Player1..PlayerN
                 _offset_spawn(idx);            // que no nazcan uno dentro de otro
-                gl_mp_log(String("cliente Player") + String::num_int64(idx - 1) + " conectando a 127.0.0.1:25575...");
+                gl_mp_log(String("cliente Player") + String::num_int64(idx - 1) + " conectando a " + host + ":25575...");
             } else {
                 // VENTANA DEL SERVIDOR: observa con camara libre, sin personaje
                 _remove_local_player();
@@ -1068,8 +1128,16 @@ public:
     bool connect_server(const String& ip, int port) {
         _bind_mp_signals();
         peer.instantiate();
-        Error e = peer->create_client(ip, port);
-        if (e != OK) { UtilityFunctions::push_warning(String("[NetworkService] No se pudo conectar a ") + ip); return false; }
+        // ENet exige una IP numérica: si llega un hostname, se resuelve por DNS.
+        String addr = ip;
+        if (!ip.is_valid_ip_address()) {
+            String resolved = IP::get_singleton()->resolve_hostname(ip, IP::TYPE_ANY);
+            if (!resolved.is_empty()) addr = resolved;
+            else { UtilityFunctions::push_warning(String("[NetworkService] No se pudo resolver el host ") + ip); return false; }
+        }
+        target_address = ip + String(":") + String::num_int64(port);
+        Error e = peer->create_client(addr, port);
+        if (e != OK) { UtilityFunctions::push_warning(String("[NetworkService] No se pudo conectar a ") + ip); target_address = ""; return false; }
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 2;
@@ -1083,6 +1151,7 @@ public:
         peer = Ref<ENetMultiplayerPeer>();
         mode = 0;
         net_connected = false;
+        target_address = "";
     }
     bool is_server() {
         Ref<MultiplayerAPI> m = _mp();
@@ -1101,6 +1170,16 @@ public:
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_null() || !m->has_multiplayer_peer()) return 1;
         return (int)m->get_peers().size() + 1;   // + uno mismo
+    }
+    // ¿Hay una sesión de red activa? El host siempre; el cliente al conectar.
+    bool is_connected_net() { return mode == 1 || (mode == 2 && net_connected); }
+    // "ip:puerto" del servidor al que se conectó el cliente ("" si es host/single).
+    String get_server_address() const { return target_address; }
+    // Estado legible: "Server" / "Connecting" / "Connected" / "Disconnected".
+    String get_connection_state() {
+        if (mode == 1) return "Server";
+        if (mode == 2) return net_connected ? "Connected" : "Connecting";
+        return "Disconnected";
     }
 
     NetworkService() {}
