@@ -2,8 +2,8 @@
 extends EditorPlugin
 
 const VERSION_URL    := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/Version"
-const ZIP_URL        := "https://github.com/Pimpoli/GodotLuau/raw/main/GodotLuau.zip"
-const HASH_URL       := "https://github.com/Pimpoli/GodotLuau/raw/main/GodotLuau.zip.sha256"
+const ZIP_URL        := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/GodotLuau.zip"
+const HASH_URL       := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/GodotLuau.zip.sha256"
 const VERSION_FILE   := "res://Version"
 const GITHUB_URL     := "https://github.com/Pimpoli/GodotLuau"
 const DATA_FILE      := "user://godotluau_usage.json"
@@ -2036,6 +2036,9 @@ func _start_download() -> void:
 	_downloading = true
 	if not (_ver_label and is_instance_valid(_ver_label) and _ver_label.text.begins_with("↺")):
 		_set_ver_status(_t("bar_downloading") % _remote_version, "", Color(0.4, 0.8, 1.0))
+	# Borra cualquier temporal a medias de un intento anterior: si quedó abierto
+	# o bloqueado, HTTPRequest fallaría al abrir el archivo de descarga.
+	DirAccess.remove_absolute(OS.get_user_data_dir() + "/godotluau_update.zip")
 	_http_download = HTTPRequest.new()
 	_http_download.use_threads   = true
 	_http_download.download_file = OS.get_user_data_dir() + "/godotluau_update.zip"
@@ -2052,7 +2055,11 @@ func _on_download_completed(result: int, code: int, _hdrs: PackedStringArray, _b
 		_http_download.queue_free(); _http_download = null
 	_downloading = false
 	if result != HTTPRequest.RESULT_SUCCESS or (code != 200 and code != 0):
-		_set_ver_status(_t("bar_dl_failed") % code, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
+		# 'code' es el HTTP (0 cuando ni hubo respuesta); 'result' es el motivo real
+		# de transporte (2=no conecta, 3=no resuelve DNS, 10/11=no pudo escribir el
+		# archivo, etc.) — se muestra para poder diagnosticar.
+		var msg: String = (_t("bar_dl_failed") % code) + (" [result=%d]" % result)
+		_set_ver_status(msg, _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
 		return
 	_start_hash_verify()
