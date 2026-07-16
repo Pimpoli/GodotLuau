@@ -1787,6 +1787,39 @@ static int godot_object_index(lua_State* L) {
                 lua_pushboolean(pL, s && s->join_server(String(luaL_checkstring(pL, 2)))); return 1;
             }, "JoinServer", 1); return 1;
         }
+        // ── Coordinador de mundos (matchmaking estilo Roblox) ──
+        if (strcmp(key, "StartHost") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                int port = (int)luaL_optnumber(pL, 2, 25565);
+                int maxp = (int)luaL_optnumber(pL, 3, 8);
+                lua_pushboolean(pL, s && s->start_coordinator(port, maxp)); return 1;
+            }, "StartHost", 1); return 1;
+        }
+        if (strcmp(key, "JoinMatchmaking") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                const char* ip = luaL_checkstring(pL, 2);
+                int port = (int)luaL_optnumber(pL, 3, 25565);
+                lua_pushboolean(pL, s && s->join_matchmaking(String(ip), port)); return 1;
+            }, "JoinMatchmaking", 1); return 1;
+        }
+        if (strcmp(key, "GenerateHostKey") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushstring(pL, s ? s->read_or_make_host_key().utf8().get_data() : ""); return 1;
+            }, "GenerateHostKey", 1); return 1;
+        }
+        if (strcmp(key, "GetHostKey") == 0) {
+            lua_pushlightuserdata(L, (void*)nsvc);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                NetworkService* s = (NetworkService*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushstring(pL, s ? s->get_host_key().utf8().get_data() : ""); return 1;
+            }, "GetHostKey", 1); return 1;
+        }
         if (strcmp(key, "PlayerConnected") == 0 || strcmp(key, "PlayerDisconnected") == 0 ||
             strcmp(key, "Connected") == 0       || strcmp(key, "ConnectionFailed") == 0) {
             int which = (strcmp(key,"PlayerConnected")==0) ? 0 :

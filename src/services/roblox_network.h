@@ -85,8 +85,10 @@
 #include <map>
 
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/json.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -153,8 +155,9 @@ static inline bool gl_mp_autostart_requested() {
     PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
     for (int i = 0; i < a.size(); i++) {
         const String arg = a[i];
-        // Juegos EXPORTADOS que se unen/hospedan por IP (Direct Connect).
-        if (arg == "--glindex" || arg == "--glconnect" || arg == "--glserver") return true;
+        // Juegos EXPORTADOS que se unen/hospedan por IP o por coordinador.
+        if (arg == "--glindex" || arg == "--glconnect" || arg == "--glserver" ||
+            arg == "--glhost"  || arg == "--glmatch"   || arg == "--glinstance") return true;
     }
     int c; String d;
     if (gl_mp_session_read(c, d)) return true;
@@ -301,6 +304,21 @@ class NetworkService : public Node {
     String target_address = "";   // "ip:puerto" del servidor al que se conectó (para GetServerAddress)
     bool   is_dedicated = false;   // servidor dedicado (sin jugador local, estilo minecraft_server.jar)
     double retry_timer = 0.0;
+
+    // ── Coordinador / matchmaker (mundos/instancias estilo Roblox) ──────
+    bool   is_coordinator = false;   // esta instancia REPARTE jugadores a mundos
+    bool   is_instance    = false;   // esta instancia ES un mundo lanzado por el coordinador
+    int    coord_port     = 0;       // puerto del coordinador
+    int    coord_max      = 8;       // máximo de jugadores por mundo (como Roblox)
+    String host_secret    = "";      // llave del dueño (solo él puede hostear)
+    double coord_tick     = 0.0;     // temporizador de mantenimiento del coordinador
+    double inst_hb_timer  = 0.0;     // temporizador de latido de la instancia
+    String match_ip       = "";      // cliente: IP del coordinador para auto-join
+    int    match_port     = 0;
+    String reconnect_ip   = "";      // cliente: reconectar a la instancia asignada
+    int    reconnect_port = 0;
+    double reconnect_timer = 0.0;
+    int    reconnect_try   = 0;
 
     // Réplica de jugadores
     bool   is_2d = false;
@@ -519,6 +537,7 @@ class NetworkService : public Node {
         rpc_config("_re_deliver_client",  r);
         rpc_config("_ure_deliver_server", u);
         rpc_config("_ure_deliver_client", u);
+        rpc_config("_gl_assign",          r);   // coordinador → cliente: ve a este mundo
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -786,6 +805,11 @@ protected:
         ClassDB::bind_method(D_METHOD("add_server", "name", "ip", "port"),          &NetworkService::add_server);
         ClassDB::bind_method(D_METHOD("remove_server", "name"),                     &NetworkService::remove_server);
         ClassDB::bind_method(D_METHOD("join_server", "name"),                       &NetworkService::join_server);
+        ClassDB::bind_method(D_METHOD("_gl_assign", "iport"),                       &NetworkService::_gl_assign);
+        ClassDB::bind_method(D_METHOD("start_coordinator", "port", "max"),          &NetworkService::start_coordinator);
+        ClassDB::bind_method(D_METHOD("join_matchmaking", "ip", "port"),            &NetworkService::join_matchmaking);
+        ClassDB::bind_method(D_METHOD("get_host_key"),                              &NetworkService::get_host_key);
+        ClassDB::bind_method(D_METHOD("read_or_make_host_key"),                     &NetworkService::read_or_make_host_key);
         // Fase 2: estado de red + RemoteEvent por red + roster de jugadores
         ClassDB::bind_method(D_METHOD("is_server"),                                 &NetworkService::is_server);
         ClassDB::bind_method(D_METHOD("is_client"),                                 &NetworkService::is_client);
@@ -808,6 +832,14 @@ protected:
 public:
     // ── Callbacks de señales de red ──────────────────────────────────────
     void _on_peer_connected(int id) {
+        // COORDINADOR: no es un mundo; reparte al jugador a una instancia con
+        // espacio (o arranca una nueva) y lo redirige. No dispara PlayerAdded.
+        if (is_coordinator) {
+            int iport = _coord_pick_or_spawn();
+            rpc_id(id, "_gl_assign", iport);
+            gl_mp_log(String("coordinador: peer ") + String::num_int64(id) + " -> mundo :" + String::num_int64(iport));
+            return;
+        }
         gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")");
         // NO se dispara Players.PlayerAdded aquí: un peer SIN personaje (p.ej. la
         // ventana SERVIDOR sin jugador) NO es un Player. PlayerAdded se dispara
@@ -1035,6 +1067,27 @@ public:
     }
 
     void _process(double dt) override {
+        // 0-. Instancia (mundo lanzado por el coordinador): publica su latido
+        //     (puerto + nº de jugadores) para que el coordinador sepa su estado.
+        if (is_instance) {
+            inst_hb_timer += dt;
+            if (inst_hb_timer >= 1.0) { inst_hb_timer = 0.0; _inst_write_heartbeat(); }
+        }
+        // 0-. Cliente: reconectar al MUNDO que asignó el coordinador (reintenta,
+        //     el mundo recién arrancado puede tardar en abrir su puerto).
+        if (reconnect_try > 0) {
+            if (net_connected) { reconnect_try = 0; }
+            else {
+                reconnect_timer += dt;
+                if (reconnect_timer >= 0.6) {
+                    reconnect_timer = 0.0;
+                    reconnect_try--;
+                    connect_server(reconnect_ip, reconnect_port);
+                    if (reconnect_try == 0 && !net_connected)
+                        UtilityFunctions::push_warning("[GodotLuau] No se pudo entrar al mundo asignado por el coordinador.");
+                }
+            }
+        }
         // 0a. La ventana del servidor arranca en camara libre (reintenta hasta
         //     que exista una camara que reemplazar)
         if (boot_server_view && _set_view(true)) boot_server_view = false;
@@ -1118,14 +1171,26 @@ public:
         int idx = 0, cnt = 1;
         String direct_connect = "";   // --glconnect <ip>:<port>  (unirse por IP)
         int    dedicated_port = 0;    // --glserver  <port>       (hospedar por IP)
+        int    coordinator_port = 0;  // --glhost   <port>        (COORDINADOR de mundos)
+        String matchmaking = "";      // --glmatch  <ip>:<port>   (cliente por matchmaking)
+        bool   instance_flag = false; // --glinstance             (este server es un MUNDO del coordinador)
+        String secret = "";           // --glsecret <key>         (llave del dueño)
+        int    maxper = 8;            // --glmax    <n>           (máx jugadores por mundo)
         for (int i = 0; i < args.size(); i++) {
             String a = args[i];
-            if      (a == "--glindex"   && i + 1 < args.size()) idx = String(args[i + 1]).to_int();
-            else if (a == "--glcount"   && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
-            else if (a == "--gldevice"  && i + 1 < args.size()) device = args[i + 1];
-            else if (a == "--glconnect" && i + 1 < args.size()) direct_connect = args[i + 1];
-            else if (a == "--glserver"  && i + 1 < args.size()) dedicated_port = String(args[i + 1]).to_int();
+            if      (a == "--glindex"    && i + 1 < args.size()) idx = String(args[i + 1]).to_int();
+            else if (a == "--glcount"    && i + 1 < args.size()) cnt = String(args[i + 1]).to_int();
+            else if (a == "--gldevice"   && i + 1 < args.size()) device = args[i + 1];
+            else if (a == "--glconnect"  && i + 1 < args.size()) direct_connect = args[i + 1];
+            else if (a == "--glserver"   && i + 1 < args.size()) dedicated_port = String(args[i + 1]).to_int();
+            else if (a == "--glhost"     && i + 1 < args.size()) coordinator_port = String(args[i + 1]).to_int();
+            else if (a == "--glmatch"    && i + 1 < args.size()) matchmaking = args[i + 1];
+            else if (a == "--glinstance") instance_flag = true;
+            else if (a == "--glsecret"   && i + 1 < args.size()) secret = args[i + 1];
+            else if (a == "--glmax"      && i + 1 < args.size()) maxper = String(args[i + 1]).to_int();
         }
+        if (!secret.is_empty()) host_secret = secret;
+        if (maxper > 0) coord_max = maxper;
         String role_src = "user args";
         if (idx == 0) {
             // Ventana nativa: la sesion res:// dice si hay prueba multijugador
@@ -1145,6 +1210,44 @@ public:
         gl_mp_log(String("rol: idx=") + String::num_int64(idx) + " count=" + String::num_int64(cnt)
                   + " device=" + device + " (fuente: " + role_src + ")");
         player_index = idx;
+
+        // ── COORDINADOR de mundos (lo corre el DUEÑO) ──────────────────────
+        //   --glhost <port> [--glmax N]  → reparte jugadores a mundos, respeta N
+        if (coordinator_port > 0) {
+            start_coordinator(coordinator_port, coord_max);
+            view_watch = false; set_process(true); _apply_device();
+            return;
+        }
+        // ── Cliente por MATCHMAKING (auto-join a un mundo con gente) ────────
+        //   --glmatch <ip>:<port>  → se conecta al coordinador y este lo redirige
+        if (!matchmaking.is_empty()) {
+            String host = matchmaking; int cport = 25565;
+            int colon = matchmaking.rfind(":");
+            if (colon > 0) { host = matchmaking.substr(0, colon); cport = matchmaking.substr(colon + 1).to_int(); }
+            join_matchmaking(host, cport);
+            gl_mp_log(String("Matchmaking: pidiendo mundo al coordinador ") + host + String(":") + String::num_int64(cport));
+            view_watch = false; set_process(true); _apply_device();
+            return;
+        }
+        // ── Auto-join BAKED (juego exportado) ──────────────────────────────
+        // El dueño pone res://gl_match.cfg = "ip:puerto" (su coordinador) ANTES de
+        // exportar; el jugador al abrir el juego se une solo a un mundo con gente.
+        // Solo en build exportado (en el editor se hace el test local con glindex).
+        if (!OS::get_singleton()->has_feature("editor")) {
+            Ref<FileAccess> mf = FileAccess::open("res://gl_match.cfg", FileAccess::READ);
+            if (mf.is_valid()) {
+                String line = mf->get_line().strip_edges(); mf->close();
+                if (!line.is_empty()) {
+                    String host = line; int cport = 25565;
+                    int colon = line.rfind(":");
+                    if (colon > 0) { host = line.substr(0, colon); cport = line.substr(colon + 1).to_int(); }
+                    join_matchmaking(host, cport);
+                    UtilityFunctions::print(String("[GodotLuau] Auto-join al coordinador ") + host + String(":") + String::num_int64(cport));
+                    view_watch = false; set_process(true); _apply_device();
+                    return;
+                }
+            }
+        }
 
         // ── Direct Connect / servidor por argumento (juegos exportados) ─────
         // Permite unir/hospedar por IP entre máquinas distintas sin escribir
@@ -1170,8 +1273,13 @@ public:
                 player_index = 1;
                 _remove_local_player();     // servidor puro: sin personaje
                 boot_server_view = true;    // cámara libre (ignorada en headless)
-                UtilityFunctions::print(String("[GodotLuau] SERVIDOR DEDICADO escuchando en el puerto ")
-                    + String::num_int64(dedicated_port) + " (sin jugador local).");
+                if (instance_flag) {        // es un MUNDO del coordinador → publica latido
+                    is_instance = true;
+                    coord_port  = dedicated_port;   // su propio puerto (para el latido)
+                    _inst_write_heartbeat();
+                }
+                UtilityFunctions::print(String("[GodotLuau] ") + (instance_flag ? String("MUNDO") : String("SERVIDOR DEDICADO"))
+                    + " escuchando en el puerto " + String::num_int64(dedicated_port) + " (sin jugador local).");
             } else {
                 UtilityFunctions::push_warning(String("[GodotLuau] No se pudo abrir el servidor dedicado en el puerto ")
                     + String::num_int64(dedicated_port));
@@ -1325,6 +1433,121 @@ public:
                 return connect_server(String(d.get("ip", "127.0.0.1")), (int)d.get("port", 25565));
         }
         return false;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  Coordinador / matchmaker (mundos independientes estilo Roblox)
+    //  El dueño corre el COORDINADOR; al entrar un jugador, lo manda a un
+    //  MUNDO (instancia = proceso aparte en otro puerto) con espacio, o
+    //  arranca uno nuevo si todos están llenos (respetando el máximo).
+    // ════════════════════════════════════════════════════════════════
+    static String _host_key_path() { return "user://host.key"; }
+    String _gen_key() {
+        static const char* al = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        uint64_t s = (uint64_t)Time::get_singleton()->get_ticks_usec() ^ 0x9E3779B97F4A7C15ULL;
+        String k;
+        for (int i = 0; i < 24; i++) { s = s * 6364136223846793005ULL + 1442695040888963407ULL; k += String::chr(al[(s >> 33) % 31]); }
+        return k;
+    }
+    // Devuelve la llave del dueño; la crea la primera vez que él hostea.
+    String read_or_make_host_key() {
+        String k = get_host_key();
+        if (!k.is_empty()) return k;
+        k = _gen_key();
+        Ref<FileAccess> w = FileAccess::open(_host_key_path(), FileAccess::WRITE);
+        if (w.is_valid()) { w->store_string(k); w->close(); }
+        return k;
+    }
+    String get_host_key() {
+        Ref<FileAccess> f = FileAccess::open(_host_key_path(), FileAccess::READ);
+        if (f.is_null()) return "";
+        String k = f->get_as_text().strip_edges(); f->close(); return k;
+    }
+
+    struct InstInfo { int port; int players; };
+    std::vector<InstInfo> _coord_read_instances() {
+        std::vector<InstInfo> out;
+        Ref<DirAccess> d = DirAccess::open("user://");
+        if (d.is_null()) return out;
+        double now = Time::get_singleton()->get_unix_time_from_system();
+        PackedStringArray files = d->get_files();
+        for (int i = 0; i < files.size(); i++) {
+            String fn = files[i];
+            if (!fn.begins_with("gl_inst_") || !fn.ends_with(".json")) continue;
+            Ref<FileAccess> f = FileAccess::open(String("user://") + fn, FileAccess::READ);
+            if (f.is_null()) continue;
+            Variant v = JSON::parse_string(f->get_as_text()); f->close();
+            if (v.get_type() != Variant::DICTIONARY) continue;
+            Dictionary di = v;
+            if (now - (double)di.get("t", 0) > 6.0) { d->remove(fn); continue; }  // latido viejo → mundo muerto
+            InstInfo ii; ii.port = (int)di.get("port", 0); ii.players = (int)di.get("players", 0);
+            if (ii.port > 0) out.push_back(ii);
+        }
+        return out;
+    }
+    int _spawn_instance(int iport) {
+        String exe = OS::get_singleton()->get_executable_path();
+        PackedStringArray a;
+        if (OS::get_singleton()->has_feature("editor")) {
+            a.push_back("--path");
+            a.push_back(ProjectSettings::get_singleton()->globalize_path("res://"));
+        }
+        a.push_back("--headless");
+        a.push_back("--");
+        a.push_back("--glserver");   a.push_back(String::num_int64(iport));
+        a.push_back("--glinstance");
+        a.push_back("--glmax");      a.push_back(String::num_int64(coord_max));
+        if (!host_secret.is_empty()) { a.push_back("--glsecret"); a.push_back(host_secret); }
+        int pid = OS::get_singleton()->create_process(exe, a);
+        UtilityFunctions::print(String("[GodotLuau] Coordinador: nuevo MUNDO en el puerto ")
+            + String::num_int64(iport) + " (pid " + String::num_int64(pid) + ")");
+        return iport;
+    }
+    // Elige un mundo con espacio; si no hay, lanza uno nuevo. Devuelve su puerto.
+    int _coord_pick_or_spawn() {
+        std::vector<InstInfo> insts = _coord_read_instances();
+        for (auto& ii : insts) if (ii.players < coord_max) return ii.port;   // mundo con hueco
+        int iport = coord_port + 1;                                          // puerto libre para uno nuevo
+        bool used = true;
+        while (used) { used = false; for (auto& ii : insts) if (ii.port == iport) { used = true; iport++; break; } }
+        return _spawn_instance(iport);
+    }
+
+    // Arranca el COORDINADOR (lo corre el dueño). Requiere la llave del dueño.
+    bool start_coordinator(int port, int max_per_world) {
+        host_secret = read_or_make_host_key();
+        if (host_secret.is_empty()) { UtilityFunctions::push_warning("[GodotLuau] No se pudo crear/leer la host.key; el coordinador no arranca."); return false; }
+        coord_port = port;
+        coord_max = max_per_world > 0 ? max_per_world : 8;
+        if (!start_server(port, 512)) return false;   // servidor liviano solo para repartir
+        is_coordinator = true;
+        _remove_local_player();       // el coordinador no juega
+        UtilityFunctions::print(String("[GodotLuau] COORDINADOR activo en el puerto ") + String::num_int64(port)
+            + " (máx " + String::num_int64(coord_max) + " por mundo). host.key = " + host_secret);
+        return true;
+    }
+    // Cliente: unirse por matchmaking (el coordinador te manda a un mundo).
+    bool join_matchmaking(const String& ip, int port) {
+        match_ip = ip; match_port = port;
+        return connect_server(ip, port);
+    }
+    // RPC: el coordinador (peer 1) le dice al cliente a qué mundo ir.
+    void _gl_assign(int iport) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el coordinador
+        reconnect_ip = match_ip.is_empty() ? gl_mp_host() : match_ip;
+        reconnect_port = iport;
+        reconnect_try = 40; reconnect_timer = 0.0;   // el mundo nuevo puede tardar en abrir
+        gl_mp_log(String("el coordinador me asignó el mundo :") + String::num_int64(iport));
+        disconnect_net();   // soltar el coordinador; el _process reconecta al mundo
+    }
+    // Instancia (mundo): publica su latido para que el coordinador lo vea.
+    void _inst_write_heartbeat() {
+        Ref<MultiplayerAPI> m = _mp();
+        int players = (m.is_valid() && m->has_multiplayer_peer()) ? (int)m->get_peers().size() : 0;
+        Dictionary d; d["port"] = coord_port; d["players"] = players;
+        d["t"] = Time::get_singleton()->get_unix_time_from_system();
+        Ref<FileAccess> f = FileAccess::open(String("user://gl_inst_") + String::num_int64(coord_port) + ".json", FileAccess::WRITE);
+        if (f.is_valid()) { f->store_string(JSON::stringify(d)); f->close(); }
     }
 
     // ¿Hay una sesión de red activa? El host siempre; el cliente al conectar.

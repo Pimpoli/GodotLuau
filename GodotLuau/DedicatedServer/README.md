@@ -1,8 +1,47 @@
-# Servidor dedicado de GodotLuau (estilo Minecraft)
+# Servidores de GodotLuau (dedicado + mundos automáticos estilo Roblox)
 
 Un servidor dedicado corre TU juego como servidor puro: ejecuta tus
 ServerScripts y acepta jugadores, **sin jugador local** (igual que
 `minecraft_server.jar`). Se aloja donde tú quieras: tu PC, otra PC, o un VPS.
+
+## ⭐ Mundos automáticos con matchmaking (lo más fácil, estilo Roblox)
+
+En vez de un solo mundo, corre un **COORDINADOR**: cuando un jugador entra, lo
+manda solo a un **mundo con espacio**, y si todos están llenos **crea un mundo
+nuevo** (respetando el máximo por mundo, como Roblox). Cada mundo es un proceso
+aparte → totalmente independiente.
+
+**El dueño lo enciende (en su PC o VPS) y lo deja prendido:**
+```
+MiJuego.exe --headless -- --glhost 25565 --glmax 8
+```
+- `--glhost 25565` = coordinador en el puerto 25565.
+- `--glmax 8`      = máximo 8 jugadores por mundo.
+- La **primera vez genera `host.key`** (una llave secreta) y la imprime. Esa
+  llave es lo que hace que **solo tú puedas prender servidores** — guárdala; los
+  jugadores no la tienen.
+
+**Los jugadores entran solos.** Antes de exportar tu juego, crea el archivo
+`res://gl_match.cfg` con una sola línea = la dirección de tu coordinador:
+```
+TU_IP:25565
+```
+Al abrir el juego exportado, el jugador se conecta solo al coordinador y este lo
+mete en un mundo con gente. Sin escribir IPs, como Roblox. (Para probar sin
+exportar: `MiJuego.exe --glmatch TU_IP:25565`.)
+
+### ¿Por qué solo el dueño puede hostear? (seguridad)
+- Los clientes se conectan **solo** a la dirección que tú horneaste en
+  `gl_match.cfg` (tu coordinador). Nunca a un servidor cualquiera → nadie puede
+  poner un "servidor modificado" que robe cuentas/contraseñas, porque los
+  jugadores jamás se conectan ahí.
+- Prender un coordinador/mundo requiere la `host.key`, que vive solo en tu
+  máquina servidora (no va en el build del cliente). Sin ella, `--glhost` no
+  arranca. Si quieres, puedes pasarla a otra PC de confianza con `--glsecret`.
+
+---
+
+## Un solo mundo (servidor dedicado simple)
 
 ## Cómo hostear
 

@@ -1998,10 +1998,29 @@ func _version_to_num(v: String) -> int:
 	# de numeros se comparen bien: "v1.12" -> [1,12,0,0] y "v1.11.6.1" ->
 	# [1,11,6,1]. (El bug clasico: 1.12 con 2 segmentos daba 1012 y perdia
 	# contra 1.11.6.1 con 4 segmentos = 1011006001 -> "al dia" eterno.)
-	var parts := v.trim_prefix("v").split(".")
+	#
+	# Sufijo de TEXTO tras un "-" (ej. "v1.14.4 - Rework"): cuenta como una
+	# sub-version MAYOR que la misma sin sufijo, SIN subir el numero (como poner
+	# .1 despues del .4). Si el sufijo trae un numero al final se usa ese (para
+	# "- Rework 2" > "- Rework"); si no, 1 (solo por existir).
+	v = v.strip_edges().trim_prefix("v").strip_edges()
+	var suffix_val := 0
+	var dash := v.find("-")
+	if dash >= 0:
+		var suffix := v.substr(dash + 1).strip_edges()
+		v = v.substr(0, dash).strip_edges()
+		var num := ""
+		for i in range(suffix.length() - 1, -1, -1):
+			if suffix[i] >= "0" and suffix[i] <= "9":
+				num = suffix[i] + num
+			elif num != "":
+				break
+		suffix_val = int(num) if num != "" else 1
+	var parts := v.split(".")
 	var n := 0
 	for i in range(4):
 		n = n * 1000 + (parts[i].to_int() if i < parts.size() else 0)
+	n = n * 1000 + suffix_val
 	return n
 
 # ── Download & reinstall ──────────────────────────────────────────────────────
