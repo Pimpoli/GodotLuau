@@ -304,6 +304,7 @@ class NetworkService : public Node {
     bool   is_2d = false;
     double bcast_timer = 0.0;
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
+    std::map<int, uint64_t> peer_player_ids;   // peerId remoto -> ObjectID del objeto Player
 
     // Ping (medido cliente→servidor→cliente, en milisegundos)
     double ping_ms = -1.0;
@@ -345,6 +346,37 @@ class NetworkService : public Node {
         Node* root = (Node*)get_tree()->get_root();
         Node* w = _find_by_class(root, is_2d ? "RobloxWorkspace2D" : "RobloxWorkspace");
         return w ? w : root;
+    }
+
+    // ── Objetos Player (Player ≠ Character) ──────────────────────────────
+    Players* _players_service() {
+        if (!is_inside_tree()) return nullptr;
+        return Object::cast_to<Players>(_find_by_class((Node*)get_tree()->get_root(), "Players"));
+    }
+    PlayerObject* _local_player_obj() {
+        Players* ps = _players_service();
+        return ps ? ps->ensure_local_player_obj() : nullptr;
+    }
+    PlayerObject* _peer_player(int peer) {
+        auto it = peer_player_ids.find(peer);
+        if (it == peer_player_ids.end()) return nullptr;
+        return Object::cast_to<PlayerObject>(ObjectDB::get_instance(it->second));
+    }
+    // Crea (si falta) el objeto Player de un peer remoto, hijo del servicio Players.
+    PlayerObject* _ensure_peer_player(int peer) {
+        PlayerObject* po = _peer_player(peer);
+        if (po) return po;
+        Players* ps = _players_service();
+        if (!ps) return nullptr;
+        po = memnew(PlayerObject);
+        po->peer_id = peer;
+        po->user_id = (int64_t)peer;   // UserId = id de peer (único por jugador)
+        String pname = String("Player_") + String::num_int64(peer);
+        po->set_name(pname);
+        po->display_name = pname;
+        ps->add_child(po);
+        peer_player_ids[peer] = (uint64_t)po->get_instance_id();
+        return po;
     }
 
     void _name_local_player(int display_num) {
@@ -582,6 +614,18 @@ class NetworkService : public Node {
             if (Node3D* v = Object::cast_to<Node3D>(pup->get_node_or_null("Visual")))
                 P.vis_base_y = v->get_position().y;
             puppets[key] = P;
+            // El muñeco es el .Character del objeto Player de ese peer.
+            // Primer personaje → PlayerAdded y LUEGO CharacterAdded (orden Roblox).
+            if (PlayerObject* po = _ensure_peer_player(key)) {
+                String pn = String("Player") + String::num_int64(idx);
+                po->set_name(pn); po->display_name = pn;
+                po->set_character_silent(pup);
+                if (!po->added_fired) {
+                    po->added_fired = true;
+                    if (Players* ps = _players_service()) ps->fire_player_added(po);
+                }
+                po->fire_character_added();
+            }
             gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo (pos " + String(pos) + ")");
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
@@ -600,6 +644,16 @@ class NetworkService : public Node {
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
             Puppet P; P.node = pup; P.tpos2d = pos; P.tyaw = rot; P.has_target = true;
             puppets[key] = P;
+            if (PlayerObject* po = _ensure_peer_player(key)) {
+                String pn = String("Player") + String::num_int64(idx);
+                po->set_name(pn); po->display_name = pn;
+                po->set_character_silent(pup);
+                if (!po->added_fired) {
+                    po->added_fired = true;
+                    if (Players* ps = _players_service()) ps->fire_player_added(po);
+                }
+                po->fire_character_added();
+            }
         } else {
             it->second.tpos2d = pos; it->second.tyaw = rot; it->second.has_target = true;
         }
@@ -745,10 +799,31 @@ protected:
 
 public:
     // ── Callbacks de señales de red ──────────────────────────────────────
-    void _on_peer_connected(int id)    { gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")"); _fire(pc_cbs, true, id); }
+    void _on_peer_connected(int id) {
+        gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")");
+        // NO se dispara Players.PlayerAdded aquí: un peer SIN personaje (p.ej. la
+        // ventana SERVIDOR sin jugador) NO es un Player. PlayerAdded se dispara
+        // cuando aparece su personaje (muñeco), en _update_puppet*. Aquí solo la
+        // señal propia net:PlayerConnected(peerId).
+        _fire(pc_cbs, true, id);
+    }
+    // Dispara CharacterRemoving + Players.PlayerRemoving y libera el objeto Player
+    // de un peer. Debe correr en TODAS las instancias que lo vieron entrar (server
+    // por _on_peer_disconnected, clientes por _recv_remove relayado), si no
+    // PlayerRemoving quedaría asimétrico con PlayerAdded y el Player se fugaría.
+    void _remove_peer_player(int id) {
+        PlayerObject* po = _peer_player(id);
+        if (po) {
+            po->fire_character_removing();
+            if (Players* ps = _players_service()) ps->fire_player_removing(po);
+            po->queue_free();
+        }
+        peer_player_ids.erase(id);
+    }
     void _on_peer_disconnected(int id) {
         _remove_puppet(id);
         if (is_server()) rpc("_recv_remove", id);   // que los clientes también lo quiten
+        _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
     void _on_connected_ok()            { net_connected = true; gl_mp_log("conectado al host! sesion compartida activa"); _fire(conn_cbs, false, 0); }
@@ -796,23 +871,28 @@ public:
     // v1 pragmático: el "jugador" es el nodo-personaje local o el muñeco
     // (Puppet) del peer remoto. Un objeto Player propio + PlayerAdded por red
     // llegan en la siguiente tanda.
+    // Devuelven OBJETOS Player (Player ≠ Character): OnServerEvent y
+    // Players:GetPlayers reciben Players reales con UserId/Name/.Character.
     Node* player_node_for_peer(int peer_id) {
-        if (peer_id == get_peer_id()) return _local_player();
-        auto it = puppets.find(peer_id);
-        if (it != puppets.end() && _valid(it->second.node)) return it->second.node;
-        return nullptr;
+        if (peer_id == get_peer_id()) return _local_player_obj();
+        return _peer_player(peer_id);
     }
     int peer_for_player_node(Node* player) {
         if (!player) return 0;
-        if (player == _local_player()) return get_peer_id();
-        for (auto& kv : puppets) if (kv.second.node == player) return kv.first;
+        if (player == (Node*)_local_player_obj()) return get_peer_id();
+        for (auto& kv : peer_player_ids)
+            if ((Node*)Object::cast_to<PlayerObject>(ObjectDB::get_instance(kv.second)) == player) return kv.first;
         return 0;
     }
     TypedArray<Node> get_players_roster() {
         TypedArray<Node> r;
-        Node* lp = _local_player();
-        if (lp) r.push_back(lp);
-        for (auto& kv : puppets) if (_valid(kv.second.node)) r.push_back(kv.second.node);
+        // El jugador local solo cuenta si TIENE personaje: la ventana "servidor"
+        // (host sin personaje, cámara libre) no debe aparecer como jugador.
+        if (PlayerObject* lp = _local_player_obj())
+            if (lp->get_character()) r.push_back(lp);
+        for (auto& kv : peer_player_ids)
+            if (PlayerObject* po = Object::cast_to<PlayerObject>(ObjectDB::get_instance(kv.second)))
+                if (po->get_character()) r.push_back(po);   // solo peers con personaje (no el servidor)
         return r;
     }
 
@@ -843,7 +923,7 @@ public:
         if (who == myid) return;
         _update_puppet2d(who, idx, pos, rot);
     }
-    void _recv_remove(int who) { _remove_puppet(who); }
+    void _recv_remove(int who) { _remove_puppet(who); _remove_peer_player(who); }
 
     // ── CHAT EN RED (como Roblox: todos ven los mensajes de todos) ────────
     // El RobloxChat local llama gl_send_chat al enviar; el servidor lo muestra

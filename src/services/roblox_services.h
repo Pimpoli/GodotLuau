@@ -119,6 +119,114 @@ public:
 };
 
 // ════════════════════════════════════════════════════════════════════
+//  PlayerObject — el objeto "Player" de Roblox (Player ≠ Character).
+//  Vive bajo el servicio Players (no en Workspace). Tiene UserId/DisplayName
+//  y su .Character apunta al personaje (RobloxPlayer local) o al muñeco
+//  (AnimatableBody3D) del peer remoto. Señales: CharacterAdded /
+//  CharacterRemoving / CharacterAppearanceLoaded.
+// ════════════════════════════════════════════════════════════════════
+class PlayerObject : public Node {
+    GDCLASS(PlayerObject, Node);
+public:
+    int64_t  user_id = 0;
+    String   display_name;
+    uint64_t character_id = 0;    // ObjectID del personaje/muñeco (sin puntero colgante)
+    int      team_color = 0;
+    int64_t  account_age = 0;
+    bool     is_local = false;
+    bool     added_fired = false; // PlayerAdded ya disparado (una sola vez por Player)
+    int      camera_mode = 0;     // Enum.CameraMode (0 Classic, 1 LockFirstPerson)
+    int      peer_id = 0;         // peer ENet (0 = local/single)
+
+    struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
+    std::vector<LuaCallback> char_added_cbs;
+    std::vector<LuaCallback> char_removing_cbs;
+    std::vector<LuaCallback> char_appearance_cbs;
+    struct LuaWait { lua_State* th; lua_State* main_L; };
+    std::vector<LuaWait> char_added_waits;   // CharacterAdded:Wait()
+    void add_char_added_wait(lua_State* th, lua_State* mL) { char_added_waits.push_back({ th, mL }); }
+
+    void add_char_added_cb(lua_State* L, int ref)      { char_added_cbs.push_back({ L, ref, true }); }
+    void add_char_removing_cb(lua_State* L, int ref)   { char_removing_cbs.push_back({ L, ref, true }); }
+    void add_char_appearance_cb(lua_State* L, int ref) { char_appearance_cbs.push_back({ L, ref, true }); }
+    void _gl_disconnect(int ref) {
+        for (auto& c : char_added_cbs)      if (c.ref == ref) c.active = false;
+        for (auto& c : char_removing_cbs)   if (c.ref == ref) c.active = false;
+        for (auto& c : char_appearance_cbs) if (c.ref == ref) c.active = false;
+    }
+
+    Node* get_character() const {
+        return character_id ? Object::cast_to<Node>(ObjectDB::get_instance(character_id)) : nullptr;
+    }
+    void _fire_char(std::vector<LuaCallback>& list, Node* character) {
+        std::vector<LuaCallback> snap = list;
+        for (auto& cb : snap) {
+            if (!cb.active || !gl_state_alive(cb.main_L)) continue;
+            lua_State* th = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, th, 1);
+                if (character) {
+                    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
+                    gow_set(w, character);
+                    luaL_getmetatable(th, "GodotObject");
+                    lua_setmetatable(th, -2);
+                    gl_check_resume(th, lua_resume(th, nullptr, 1));
+                } else {
+                    gl_check_resume(th, lua_resume(th, nullptr, 0));
+                }
+            } else lua_pop(cb.main_L, 1);
+            lua_pop(cb.main_L, 1);
+        }
+    }
+    // Asigna el personaje SIN disparar señales (para poder disparar PlayerAdded
+    // ANTES que CharacterAdded, como garantiza Roblox).
+    void set_character_silent(Node* c) {
+        character_id = c ? (uint64_t)c->get_instance_id() : 0;
+    }
+    // Dispara CharacterAdded + CharacterAppearanceLoaded del personaje actual.
+    void fire_character_added() {
+        Node* c = get_character();
+        if (!c) return;
+        _fire_char(char_added_cbs, c);
+        _fire_char(char_appearance_cbs, c);
+        // CharacterAdded:Wait() → reanudar (diferido) con el personaje. Se pasa por
+        // ObjectID (ruta use_args), NO por puntero crudo: entre encolar y drenar el
+        // personaje podría liberarse (peer que se va) → use-after-free.
+        if (!char_added_waits.empty()) {
+            Array a;
+            Dictionary d;
+            d["__glnet"] = String("inst");
+            d["p"] = c->is_inside_tree() ? String(c->get_path()) : String();
+            a.push_back(d);
+            for (auto& w : char_added_waits) {
+                if (!gl_state_alive(w.main_L)) continue;
+                LuauPendingResume pr;
+                pr.thread = w.th; pr.main_L = w.main_L; pr.delta = 0; pr.node_arg = nullptr;
+                pr.args = a; pr.ctx_id = (uint64_t)get_instance_id(); pr.use_args = true;
+                get_pending_resumes().push_back(pr);
+            }
+            char_added_waits.clear();
+        }
+    }
+    // Asigna el personaje y dispara CharacterAdded si cambió (orden no crítico).
+    void set_character(Node* c) {
+        uint64_t nid = c ? (uint64_t)c->get_instance_id() : 0;
+        if (nid == character_id) return;
+        character_id = nid;
+        if (c) fire_character_added();
+    }
+    void fire_character_removing() {
+        Node* c = get_character();
+        if (c) _fire_char(char_removing_cbs, c);
+    }
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &PlayerObject::_gl_disconnect);
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════
 //  Service placement protection: in Roblox, services only exist under
 //  the DataModel. These helpers enforce that in the editor: if someone
 //  tries to add a service to an invalid parent, it is deleted and an
@@ -351,13 +459,17 @@ protected:
 public:
     void _process(double delta) override {
         if (_gl_local_added_fired) { set_process(false); return; }
-        Node* lp = get_local_player();
-        if (!lp) { _gl_ready_time = 0.0; return; }  // aún sin personaje: reiniciar margen
+        Node* character = _find_local_character();
+        if (!character) { _gl_ready_time = 0.0; return; }  // esperar al personaje
         _gl_ready_time += delta;
-        if (_gl_ready_time < 0.25) return;          // margen para PlayerAdded:Connect
+        if (_gl_ready_time < 0.25) return;                 // margen para PlayerAdded:Connect
         _gl_local_added_fired = true;
         set_process(false);
-        fire_player_added(lp);
+        PlayerObject* po = ensure_local_player_obj();      // Player con .Character ya asignado (silencioso)
+        if (po) {
+            fire_player_added(po);        // PlayerAdded PRIMERO (como Roblox)
+            po->fire_character_added();   // ...luego CharacterAdded (ya hay listeners)
+        }
     }
 
     int  get_max_players() const { return max_players; }
@@ -373,15 +485,13 @@ public:
     void fire_player_added(Node* player)    { _fire_player_event(player_added_cbs, player); }
     void fire_player_removing(Node* player) { _fire_player_event(player_removing_cbs, player); }
 
-    // Find the player character in Workspace (RobloxPlayer or RobloxPlayer2D)
-    //// Busca el personaje del jugador en Workspace (RobloxPlayer o RobloxPlayer2D)
-    Node* get_local_player() const {
+    // Busca el PERSONAJE local (RobloxPlayer/2D) en Workspace.
+    Node* _find_local_character() const {
         if (!is_inside_tree()) return nullptr;
         Node* parent = get_parent(); // DataModel
         if (!parent) return nullptr;
         Node* ws = parent->get_node_or_null("Workspace");
         if (!ws) return nullptr;
-
         for (int i = 0; i < ws->get_child_count(); i++) {
             Node* child = ws->get_child(i);
             if (child && (child->is_class("RobloxPlayer") || child->is_class("RobloxPlayer2D")))
@@ -390,7 +500,41 @@ public:
         return nullptr;
     }
 
-    TypedArray<Node> get_players() const {
+    // Crea/devuelve el objeto Player LOCAL (Player ≠ Character), hijo de Players.
+    // Su .Character apunta al personaje; se sincroniza si el personaje respawnea.
+    PlayerObject* ensure_local_player_obj() {
+        if (!is_inside_tree()) return nullptr;
+        PlayerObject* po = nullptr;
+        for (int i = 0; i < get_child_count(); i++) {
+            PlayerObject* c = Object::cast_to<PlayerObject>(get_child(i));
+            if (c && c->is_local) { po = c; break; }
+        }
+        Node* character = _find_local_character();
+        if (!po) {
+            po = memnew(PlayerObject);
+            po->is_local = true;
+            po->peer_id = 0;
+            String pname = "Player";
+            int64_t uid = 1;
+            if (character) {
+                Variant dn = character->get("DisplayName");
+                if (dn.get_type() == Variant::STRING && !String(dn).is_empty()) pname = dn;
+                Variant ui = character->get("UserId");
+                if (ui.get_type() == Variant::INT || ui.get_type() == Variant::FLOAT) uid = (int64_t)ui;
+            }
+            po->set_name(pname);
+            po->user_id = uid;
+            po->display_name = pname;
+            add_child(po);
+        }
+        if (character) po->set_character_silent(character);  // sin disparar (CharacterAdded se dispara tras PlayerAdded)
+        return po;
+    }
+
+    // Players.LocalPlayer → el OBJETO Player local (no el personaje).
+    Node* get_local_player() { return ensure_local_player_obj(); }
+
+    TypedArray<Node> get_players() {
         // Con sesión de red, el roster completo lo tiene el NetworkService
         // (jugador local + los demás peers). Sin red, solo el jugador local.
         if (is_inside_tree()) {

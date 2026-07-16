@@ -222,7 +222,7 @@ static const char* gl_roblox_classname(Node* n) {
         {"ProximityPrompt","ProximityPrompt"},{"SpawnLocation","SpawnLocation"},{"BillboardGui","BillboardGui"},
         {"SurfaceGui","SurfaceGui"},{"Motor6D","Motor6D"},{"AnimationObject","Animation"},{"AnimationTrack","AnimationTrack"},
         {"RobloxWorkspace","Workspace"},{"RobloxWorkspace2D","Workspace"},{"RobloxChat","TextChatService"},
-        {"RobloxTerrain","Terrain"},{"RobloxValue","NumberValue"},
+        {"RobloxTerrain","Terrain"},{"RobloxValue","NumberValue"},{"PlayerObject","Player"},
         {"BodyVelocity","BodyVelocity"},{"BodyPosition","BodyPosition"},{"BodyForce","BodyForce"},
         {"BodyAngularVelocity","BodyAngularVelocity"},{"BodyGyro","BodyGyro"},
         {"WeldConstraint","WeldConstraint"},{"HingeConstraint","HingeConstraint"},
@@ -653,6 +653,111 @@ static int godot_object_index(lua_State* L) {
         }
     }
 
+    // ── PlayerObject ("Player", Player ≠ Character) ────────────────────────
+    {
+        PlayerObject* plr = Object::cast_to<PlayerObject>(n);
+        if (plr) {
+            if (strcmp(key, "UserId") == 0)      { lua_pushnumber(L, (double)plr->user_id); return 1; }
+            if (strcmp(key, "DisplayName") == 0) { lua_pushstring(L, plr->display_name.utf8().get_data()); return 1; }
+            if (strcmp(key, "AccountAge") == 0)  { lua_pushnumber(L, (double)plr->account_age); return 1; }
+            if (strcmp(key, "ClassName") == 0)   { lua_pushstring(L, "Player"); return 1; }
+            if (strcmp(key, "Team") == 0)        { lua_pushnil(L); return 1; }
+            if (strcmp(key, "Neutral") == 0)     { lua_pushboolean(L, 1); return 1; }
+            if (strcmp(key, "FollowUserId") == 0){ lua_pushnumber(L, 0); return 1; }
+            // Miembros reales de Player que antes vivían en el personaje (compat):
+            if (strcmp(key, "CameraMode") == 0)  { lua_pushnumber(L, plr->camera_mode); return 1; }
+            if (strcmp(key, "CameraMinZoomDistance") == 0) { lua_pushnumber(L, 0.5); return 1; }
+            if (strcmp(key, "CameraMaxZoomDistance") == 0) { lua_pushnumber(L, 400); return 1; }
+            if (strcmp(key, "AutoJumpEnabled") == 0)       { lua_pushboolean(L, 1); return 1; }
+            if (strcmp(key, "DevComputerMovementMode") == 0 || strcmp(key, "DevTouchMovementMode") == 0 ||
+                strcmp(key, "DevCameraOcclusionMode") == 0 || strcmp(key, "DevComputerCameraMode") == 0)
+                                                 { lua_pushnumber(L, 0); return 1; }
+            if (strcmp(key, "MembershipType") == 0) { lua_pushnumber(L, 0); return 1; }
+            if (strcmp(key, "GetRankInGroup") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnumber(pL, 0); return 1; }, "GetRankInGroup"); return 1;
+            }
+            if (strcmp(key, "GetRoleInGroup") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushstring(pL, "Guest"); return 1; }, "GetRoleInGroup"); return 1;
+            }
+            if (strcmp(key, "IsInGroup") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, 0); return 1; }, "IsInGroup"); return 1;
+            }
+            if (strcmp(key, "GetFriendStatus") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushstring(pL, "NotFriend"); return 1; }, "GetFriendStatus"); return 1;
+            }
+            if (strcmp(key, "GetFriendsOnline") == 0 || strcmp(key, "GetCharacterAppearanceInfoAsync") == 0 ||
+                strcmp(key, "GetCharacterAppearanceAsync") == 0 || strcmp(key, "GetJoinData") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { lua_newtable(pL); return 1; }, "PlayerStub"); return 1;
+            }
+            if (strcmp(key, "Character") == 0) {
+                Node* c = plr->get_character();
+                if (c) wrap_node(L, c); else lua_pushnil(L);
+                return 1;
+            }
+            if (strcmp(key, "GetCharacter") == 0) {
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    Node* c = p ? p->get_character() : nullptr;
+                    if (c) wrap_node(pL, c); else lua_pushnil(pL);
+                    return 1;
+                }, "GetCharacter", 1); return 1;
+            }
+            if (strcmp(key, "IsA") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int {
+                    const char* q = luaL_checkstring(pL, 2);
+                    lua_pushboolean(pL, (strcmp(q, "Player") == 0 || strcmp(q, "Instance") == 0) ? 1 : 0);
+                    return 1;
+                }, "IsA"); return 1;
+            }
+            if (strcmp(key, "Kick") == 0) {
+                lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "Kick"); return 1;
+            }
+            if (strcmp(key, "CharacterAdded") == 0) {
+                lua_newtable(L);
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    if (!p || !lua_isfunction(pL, 2)) { lua_pushnil(pL); return 1; }
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1); if (!mL) mL = pL;
+                    int ref = lua_ref(pL, 2); p->add_char_added_cb(mL, ref); _gl_push_connection(pL, p, ref); return 1;
+                }, "Connect", 1);
+                lua_setfield(L, -2, "Connect");
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    if (!p) { lua_pushnil(pL); return 1; }
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1); if (!mL) mL = pL;
+                    p->add_char_added_wait(pL, mL);
+                    lua_pushstring(pL, "__WAIT_SIGNAL__"); return lua_yield(pL, 1);
+                }, "Wait", 1);
+                lua_setfield(L, -2, "Wait");
+                return 1;
+            }
+            if (strcmp(key, "CharacterRemoving") == 0 || strcmp(key, "CharacterAppearanceLoaded") == 0) {
+                bool removing = (strcmp(key, "CharacterRemoving") == 0);
+                lua_newtable(L);
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushboolean(L, removing ? 1 : 0);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    bool rem = lua_toboolean(pL, lua_upvalueindex(2));
+                    if (!p || !lua_isfunction(pL, 2)) { lua_pushnil(pL); return 1; }
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1); if (!mL) mL = pL;
+                    int ref = lua_ref(pL, 2);
+                    if (rem) p->add_char_removing_cb(mL, ref); else p->add_char_appearance_cb(mL, ref);
+                    _gl_push_connection(pL, p, ref); return 1;
+                }, "Connect", 2);
+                lua_setfield(L, -2, "Connect");
+                return 1;
+            }
+            // Name, Parent, GetChildren, WaitForChild… caen al manejo genérico.
+        }
+    }
+
     // ── RobloxTerrain (Workspace.Terrain): FillBlock/FillBall/FillRegion/Clear ─
     {
         RobloxTerrain* terr = Object::cast_to<RobloxTerrain>(n);
@@ -903,12 +1008,8 @@ static int godot_object_index(lua_State* L) {
                 Node* character = gow_node(cw);
                 TypedArray<Node> all_players = ps->get_players();
                 for (int i = 0; i < all_players.size(); i++) {
-                    Node* p = Object::cast_to<Node>(all_players[i]);
-                    if (!p) continue;
-                    Node* ch = p->get_node_or_null("Character");
-                    if (ch == character) { wrap_node(pL, p); return 1; }
-                    // Also check if the player IS the character
-                    if (p == character) { wrap_node(pL, p); return 1; }
+                    PlayerObject* po = Object::cast_to<PlayerObject>(all_players[i]);
+                    if (po && po->get_character() == character) { wrap_node(pL, po); return 1; }
                 }
                 lua_pushnil(pL); return 1;
             }, "GetPlayerFromCharacter", 1);
@@ -922,8 +1023,8 @@ static int godot_object_index(lua_State* L) {
                 if (!ps) { lua_pushnil(pL); return 1; }
                 TypedArray<Node> all_players = ps->get_players();
                 for (int i = 0; i < all_players.size(); i++) {
-                    RobloxPlayer* rp = Object::cast_to<RobloxPlayer>(all_players[i]);
-                    if (rp && rp->get_user_id() == uid) { wrap_node(pL, rp); return 1; }
+                    PlayerObject* po = Object::cast_to<PlayerObject>(all_players[i]);
+                    if (po && po->user_id == uid) { wrap_node(pL, po); return 1; }
                 }
                 lua_pushnil(pL); return 1;
             }, "GetPlayerByUserId", 1);
@@ -2855,6 +2956,26 @@ static int godot_object_newindex(lua_State* L) {
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) return 0;
     Node* n = gow_node(wrapper);
+
+    // ── PlayerObject: escrituras de miembros de Player (CameraMode, etc.) ──
+    // Antes LocalPlayer ERA el personaje y estas escrituras iban al character;
+    // ahora LocalPlayer es el Player. Se aceptan aquí para no romper scripts
+    // (p.ej. el CameraModule incluido hace LocalPlayer.CameraMode = mode).
+    if (PlayerObject* plr = Object::cast_to<PlayerObject>(n)) {
+        if (strcmp(key, "CameraMode") == 0) {
+            plr->camera_mode = (int)luaL_checknumber(L, 3);
+            Node* ch = plr->get_character();
+            if (ch && ch->has_method("set_camera_mode")) ch->call("set_camera_mode", plr->camera_mode);
+            return 0;
+        }
+        if (strcmp(key, "DisplayName") == 0) { plr->display_name = String(luaL_checkstring(L, 3)); return 0; }
+        if (strcmp(key, "CameraMinZoomDistance") == 0 || strcmp(key, "CameraMaxZoomDistance") == 0 ||
+            strcmp(key, "AutoJumpEnabled") == 0 || strcmp(key, "DevComputerMovementMode") == 0 ||
+            strcmp(key, "DevTouchMovementMode") == 0 || strcmp(key, "DevCameraOcclusionMode") == 0 ||
+            strcmp(key, "DevComputerCameraMode") == 0 || strcmp(key, "Team") == 0 ||
+            strcmp(key, "TeamColor") == 0 || strcmp(key, "Neutral") == 0)
+            return 0;   // aceptar y descartar (no romper)
+    }
 
     if (strcmp(key, "Name") == 0) {
         n->set_name(luaL_checkstring(L, 3));

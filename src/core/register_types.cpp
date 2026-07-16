@@ -126,6 +126,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<StarterGui>();
         ClassDB::register_class<StarterPack>();
         ClassDB::register_class<Players>();
+        ClassDB::register_class<PlayerObject>();   // objeto "Player" (Player ≠ Character)
         ClassDB::register_class<RobloxValue>();   // NumberValue/IntValue/StringValue/…
         ClassDB::register_class<Lighting>();
         ClassDB::register_class<MaterialService>();

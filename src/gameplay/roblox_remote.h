@@ -21,16 +21,28 @@ using namespace godot;
 // handler OnServerEvent (en Roblox el server recibe SIEMPRE el player que disparó).
 static inline Node* _gl_find_local_player(Node* from) {
     if (!from || !from->is_inside_tree()) return nullptr;
-    std::function<Node*(Node*)> rec = [&](Node* n) -> Node* {
+    Node* root = (Node*)from->get_tree()->get_root();
+    // Preferir el OBJETO Player local (Player ≠ Character): OnServerEvent debe
+    // recibir un Player real con UserId/Name/.Character, no el nodo-personaje.
+    std::function<Node*(Node*)> rec_players = [&](Node* n) -> Node* {
         if (!n) return nullptr;
-        if (n->is_class("RobloxPlayer") || n->is_class("RobloxPlayer2D")) return n;
-        for (int i = 0; i < n->get_child_count(); i++) {
-            Node* r = rec(n->get_child(i));
-            if (r) return r;
-        }
+        if (n->is_class("Players")) return n;
+        for (int i = 0; i < n->get_child_count(); i++) { Node* r = rec_players(n->get_child(i)); if (r) return r; }
         return nullptr;
     };
-    return rec((Node*)from->get_tree()->get_root());
+    if (Node* ps = rec_players(root)) {
+        Variant lp = ps->call("get_local_player");
+        Object* o = lp;
+        if (Node* p = Object::cast_to<Node>(o)) return p;
+    }
+    // Fallback: el personaje (compat si aún no hay servicio Players)
+    std::function<Node*(Node*)> rec_char = [&](Node* n) -> Node* {
+        if (!n) return nullptr;
+        if (n->is_class("RobloxPlayer") || n->is_class("RobloxPlayer2D")) return n;
+        for (int i = 0; i < n->get_child_count(); i++) { Node* r = rec_char(n->get_child(i)); if (r) return r; }
+        return nullptr;
+    };
+    return rec_char(root);
 }
 
 // Localiza el NetworkService (singleton bajo el DataModel) en el árbol.
