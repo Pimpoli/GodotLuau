@@ -261,6 +261,12 @@ static int method_destroy(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     Node* n = w ? gow_node(w) : nullptr;
     if (n) {
+        // Replicación (1.14.5): si somos servidor y la instancia está replicada,
+        // avisar a los clientes ANTES de liberarla aquí.
+        if (gl_net_role() == 1 && n->has_meta("_gl_netid")) {
+            if (NetworkService* ns = Object::cast_to<NetworkService>(ObjectDB::get_instance(gl_net_service_id())))
+                ns->rep_unreplicate(n);   // avisa a los clientes + olvida el subárbol (recursivo)
+        }
         // Como Roblox: la instancia desaparece del árbol de inmediato y se
         // libera la memoria. Sacarla del padre primero garantiza que deje de
         // verse/colisionar al instante (queue_free por sí solo difiere al final
@@ -272,11 +278,24 @@ static int method_destroy(lua_State* L) {
     return 0;
 }
 
+// Quita el netId de replicación de un nodo y todo su subárbol. Node::duplicate()
+// copia la metadata (props STORAGE), así que un :Clone() en el servidor heredaría
+// el "_gl_netid" del original y le secuestraría la identidad de red. Los shadow
+// "_glrep_*" SÍ se conservan: sirven al snapshot cuando el clon se replique.
+static void gl_strip_netid_recursive(Node* n) {
+    if (!n) return;
+    if (n->has_meta("_gl_netid")) n->remove_meta("_gl_netid");
+    for (int i = 0; i < n->get_child_count(); i++) gl_strip_netid_recursive(n->get_child(i));
+}
+
 static int method_clone(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     if (w && gow_node(w)) {
         Node* cloned = gow_node(w)->duplicate();
-        if (cloned) { wrap_node(L, cloned); return 1; }
+        if (cloned) {
+            gl_strip_netid_recursive(cloned);   // el clon nace SIN netId (se le asigna uno nuevo al replicarse)
+            wrap_node(L, cloned); return 1;
+        }
     }
     lua_pushnil(L); return 1;
 }
@@ -284,10 +303,16 @@ static int method_clone(lua_State* L) {
 static int method_clearallchildren(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     if (w && gow_node(w)) {
+        // Replicación (1.14.5): en el servidor, avisar a los clientes que destruyan
+        // cada hijo replicado (ClearAllChildren no pasa por :Destroy()).
+        NetworkService* rns = (gl_net_role() == 1)
+            ? Object::cast_to<NetworkService>(ObjectDB::get_instance(gl_net_service_id())) : nullptr;
         TypedArray<Node> ch = gow_node(w)->get_children();
         for (int i = 0; i < ch.size(); i++) {
             Node* n = Object::cast_to<Node>(ch[i]);
-            if (n) n->queue_free();
+            if (!n) continue;
+            if (rns && n->has_meta("_gl_netid")) rns->rep_unreplicate(n);
+            n->queue_free();
         }
     }
     return 0;
@@ -3044,7 +3069,7 @@ static int godot_object_index(lua_State* L) {
 ////
 //  godot_object_newindex — __newindex de GodotObject
 // ════════════════════════════════════════════════════════════════════
-static int godot_object_newindex(lua_State* L) {
+static int godot_object_newindex_impl(lua_State* L) {
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) return 0;
@@ -3657,6 +3682,103 @@ static int godot_object_newindex(lua_State* L) {
         }
     }
     return 0;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Replicación automática (1.14.5) — lado SERVIDOR + aplicación en cliente
+//  Engancha en godot_object_newindex (propiedad / Parent) y method_destroy para
+//  difundir deltas del mundo a los clientes (NetworkService::rep_* en
+//  roblox_network.h). Coste cero fuera de un servidor de red: la guarda
+//  gl_net_role()==1 corta al instante en single-player/cliente.
+// ════════════════════════════════════════════════════════════════════
+static const char* GL_REP_SHADOW = "_glrep_";   // prefijo de meta: valor Lua-encodeado por propiedad
+
+static NetworkService* gl_rep_service() {
+    if (gl_net_role() != 1) return nullptr;
+    return Object::cast_to<NetworkService>(ObjectDB::get_instance(gl_net_service_id()));
+}
+
+// ¿el nodo cuelga de un contenedor replicable (Workspace / ReplicatedStorage)?
+// Sube por los padres comparando por NOMBRE: los contenedores virtuales pueden
+// ser Node genérico, así que is_class no siempre basta.
+static bool gl_rep_is_replicable(Node* n) {
+    for (Node* p = n ? n->get_parent() : nullptr; p; p = p->get_parent()) {
+        StringName nm = p->get_name();
+        if (nm == StringName("ServerStorage") || nm == StringName("ServerScriptService")) return false;
+        if (nm == StringName("Workspace") || nm == StringName("ReplicatedStorage")) return true;
+        if (p->is_class("RobloxWorkspace") || p->is_class("RobloxWorkspace2D")) return true;
+    }
+    return false;
+}
+
+// Ref del padre para el protocolo: "#netid" si el padre ya está replicado, o su
+// ruta absoluta si es un contenedor (Workspace/ReplicatedStorage ya existen en
+// cada ventana por el place cargado).
+static String gl_rep_parent_ref(Node* parent) {
+    if (parent && parent->has_meta("_gl_netid"))
+        return String("#") + String::num_int64((int64_t)parent->get_meta("_gl_netid"));
+    if (parent) return String(parent->get_path());
+    return String();
+}
+
+// Replica el nodo y su subárbol como creaciones nuevas (asigna netId + snapshot
+// vía NetworkService::rep_build_props, que resuelve el transform global).
+static void gl_rep_replicate_subtree(NetworkService* ns, Node* n) {
+    if (!ns || !n || n->has_meta("_gl_netid")) return;
+    int64_t id = ns->rep_next_id();
+    n->set_meta("_gl_netid", id);
+    ns->rep_map(id, n);
+    ns->rep_send_new(id, n->get_class(), String(n->get_name()), gl_rep_parent_ref(n->get_parent()), ns->rep_build_props(n));
+    for (int i = 0; i < n->get_child_count(); i++)
+        gl_rep_replicate_subtree(ns, n->get_child(i));
+}
+
+// Hook tras aplicar una escritura. Pila: [1]=obj [2]=key [3]=valor.
+static void gl_rep_on_newindex(lua_State* L) {
+    NetworkService* ns = gl_rep_service();
+    if (!ns) return;
+    GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+    Node* n = w ? gow_node(w) : nullptr;
+    if (!n || !lua_isstring(L, 2)) return;
+    String key = String(lua_tostring(L, 2));
+    if (key == "Parent") {
+        if (gl_rep_is_replicable(n)) {
+            if (n->has_meta("_gl_netid"))
+                ns->rep_send_reparent((int64_t)n->get_meta("_gl_netid"), gl_rep_parent_ref(n->get_parent()));   // ya replicado → mover
+            else
+                gl_rep_replicate_subtree(ns, n);                                                                // entra al árbol replicado → crear
+        } else if (n->has_meta("_gl_netid")) {
+            ns->rep_unreplicate(n);   // salió del árbol replicado → clientes destruyen su copia + olvida el subárbol (el nodo del servidor sigue vivo)
+        }
+        return;
+    }
+    // El valor (idx 3) puede ser userdata (Vector3/Color3) o tabla tipada (CFrame,
+    // UDim2…): gl_net_encode captura ambos como Variant transmisible.
+    Variant enc = gl_net_encode(L, 3);
+    n->set_meta(StringName(String(GL_REP_SHADOW) + key), enc);   // shadow para el snapshot al parentar
+    if (n->has_meta("_gl_netid"))
+        ns->rep_send_prop((int64_t)n->get_meta("_gl_netid"), key, enc);
+}
+
+// Aplica una propiedad replicada en el CLIENTE reentrando al __newindex real.
+// Instalado en gl_apply_prop_hook(). Hilo Luau fresco: el impl lee índices 1/2/3.
+static void gl_rep_apply_prop(Node* target, const String& key, const Variant& enc) {
+    if (!target) return;
+    lua_State* L = gl_any_state();
+    if (!L) return;
+    lua_State* th = lua_newthread(L);
+    wrap_node(th, target);                          // idx 1
+    lua_pushstring(th, key.utf8().get_data());      // idx 2
+    gl_net_decode(th, enc, target);                 // idx 3
+    godot_object_newindex_impl(th);                 // aplica SIN volver a replicar
+    lua_pop(L, 1);                                  // quita el hilo
+}
+
+// __newindex real: aplica y (si somos servidor de red) difunde el delta.
+static int godot_object_newindex(lua_State* L) {
+    int r = godot_object_newindex_impl(L);
+    gl_rep_on_newindex(L);
+    return r;
 }
 
 // ════════════════════════════════════════════════════════════════════

@@ -20,6 +20,7 @@
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -102,6 +103,85 @@ static inline bool gl_state_alive(lua_State* L)      { return L && gl_alive_stat
 // Normaliza cualquier hilo Luau a su estado principal (el que registramos).
 // SOLO debe llamarse mientras L sigue vivo (p.ej. al conectar el callback).
 static inline lua_State* gl_main_of(lua_State* L) { return L ? lua_mainthread(L) : nullptr; }
+
+// Devuelve CUALQUIER estado Luau vivo (para operaciones que solo necesitan una VM
+// válida, como aplicar una propiedad replicada). nullptr si no hay ninguno.
+static inline lua_State* gl_any_state() {
+    std::unordered_set<lua_State*>& s = gl_alive_states();
+    return s.empty() ? nullptr : *s.begin();
+}
+
+// ── Replicación automática (1.14.5) ──────────────────────────────────────────
+//  `inline` (NO `static inline`) = UNA sola instancia compartida entre TUs.
+//  Rol de red GLOBAL espejo del NetworkService (0=single, 1=servidor/host,
+//  2=cliente). Lo actualiza el NetworkService. Permite que el hook de escritura
+//  de propiedades descarte en O(1) cuando NO somos el servidor de una sesión de
+//  red → cero coste en single-player.
+inline int& gl_net_role() { static int r = 0; return r; }
+//  ObjectID del NetworkService vivo (para resolverlo sin recorrer el árbol).
+inline uint64_t& gl_net_service_id() { static uint64_t id = 0; return id; }
+//  Hook para APLICAR una propiedad replicada en el cliente reentrando al
+//  __newindex real. Lo define luau_api.h (que ve godot_object_newindex/wrap_node/
+//  gl_net_decode) y lo instala el setup por-VM; el NetworkService (que no puede
+//  ver luau_api.h por el orden de includes) lo llama por puntero.
+typedef void (*GLApplyPropFn)(Node* target, const String& key, const Variant& enc);
+inline GLApplyPropFn& gl_apply_prop_hook() { static GLApplyPropFn f = nullptr; return f; }
+
+// ── Modelo server-authoritative (1.14.5) ─────────────────────────────────────
+//  ¿Esta ventana arrancó como CLIENTE de una sesión de red? Se decide por los
+//  args del launcher (fiable al arranque, antes de que corran los scripts). Un
+//  cliente NO ejecuta ServerScripts: recibe el mundo del servidor por
+//  replicación, igual que Roblox. La ventana nativa/servidor/single devuelve
+//  false → ejecuta todo.
+static inline bool gl_startup_is_client() {
+    PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
+    for (int i = 0; i < a.size(); i++) {
+        String s = a[i];
+        if (s == String("--glconnect") || s == String("--glmatch")) return true;
+        if (s == String("--glindex") && i + 1 < a.size() && String(a[i + 1]).to_int() >= 2) return true;
+    }
+    return false;
+}
+//  ¿Esta ventana debe APLAZAR sus ServerScripts hasta CONFIRMAR que es servidor
+//  (gl_net_role()==1)? El rol de servidor se fija tarde (start_server, vía
+//  _auto_init diferido), así que si un ServerScript corriera antes, el mundo que
+//  crea no se replicaría. Devuelve true para: cliente seguro; servidor por args
+//  (--glserver/--glinstance/--glindex 1); y la ventana NATIVA con sesión MP
+//  FRESCA (será el host del test local). Single-player → false (corre todo ya).
+//  El guard de frescura (age<45s) evita romper single-player con una sesión vieja.
+static inline bool gl_startup_defer_server() {
+    if (gl_startup_is_client()) return true;
+    PackedStringArray a = OS::get_singleton()->get_cmdline_user_args();
+    for (int i = 0; i < a.size(); i++) {
+        String s = a[i];
+        if (s == String("--glserver") || s == String("--glinstance")) return true;
+        if (s == String("--glindex") && i + 1 < a.size() && String(a[i + 1]).to_int() == 1) return true;
+    }
+    Ref<FileAccess> f = FileAccess::open("res://.gl_mp_session", FileAccess::READ);
+    if (f.is_valid()) {
+        PackedStringArray p = String(f->get_as_text()).strip_edges().split("|");
+        f->close();
+        if (p.size() >= 3) {
+            int c = String(p[0]).to_int();
+            double age = Time::get_singleton()->get_unix_time_from_system() - (double)String(p[2]).to_float();
+            if (c >= 2 && age >= 0.0 && age < 45.0) return true;   // sesión MP fresca → esta nativa será el servidor
+        }
+    }
+    return false;
+}
+//  ServerScripts APLAZADOS en una ventana cliente (guardan ObjectID). Si esa
+//  ventana se promueve a host de respaldo (gl_net_role()→1), se ejecutan
+//  entonces — así el fallback de host del test local sigue funcionando.
+inline std::vector<uint64_t>& gl_deferred_server_scripts() { static std::vector<uint64_t> v; return v; }
+static inline void gl_run_deferred_server_scripts() {
+    std::vector<uint64_t>& dl = gl_deferred_server_scripts();
+    std::vector<uint64_t> copy = dl;   // copiar: iniciar_corrutina puede tocar la lista
+    dl.clear();
+    for (uint64_t oid : copy) {
+        Object* o = ObjectDB::get_instance(oid);
+        if (Node* n = Object::cast_to<Node>(o)) n->call("iniciar_corrutina");
+    }
+}
 
 // ── BindToClose: callbacks a ejecutar al cerrar el juego (guardar datos, etc.) ─
 //  game:BindToClose(fn) registra fn aquí junto a su VM (main_L). Cada script

@@ -1263,6 +1263,23 @@ public:
     void iniciar_corrutina() {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (get_class() == "ModuleScript") return;
+        // Modelo server-authoritative (1.14.5): un ServerScript solo corre cuando
+        // esta ventana es CONFIRMADAMENTE el servidor (gl_net_role()==1). En una
+        // sesión de red (cliente O servidor cuyo rol aún se está fijando) se
+        // APLAZA y lo ejecuta start_server → gl_run_deferred_server_scripts() con
+        // role=1 ya puesto (así el mundo que crea SÍ se replica; y un cliente que
+        // nunca es servidor no lo corre — recibe el mundo por replicación). En
+        // single-player gl_startup_defer_server()==false → corre de inmediato. No
+        // marca script_started para poder re-ejecutarlo al confirmarse el rol.
+        if (get_class() == "ServerScript" && gl_net_role() != 1 && gl_startup_defer_server()) {
+            uint64_t oid = (uint64_t)get_instance_id();
+            std::vector<uint64_t>& dl = gl_deferred_server_scripts();
+            bool dup = false;
+            for (uint64_t x : dl) if (x == oid) { dup = true; break; }
+            if (!dup) dl.push_back(oid);
+            GL_DEBUG_PRINT("[GodotLuau] ServerScript '", get_name(), "' aplazado (ventana cliente; el mundo llega por replicacion).");
+            return;
+        }
         if (!script_enabled) {
             // Enabled=false (como Roblox): no ejecutar. Aviso en Modo Debug para
             // que "mi script no corre y no dice nada" se diagnostique solo.
@@ -1384,6 +1401,11 @@ public:
         lua_pushcfunction(L_main, godot_object_newindex, "__newindex");
         lua_setfield(L_main, -2, "__newindex");
         lua_pop(L_main, 1);
+
+        // Replicación (1.14.5): instala el aplicador de propiedades del cliente
+        // (reentra al __newindex real). Idempotente; el NetworkService lo llama
+        // por puntero al recibir _rep_new/_rep_prop.
+        gl_apply_prop_hook() = gl_rep_apply_prop;
 
         // ── Math metatables ───────────────────────────────────────────────────
         //// ── Metatables matemáticas ────────────────────────────────────────────

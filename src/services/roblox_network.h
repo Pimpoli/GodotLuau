@@ -94,6 +94,7 @@
 #include "lualib.h"
 #include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, gl_freecam
+#include "roblox_services.h"   // RobloxValue (replicar subtipo IntValue/StringValue)
 #include "gl_debug.h"     // gl_debug_on (prints internos solo en Modo Debug)
 #include "gl_avatar.h"    // personaje R6 + animador (muñecos remotos)
 
@@ -326,6 +327,12 @@ class NetworkService : public Node {
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
     std::map<int, uint64_t> peer_player_ids;   // peerId remoto -> ObjectID del objeto Player
 
+    // ── Replicación automática (1.14.5) ─────────────────────────────────
+    // netId (asignado por el servidor) -> ObjectID del nodo replicado. En el
+    // servidor se llena al replicar; en el cliente al recibir _rep_new.
+    std::map<uint64_t, uint64_t> net_instances;
+    uint64_t next_net_id_ctr = 1;   // servidor: contador de netId
+
     // Ping (medido cliente→servidor→cliente, en milisegundos)
     double ping_ms = -1.0;
     double ping_timer = 0.0;
@@ -538,6 +545,10 @@ class NetworkService : public Node {
         rpc_config("_ure_deliver_server", u);
         rpc_config("_ure_deliver_client", u);
         rpc_config("_gl_assign",          r);   // coordinador → cliente: ve a este mundo
+        rpc_config("_rep_new",            r);   // replicación (1.14.5): crear instancia
+        rpc_config("_rep_prop",           r);   // replicación: cambio de propiedad
+        rpc_config("_rep_reparent",       r);   // replicación: mover de padre
+        rpc_config("_rep_destroy",        r);   // replicación: destruir instancia
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -824,6 +835,11 @@ protected:
         ClassDB::bind_method(D_METHOD("_re_deliver_client", "path", "args"),        &NetworkService::_re_deliver_client);
         ClassDB::bind_method(D_METHOD("_ure_deliver_server", "path", "args"),       &NetworkService::_ure_deliver_server);
         ClassDB::bind_method(D_METHOD("_ure_deliver_client", "path", "args"),       &NetworkService::_ure_deliver_client);
+        // Replicación automática (1.14.5)
+        ClassDB::bind_method(D_METHOD("_rep_new", "id", "gclass", "name", "parent_ref", "props"), &NetworkService::_rep_new);
+        ClassDB::bind_method(D_METHOD("_rep_prop", "id", "key", "enc"),             &NetworkService::_rep_prop);
+        ClassDB::bind_method(D_METHOD("_rep_reparent", "id", "parent_ref"),         &NetworkService::_rep_reparent);
+        ClassDB::bind_method(D_METHOD("_rep_destroy", "id"),                        &NetworkService::_rep_destroy);
     }
 
     void _notification(int p_what) {
@@ -842,6 +858,10 @@ public:
             return;
         }
         gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")");
+        // Replicación (1.14.5): mandarle al peer nuevo el mundo ya replicado. Los
+        // clientes ya no corren ServerScripts, así que sin esto no verían lo que el
+        // servidor creó antes de que ellos conectaran (late-join).
+        if (mode == 1) _rep_sync_peer(id);
         // NO se dispara Players.PlayerAdded aquí: un peer SIN personaje (p.ej. la
         // ventana SERVIDOR sin jugador) NO es un Player. PlayerAdded se dispara
         // cuando aparece su personaje (muñeco), en _update_puppet*. Aquí solo la
@@ -919,6 +939,169 @@ public:
     void _re_deliver_client(String path, Array args)  { _deliver_event(path, args, false); }
     void _ure_deliver_server(String path, Array args) { _deliver_event(path, args, true); }
     void _ure_deliver_client(String path, Array args) { _deliver_event(path, args, false); }
+
+    // ── Replicación automática de instancias/propiedades (1.14.5) ─────────
+    // El SERVIDOR es autoridad: cuando un script del servidor crea una instancia
+    // bajo un contenedor replicable (Workspace/ReplicatedStorage) o cambia una
+    // propiedad de una ya replicada, difunde el DELTA a los clientes. Cada
+    // instancia lleva un netId estable (meta "_gl_netid"). El mundo INICIAL
+    // (puesto en el editor) NO se replica: cada ventana ya cargó el mismo place;
+    // esto es una capa de deltas de runtime. Los envíos los dispara luau_api.h
+    // (godot_object_newindex/method_destroy) llamando estos métodos por tipo.
+    int64_t rep_next_id() { return (int64_t)(next_net_id_ctr++); }
+    void rep_map(int64_t id, Object* node) {
+        Node* n = Object::cast_to<Node>(node);
+        if (n) net_instances[(uint64_t)id] = (uint64_t)n->get_instance_id();
+    }
+    Node* _rep_node(uint64_t id) {
+        auto it = net_instances.find(id);
+        if (it == net_instances.end()) return nullptr;
+        return Object::cast_to<Node>(ObjectDB::get_instance(it->second));
+    }
+    Node* _rep_resolve_parent(const String& ref) {
+        if (ref.begins_with("#")) return _rep_node((uint64_t)ref.substr(1).to_int());
+        if (!is_inside_tree()) return nullptr;
+        return get_node_or_null(NodePath(ref));   // ruta absoluta (mismo place en cada ventana)
+    }
+
+    // Snapshot de propiedades a replicar (shadow "_glrep_*"). Para Node3D con
+    // transform tocada, manda la posición/rotación GLOBAL resuelta en vez del
+    // valor crudo: el cliente la aplica siempre en-árbol (add_child antes de
+    // props) → set_global_*, así coincide sin importar el orden de escritura ni
+    // el offset del ancestro (fix del bug local/global).
+    Dictionary rep_build_props(Node* n) {
+        Dictionary props;
+        TypedArray<StringName> metas = n->get_meta_list();
+        for (int i = 0; i < metas.size(); i++) {
+            String mk = String(metas[i]);
+            if (mk.begins_with("_glrep_")) props[mk.substr(7)] = n->get_meta(StringName(mk));
+        }
+        if (Node3D* n3 = Object::cast_to<Node3D>(n)) {
+            if (props.has("Position") || props.has("Rotation") || props.has("CFrame")) {
+                props.erase("Position"); props.erase("Rotation"); props.erase("CFrame");
+                props["Position"] = n3->get_global_position();
+                props["Rotation"] = n3->get_global_rotation_degrees();
+            }
+        }
+        // Subtipo de Value: gclass es "RobloxValue" para todos; el subtipo real
+        // (IntValue/StringValue/…) vive en roblox_class → replicarlo (#10).
+        if (RobloxValue* rv = Object::cast_to<RobloxValue>(n)) props["__glvclass"] = rv->roblox_class;
+        return props;
+    }
+
+    // (servidor) difundir creación / propiedad / re-parent / destrucción
+    void rep_send_new(int64_t id, const String& gclass, const String& name, const String& parent_ref, const Dictionary& props) {
+        if (mode != 1) return;
+        rpc("_rep_new", id, gclass, name, parent_ref, props);
+    }
+    void rep_send_prop(int64_t id, const String& key, const Variant& enc) {
+        if (mode != 1) return;
+        rpc("_rep_prop", id, key, enc);
+    }
+    void rep_send_reparent(int64_t id, const String& parent_ref) {
+        if (mode != 1) return;
+        rpc("_rep_reparent", id, parent_ref);
+    }
+    // Olvida el netId de TODO el subárbol (raíz + hijos) y quita sus metas.
+    void _rep_collect_forget(Node* n) {
+        if (!n) return;
+        if (n->has_meta("_gl_netid")) {
+            net_instances.erase((uint64_t)(int64_t)n->get_meta("_gl_netid"));
+            n->remove_meta("_gl_netid");
+        }
+        for (int i = 0; i < n->get_child_count(); i++) _rep_collect_forget(n->get_child(i));
+    }
+    // (servidor) el subárbol deja de replicarse: los clientes destruyen su copia
+    // y el servidor olvida los netId. NO libera el nodo del servidor (lo usa tanto
+    // Destroy —que libera aparte— como mover a ServerStorage —que lo conserva—).
+    void rep_unreplicate(Node* n) {
+        if (mode != 1 || !n || !n->has_meta("_gl_netid")) return;
+        int64_t root = (int64_t)n->get_meta("_gl_netid");
+        _rep_collect_forget(n);
+        rpc("_rep_destroy", root);
+    }
+
+    // (servidor) mandar el estado ya replicado a un peer recién conectado. Los
+    // clientes ya no corren ServerScripts → dependen de esto para ver lo que el
+    // servidor creó ANTES de que ellos conectaran (late-join).
+    void _rep_sync_peer(int id) {
+        // Orden TOPOLÓGICO (padre replicado antes que hijo), no por netId: un nodo
+        // re-parentado bajo un padre de netId mayor rompería el orden ascendente y
+        // el cliente lo descartaría por padre inexistente. Punto fijo multipasada.
+        std::vector<std::pair<uint64_t, Node*>> live;
+        for (auto& kv : net_instances) {
+            Node* n = Object::cast_to<Node>(ObjectDB::get_instance(kv.second));
+            if (n) live.push_back(std::pair<uint64_t, Node*>(kv.first, n));
+        }
+        std::unordered_set<uint64_t> sent;
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            for (auto& pr : live) {
+                if (sent.count(pr.first)) continue;
+                Node* n = pr.second;
+                Node* parent = n->get_parent();
+                if (parent && parent->has_meta("_gl_netid")) {
+                    uint64_t pid = (uint64_t)(int64_t)parent->get_meta("_gl_netid");
+                    if (net_instances.count(pid) && !sent.count(pid)) continue;   // padre aún no enviado
+                }
+                String parent_ref;
+                if (parent && parent->has_meta("_gl_netid"))
+                    parent_ref = String("#") + String::num_int64((int64_t)parent->get_meta("_gl_netid"));
+                else if (parent)
+                    parent_ref = String(parent->get_path());
+                rpc_id(id, "_rep_new", (int64_t)pr.first, n->get_class(), String(n->get_name()), parent_ref, rep_build_props(n));
+                sent.insert(pr.first);
+                progress = true;
+            }
+        }
+    }
+
+    // (cliente) receptores — solo aceptan del servidor (peer 1)
+    void _rep_new(int64_t id, String gclass, String name, String parent_ref, Dictionary props) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;
+        if (net_instances.count((uint64_t)id)) return;   // ya existe (idempotente ante re-sync)
+        Object* o = ClassDB::instantiate(StringName(gclass));
+        Node* n = Object::cast_to<Node>(o);
+        if (!n) { if (o) memdelete(o); return; }
+        n->set_name(name);
+        n->set_meta("_gl_netid", id);
+        net_instances[(uint64_t)id] = (uint64_t)n->get_instance_id();
+        Node* parent = _rep_resolve_parent(parent_ref);
+        if (!parent) { net_instances.erase((uint64_t)id); memdelete(n); return; }
+        parent->add_child(n);
+        // Restaurar el subtipo de Value (#10) antes de aplicar props (no es una prop del hook).
+        if (RobloxValue* rv = Object::cast_to<RobloxValue>(n)) {
+            if (props.has("__glvclass")) { rv->roblox_class = props["__glvclass"]; props.erase("__glvclass"); }
+        }
+        if (gl_apply_prop_hook()) {
+            Array keys = props.keys();
+            for (int i = 0; i < keys.size(); i++) {
+                String k = keys[i];
+                gl_apply_prop_hook()(n, k, props[k]);
+            }
+        }
+    }
+    void _rep_prop(int64_t id, String key, Variant enc) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;
+        Node* n = _rep_node((uint64_t)id);
+        if (n && gl_apply_prop_hook()) gl_apply_prop_hook()(n, key, enc);
+    }
+    void _rep_reparent(int64_t id, String parent_ref) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;
+        Node* n = _rep_node((uint64_t)id);
+        if (!n) return;
+        Node* parent = _rep_resolve_parent(parent_ref);
+        if (!parent) return;
+        if (n->get_parent()) n->get_parent()->remove_child(n);
+        parent->add_child(n);
+    }
+    void _rep_destroy(int64_t id) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;
+        Node* n = _rep_node((uint64_t)id);
+        if (n) { _rep_collect_forget(n); if (n->get_parent()) n->get_parent()->remove_child(n); n->queue_free(); }
+        else net_instances.erase((uint64_t)id);
+    }
 
     // ── Roster de jugadores (Players:GetPlayers / FireClient targeting) ───
     // v1 pragmático: el "jugador" es el nodo-personaje local o el muñeco
@@ -1343,6 +1526,8 @@ public:
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 1;
+        gl_net_role() = 1; gl_net_service_id() = (uint64_t)get_instance_id();   // replicación: somos servidor
+        gl_run_deferred_server_scripts();   // si esta ventana era cliente y se promovió a host, corre ahora sus ServerScripts
         set_process(true);
         return true;
     }
@@ -1362,6 +1547,7 @@ public:
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 2;
+        gl_net_role() = 2; gl_net_service_id() = (uint64_t)get_instance_id();   // replicación: somos cliente
         set_process(true);
         return true;
     }
@@ -1371,6 +1557,8 @@ public:
         if (m.is_valid()) m->set_multiplayer_peer(Ref<MultiplayerPeer>());
         peer = Ref<ENetMultiplayerPeer>();
         mode = 0;
+        gl_net_role() = 0;   // replicación off
+        net_instances.clear();
         net_connected = false;
         target_address = "";
     }
