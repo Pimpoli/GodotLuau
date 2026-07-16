@@ -515,12 +515,12 @@ public:
             po->is_local = true;
             po->peer_id = 0;
             String pname = "Player";
-            int64_t uid = 1;
+            // UserId secuencial e inmutable: lo fija el servidor (host=1, 2,3,...) vía
+            // gl_local_user_id(). 0 = sin sesión de red → jugador 1 (single-player).
+            int64_t uid = gl_local_user_id() > 0 ? gl_local_user_id() : 1;
             if (character) {
                 Variant dn = character->get("DisplayName");
                 if (dn.get_type() == Variant::STRING && !String(dn).is_empty()) pname = dn;
-                Variant ui = character->get("UserId");
-                if (ui.get_type() == Variant::INT || ui.get_type() == Variant::FLOAT) uid = (int64_t)ui;
             }
             po->set_name(pname);
             po->user_id = uid;

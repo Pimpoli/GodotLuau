@@ -3291,7 +3291,7 @@ static int godot_object_newindex_impl(lua_State* L) {
     // ── RobloxPlayer write ────────────────────────────────────────
     RobloxPlayer* rp_w = Object::cast_to<RobloxPlayer>(n);
     if (rp_w) {
-        if (strcmp(key, "UserId")                  == 0) { rp_w->set_user_id((int)luaL_checknumber(L,3));                    return 0; }
+        if (strcmp(key, "UserId")                  == 0) { return 0; }   // inmutable: lo asigna el servidor (host=1, 2,3,...)
         if (strcmp(key, "DisplayName")             == 0) { rp_w->set_display_name(String(luaL_checkstring(L,3)));            return 0; }
         if (strcmp(key, "AccountAge")              == 0) { rp_w->set_account_age((int)luaL_checknumber(L,3));                return 0; }
         if (strcmp(key, "AutoJumpEnabled")         == 0) { rp_w->set_auto_jump_enabled(lua_toboolean(L,3)!=0);               return 0; }

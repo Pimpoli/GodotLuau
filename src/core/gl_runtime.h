@@ -120,6 +120,11 @@ static inline lua_State* gl_any_state() {
 inline int& gl_net_role() { static int r = 0; return r; }
 //  ObjectID del NetworkService vivo (para resolverlo sin recorrer el árbol).
 inline uint64_t& gl_net_service_id() { static uint64_t id = 0; return id; }
+//  UserId secuencial e INMUTABLE del jugador local, asignado por el servidor por
+//  orden de entrada (host=1, luego 2,3,...). 0 = sin asignar → el Player local
+//  usa 1 (single-player). El servidor lo pone en start_server; un cliente lo
+//  recibe por RPC (_gl_peer_uid) al conectarse.
+inline int64_t& gl_local_user_id() { static int64_t v = 0; return v; }
 //  Hook para APLICAR una propiedad replicada en el cliente reentrando al
 //  __newindex real. Lo define luau_api.h (que ve godot_object_newindex/wrap_node/
 //  gl_net_decode) y lo instala el setup por-VM; el NetworkService (que no puede

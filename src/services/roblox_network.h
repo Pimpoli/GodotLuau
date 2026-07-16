@@ -327,6 +327,13 @@ class NetworkService : public Node {
     std::map<int, Puppet> puppets;   // peerId -> muñeco visible
     std::map<int, uint64_t> peer_player_ids;   // peerId remoto -> ObjectID del objeto Player
 
+    // ── UserId secuencial e inmutable (asignado por el servidor) ─────────
+    // Cada juego numera a sus jugadores por orden de entrada: host=1, luego
+    // 2,3,... El servidor es autoridad; replica cada asignación a todos con
+    // _gl_peer_uid para que todas las ventanas vean el mismo UserId por peer.
+    std::map<int, int64_t> peer_seq_uid;   // peerId -> UserId asignado
+    int64_t next_seq_uid = 2;              // servidor: siguiente UserId (host toma el 1)
+
     // ── Replicación automática (1.14.5) ─────────────────────────────────
     // netId (asignado por el servidor) -> ObjectID del nodo replicado. En el
     // servidor se llena al replicar; en el cliente al recibir _rep_new.
@@ -397,13 +404,31 @@ class NetworkService : public Node {
         if (!ps) return nullptr;
         po = memnew(PlayerObject);
         po->peer_id = peer;
-        po->user_id = (int64_t)peer;   // UserId = id de peer (único por jugador)
+        // UserId = el secuencial asignado por el servidor (host=1, 2,3,...). Si aún
+        // no llegó la asignación (carrera), cae al peerId como provisional.
+        auto uit = peer_seq_uid.find(peer);
+        po->user_id = (uit != peer_seq_uid.end()) ? uit->second : (int64_t)peer;
         String pname = String("Player_") + String::num_int64(peer);
         po->set_name(pname);
         po->display_name = pname;
         ps->add_child(po);
         peer_player_ids[peer] = (uint64_t)po->get_instance_id();
         return po;
+    }
+
+    // (cliente) el servidor (peer 1) comunica el UserId secuencial de un peer.
+    // Mantiene todas las ventanas con el mismo UserId por jugador y fija el del
+    // jugador LOCAL cuando el peer soy yo.
+    void _gl_peer_uid(int peer, int uid) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor asigna
+        peer_seq_uid[peer] = (int64_t)uid;
+        Ref<MultiplayerAPI> m = _mp();
+        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        if (peer == myid) {
+            gl_local_user_id() = (int64_t)uid;
+            if (PlayerObject* lp = _local_player_obj()) lp->user_id = (int64_t)uid;
+        }
+        if (PlayerObject* po = _peer_player(peer)) po->user_id = (int64_t)uid;   // corregir si ya existía
     }
 
     void _name_local_player(int display_num) {
@@ -549,6 +574,7 @@ class NetworkService : public Node {
         rpc_config("_rep_prop",           r);   // replicación: cambio de propiedad
         rpc_config("_rep_reparent",       r);   // replicación: mover de padre
         rpc_config("_rep_destroy",        r);   // replicación: destruir instancia
+        rpc_config("_gl_peer_uid",        r);   // UserId secuencial: servidor → clientes
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -639,6 +665,9 @@ class NetworkService : public Node {
             pup->set_name(String("RemotePlayer_") + String::num_int64(key));
             wsp->add_child(pup);
             pup->set_global_position(pos);
+            // .Character del jugador remoto = este cuerpo; subir su HumanoidRootPart
+            // a hijo directo para que el world gen del servidor lea su .Position.
+            gl_lift_hrp(pup, pup->get_node_or_null("Visual"));
             // Si el muñeco sale del árbol por fuera (Luau Destroy/ClearAllChildren),
             // quitar la entrada ANTES de que el puntero quede colgando.
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
@@ -840,6 +869,7 @@ protected:
         ClassDB::bind_method(D_METHOD("_rep_prop", "id", "key", "enc"),             &NetworkService::_rep_prop);
         ClassDB::bind_method(D_METHOD("_rep_reparent", "id", "parent_ref"),         &NetworkService::_rep_reparent);
         ClassDB::bind_method(D_METHOD("_rep_destroy", "id"),                        &NetworkService::_rep_destroy);
+        ClassDB::bind_method(D_METHOD("_gl_peer_uid", "peer", "uid"),               &NetworkService::_gl_peer_uid);
     }
 
     void _notification(int p_what) {
@@ -858,10 +888,19 @@ public:
             return;
         }
         gl_mp_log(String("otro jugador entro (peer ") + String::num_int64(id) + ")");
-        // Replicación (1.14.5): mandarle al peer nuevo el mundo ya replicado. Los
-        // clientes ya no corren ServerScripts, así que sin esto no verían lo que el
-        // servidor creó antes de que ellos conectaran (late-join).
-        if (mode == 1) _rep_sync_peer(id);
+        if (mode == 1) {
+            // UserId secuencial: primero poner al día al peer nuevo con las
+            // asignaciones YA hechas (host + otros peers), luego asignarle el suyo
+            // y avisar a TODOS para que todas las ventanas coincidan.
+            for (auto& kv : peer_seq_uid) rpc_id(id, "_gl_peer_uid", kv.first, (int)kv.second);
+            int64_t uid = next_seq_uid++;
+            peer_seq_uid[id] = uid;
+            rpc("_gl_peer_uid", id, (int)uid);
+            // Replicación (1.14.5): mandarle al peer nuevo el mundo ya replicado. Los
+            // clientes ya no corren ServerScripts, así que sin esto no verían lo que el
+            // servidor creó antes de que ellos conectaran (late-join).
+            _rep_sync_peer(id);
+        }
         // NO se dispara Players.PlayerAdded aquí: un peer SIN personaje (p.ej. la
         // ventana SERVIDOR sin jugador) NO es un Player. PlayerAdded se dispara
         // cuando aparece su personaje (muñeco), en _update_puppet*. Aquí solo la
@@ -1531,6 +1570,9 @@ public:
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 1;
         gl_net_role() = 1; gl_net_service_id() = (uint64_t)get_instance_id();   // replicación: somos servidor
+        // UserId secuencial: el host es SIEMPRE el jugador 1; los peers toman 2,3,...
+        peer_seq_uid[1] = 1; next_seq_uid = 2; gl_local_user_id() = 1;
+        if (PlayerObject* lp = _local_player_obj()) lp->user_id = 1;
         gl_run_deferred_server_scripts();   // si esta ventana era cliente y se promovió a host, corre ahora sus ServerScripts
         set_process(true);
         return true;
@@ -1563,6 +1605,7 @@ public:
         mode = 0;
         gl_net_role() = 0;   // replicación off
         net_instances.clear();
+        peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
         net_connected = false;
         target_address = "";
     }

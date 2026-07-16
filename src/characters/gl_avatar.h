@@ -25,6 +25,7 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <vector>
 #include "gl_debug.h"
 
 using namespace godot;
@@ -68,11 +69,13 @@ public:
         Node* par = get_parent();
         if (!par) return;
         Node* n;
-        if ((n = par->get_node_or_null("LeftArmPivot")))  p_larm = n->get_instance_id();
-        if ((n = par->get_node_or_null("RightArmPivot"))) p_rarm = n->get_instance_id();
-        if ((n = par->get_node_or_null("LeftLegPivot")))  p_lleg = n->get_instance_id();
-        if ((n = par->get_node_or_null("RightLegPivot"))) p_rleg = n->get_instance_id();
-        if ((n = par->get_node_or_null("HeadPivot")))     p_head = n->get_instance_id();
+        // Partes por su nombre Roblox (hijas del mismo padre que el animador, ya
+        // sea el rig o el personaje aplanado). Antes eran "*Pivot".
+        if ((n = par->get_node_or_null("Left Arm")))  p_larm = n->get_instance_id();
+        if ((n = par->get_node_or_null("Right Arm"))) p_rarm = n->get_instance_id();
+        if ((n = par->get_node_or_null("Left Leg")))  p_lleg = n->get_instance_id();
+        if ((n = par->get_node_or_null("Right Leg"))) p_rleg = n->get_instance_id();
+        if ((n = par->get_node_or_null("Head")))      p_head = n->get_instance_id();
         ready_ok = p_larm && p_rarm && p_lleg && p_rleg;
         if (ready_ok) GL_DEBUG_PRINT("[GodotLuau] R6 rig listo (animaciones clasicas activas).");
         set_process(ready_ok);
@@ -132,18 +135,19 @@ static inline Node3D* gl_build_r6_rig() {
 
     Node3D* root = memnew(Node3D);
     root->set_name("Character");
+    root->set_meta("_gl_r6rig", true);   // marca: personaje R6 propio → aplanable (partes/HRP suben a hijos directos)
     int built = 0;
     for (int i = 0; i < 6; i++) {
         if (!rl->exists(PARTS[i].file)) continue;
         Ref<Mesh> mesh = rl->load(PARTS[i].file);
         if (mesh.is_null()) continue;
         Node3D* pivot = memnew(Node3D);
-        pivot->set_name(PARTS[i].pivot);
+        pivot->set_name(PARTS[i].name);   // el nodo-parte lleva el nombre Roblox (hijo directo del personaje al aplanar)
         pivot->set_position(PARTS[i].joint);
         if (PARTS[i].rest_z != 0.0f) pivot->set_rotation(Vector3(0, 0, PARTS[i].rest_z));
         root->add_child(pivot);
         MeshInstance3D* mi = memnew(MeshInstance3D);
-        mi->set_name(PARTS[i].name);
+        mi->set_name("Mesh");
         mi->set_mesh(mesh);
         pivot->add_child(mi);
         built++;
@@ -206,6 +210,36 @@ static inline Node3D* gl_clone_starter_character(Node* ctx) {
 static inline Node3D* gl_build_character(Node* ctx) {
     if (Node3D* sc = gl_clone_starter_character(ctx)) return sc;
     return gl_build_r6_rig();
+}
+
+// ── Aplanado estilo Roblox ───────────────────────────────────────────
+// En Roblox el Character es UN Model plano: HumanoidRootPart y las partes
+// (Head/Torso/Left Arm/...) son hijos DIRECTOS. El rig R6 propio los tenía
+// anidados (Character > *Pivot > Mesh) y HumanoidRootPart bajo el rig, así que
+// Character:FindFirstChild("HumanoidRootPart") daba nil y rompía frameworks
+// portados de Roblox. Esto sube las partes + HRP a hijos directos del "wrapper"
+// (el RobloxPlayer local, que es lo que devuelve .Character) y descarta el root
+// vacío. reparent(keep_global) hornea la escala/offset del rig → SIN cambio
+// visual. Solo actúa sobre el rig R6 propio (meta _gl_r6rig); un StarterCharacter
+// del usuario se deja intacto.
+static inline void gl_flatten_r6_character(Node* wrapper, Node* character) {
+    if (!wrapper || !character) return;
+    if (!character->has_meta("_gl_r6rig")) return;
+    if (!wrapper->is_inside_tree() || !character->is_inside_tree()) return;
+    std::vector<Node*> kids;
+    for (int i = 0; i < character->get_child_count(); i++)
+        if (Node* c = character->get_child(i)) kids.push_back(c);
+    for (Node* c : kids) c->reparent(wrapper, true);   // keep_global: hornea la transform del rig
+    character->queue_free();
+}
+
+// Para el muñeco del jugador remoto: sube SOLO el HumanoidRootPart del rig
+// visual a hijo directo del cuerpo (para que .Character:FindFirstChild(
+// "HumanoidRootPart") resuelva en el servidor), dejando el rig "Visual" intacto
+// (animador y bob del muñeco siguen colgando de "Visual").
+static inline void gl_lift_hrp(Node* wrapper, Node* visual) {
+    if (!wrapper || !visual || !wrapper->is_inside_tree()) return;
+    if (Node* hrp = visual->get_node_or_null("HumanoidRootPart")) hrp->reparent(wrapper, true);
 }
 
 #endif // GL_AVATAR_H

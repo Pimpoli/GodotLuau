@@ -377,6 +377,10 @@ public:
             Node3D* character = gl_build_character(this);
             if (character) {
                 p->add_child(character);
+                // Aplanar el rig R6 propio: partes + HumanoidRootPart pasan a ser
+                // hijos DIRECTOS del personaje (como el Model plano de Roblox), así
+                // Character:FindFirstChild("HumanoidRootPart") resuelve.
+                gl_flatten_r6_character(p, character);
             } else {
                 MeshInstance3D* m = memnew(MeshInstance3D);
                 m->set_name("Mesh");
