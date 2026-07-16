@@ -83,6 +83,28 @@ net:RemoveServer("PC de Ana")   -- borrar
 ```
 La lista se guarda en `user://gl_servers.json`.
 
+## Correr en Linux (compilar la extensión una vez)
+
+GodotLuau es una extensión C++: cada sistema necesita su binario. El zip trae
+el de **Windows** (`.dll`). Para **Linux** (correr el server o el juego en una
+PC/laptop Linux) compila el `.so` una sola vez en esa máquina Linux:
+
+```bash
+git clone --recursive https://github.com/Pimpoli/GodotLuau.git
+cd GodotLuau
+sudo apt install scons g++ python3-dev      # si no los tienes
+scons platform=linux target=template_debug
+scons platform=linux target=template_release
+# genera GodotLuau/bin/godot_luau.linux.template_debug.x86_64.so (+ release)
+```
+
+Copia esos `.so` al `GodotLuau/bin/` de TU proyecto en Linux (junto a las `.dll`)
+y Godot cargará la extensión en Linux. El `.gdextension` ya apunta a ellos.
+Servidor en Linux: `bash start_server.sh` (o el comando `--glserver` de arriba).
+
+**Cross-play Windows ↔ Linux:** funciona directo — la red es ENet (multiplataforma).
+Un server de Linux acepta clientes de Windows y viceversa, sin cambios.
+
 ## API de red útil
 ```lua
 net:StartServer(25565)          -- hospedar en tu PC (con jugador)
