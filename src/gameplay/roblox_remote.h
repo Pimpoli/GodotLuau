@@ -8,6 +8,7 @@
 #include "gl_errors.h"
 #include "gl_runtime.h"   // gl_state_alive, GodotObjectWrapper, gow_set
 #include "gl_net_bridge.h" // serializador Lua<->red (Fase 2)
+#include "roblox_services.h" // LuauPendingResume + get_pending_resumes (para :Wait)
 #include <vector>
 #include <algorithm>
 #include <functional>
@@ -142,7 +143,17 @@ static void _lua_cross_push(lua_State* src, int idx, lua_State* dst, int depth =
     else lua_pushnil(dst);
 }
 
-struct LuaCB { lua_State* L; int ref; bool active = true; };
+struct LuaCB { lua_State* L; int ref; bool active = true; bool once = false; };
+// Corrutina suspendida en OnServerEvent:Wait()/OnClientEvent:Wait().
+struct LuaWait { lua_State* th; lua_State* main_L; };
+
+// Empaqueta un nodo como referencia de red (para pasar el Player en :Wait server).
+static inline Dictionary _gl_inst_dict(Node* nd) {
+    Dictionary d;
+    d["__glnet"] = "inst";
+    d["p"] = (nd && nd->is_inside_tree()) ? String(nd->get_path()) : String();
+    return d;
+}
 
 // ════════════════════════════════════════════════════════════════════
 //  RemoteEventNode — client→server / server→client events
@@ -160,10 +171,39 @@ protected:
 public:
     std::vector<LuaCB> server_cbs;
     std::vector<LuaCB> client_cbs;
+    std::vector<LuaWait> server_wait_cbs;   // OnServerEvent:Wait()
+    std::vector<LuaWait> client_wait_cbs;   // OnClientEvent:Wait()
     bool reliable = true;   // false en UnreliableRemoteEvent (canal no confiable)
 
-    void add_server_cb(lua_State* L, int ref) { server_cbs.push_back({L, ref}); }
-    void add_client_cb(lua_State* L, int ref) { client_cbs.push_back({L, ref}); }
+    void add_server_cb(lua_State* L, int ref, bool once = false) { server_cbs.push_back({L, ref, true, once}); }
+    void add_client_cb(lua_State* L, int ref, bool once = false) { client_cbs.push_back({L, ref, true, once}); }
+    void add_server_wait(lua_State* th, lua_State* mL) { server_wait_cbs.push_back({th, mL}); }
+    void add_client_wait(lua_State* th, lua_State* mL) { client_wait_cbs.push_back({th, mL}); }
+
+    // Reanuda (diferido, vía cola compartida) las corrutinas en :Wait() con los
+    // args del evento. ctx = este remote, para resolver Instances en el destino.
+    void _queue_waits(std::vector<LuaWait>& waits, const Array& args_arr, Node* ctx) {
+        uint64_t ctx_id = ctx ? (uint64_t)ctx->get_instance_id() : 0;
+        for (auto& w : waits) {
+            if (!gl_state_alive(w.main_L)) continue;
+            LuauPendingResume pr;
+            pr.thread = w.th; pr.main_L = w.main_L; pr.delta = 0; pr.node_arg = nullptr;
+            pr.args = args_arr; pr.ctx_id = ctx_id; pr.use_args = true;
+            get_pending_resumes().push_back(pr);
+        }
+        waits.clear();
+    }
+
+    // Elimina (y libera el ref) las conexiones inactivas tras un dispatch, para
+    // que :Once y Connection:Disconnect no acumulen entradas muertas ni fuguen refs.
+    static void _compact_cbs(std::vector<LuaCB>& v) {
+        for (int i = (int)v.size() - 1; i >= 0; --i) {
+            if (!v[i].active) {
+                if (gl_state_alive(v[i].L)) lua_unref(v[i].L, v[i].ref);
+                v.erase(v.begin() + i);
+            }
+        }
+    }
 
     // ── Entrega LOCAL (mismo proceso) ───────────────────────────────────────
     // Cada listener corre en su propio hilo (como el resto del motor) para que
@@ -179,9 +219,17 @@ public:
                 _gl_push_node(th, player);              // arg1: player que disparó
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
+                if (cb.once) _gl_disconnect(cb.ref);    // :Once → desconectar ANTES de invocar (como Roblox)
                 gl_check_resume(th, lua_resume(th, nullptr, 1 + nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
+        }
+        _compact_cbs(server_cbs);
+        if (!server_wait_cbs.empty()) {                 // OnServerEvent:Wait() → (player, ...)
+            Array wa; wa.push_back(_gl_inst_dict(player));
+            Array ea = gl_net_encode_args(L, stack_base, nargs);
+            for (int i = 0; i < ea.size(); i++) wa.push_back(ea[i]);
+            _queue_waits(server_wait_cbs, wa, this);
         }
     }
     void _run_client_cbs(lua_State* L, int stack_base, int nargs) {
@@ -194,9 +242,15 @@ public:
                 lua_xmove(cb.L, th, 1);
                 for (int i = stack_base; i < stack_base + nargs; i++)
                     _lua_cross_push(L, i, th);
+                if (cb.once) _gl_disconnect(cb.ref);    // :Once → desconectar ANTES de invocar (como Roblox)
                 gl_check_resume(th, lua_resume(th, nullptr, nargs));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
+        }
+        _compact_cbs(client_cbs);
+        if (!client_wait_cbs.empty()) {                 // OnClientEvent:Wait() → (...)
+            Array ea = gl_net_encode_args(L, stack_base, nargs);
+            _queue_waits(client_wait_cbs, ea, this);
         }
     }
 
@@ -212,9 +266,16 @@ public:
                 lua_xmove(cb.L, th, 1);
                 _gl_push_node(th, player);
                 int n = gl_net_decode_args(th, args, ctx);
+                if (cb.once) _gl_disconnect(cb.ref);
                 gl_check_resume(th, lua_resume(th, nullptr, 1 + n));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
+        }
+        _compact_cbs(server_cbs);
+        if (!server_wait_cbs.empty()) {
+            Array wa; wa.push_back(_gl_inst_dict(player));
+            for (int i = 0; i < args.size(); i++) wa.push_back(args[i]);
+            _queue_waits(server_wait_cbs, wa, ctx);
         }
     }
     void deliver_to_client_cbs(const Array& args, Node* ctx) {
@@ -226,10 +287,13 @@ public:
             if (lua_isfunction(cb.L, -1)) {
                 lua_xmove(cb.L, th, 1);
                 int n = gl_net_decode_args(th, args, ctx);
+                if (cb.once) _gl_disconnect(cb.ref);
                 gl_check_resume(th, lua_resume(th, nullptr, n));
             } else lua_pop(cb.L, 1);
             lua_pop(cb.L, 1);
         }
+        _compact_cbs(client_cbs);
+        if (!client_wait_cbs.empty()) _queue_waits(client_wait_cbs, args, ctx);
     }
 
     // ── API pública (desde Luau) — decide red vs local según el modo ────────
@@ -274,6 +338,9 @@ public:
         auto pred = [L](const LuaCB& c){ return c.L == L; };
         server_cbs.erase(std::remove_if(server_cbs.begin(), server_cbs.end(), pred), server_cbs.end());
         client_cbs.erase(std::remove_if(client_cbs.begin(), client_cbs.end(), pred), client_cbs.end());
+        auto wpred = [L](const LuaWait& w){ return w.main_L == L; };
+        server_wait_cbs.erase(std::remove_if(server_wait_cbs.begin(), server_wait_cbs.end(), wpred), server_wait_cbs.end());
+        client_wait_cbs.erase(std::remove_if(client_wait_cbs.begin(), client_wait_cbs.end(), wpred), client_wait_cbs.end());
     }
     void _gl_disconnect(int ref) {
         for (auto& cb : server_cbs) if (cb.ref == ref) cb.active = false;

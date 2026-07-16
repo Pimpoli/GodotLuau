@@ -1958,50 +1958,50 @@ static int godot_object_index(lua_State* L) {
             }, "FireAllClients", 1);
             return 1;
         }
-        if (strcmp(key, "OnServerEvent") == 0) {
+        if (strcmp(key, "OnServerEvent") == 0 || strcmp(key, "OnClientEvent") == 0) {
+            bool is_server = (strcmp(key, "OnServerEvent") == 0);
             lua_newtable(L);
+            // Connect(fn) / Once(fn) comparten closure (upvalue2 = ¿once?)
+            for (int variant = 0; variant < 2; variant++) {
+                lua_pushlightuserdata(L, (void*)re);
+                lua_pushboolean(L, variant);            // 0 = Connect, 1 = Once
+                lua_pushboolean(L, is_server ? 1 : 0);  // lado
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
+                    bool once = lua_toboolean(pL, lua_upvalueindex(2));
+                    bool srv  = lua_toboolean(pL, lua_upvalueindex(3));
+                    int fn_pos = -1;
+                    for (int ai = 1; ai <= lua_gettop(pL); ai++)
+                        if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
+                    if (fn_pos == -1 || !rev) return 0;
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                    lua_pop(pL, 1);
+                    if (!mL) mL = pL;
+                    int ref = lua_ref(pL, fn_pos);
+                    if (srv) rev->add_server_cb(mL, ref, once);
+                    else     rev->add_client_cb(mL, ref, once);
+                    _gl_push_connection(pL, rev, ref); return 1;
+                }, variant ? "Once" : "Connect", 3);
+                lua_setfield(L, -2, variant ? "Once" : "Connect");
+            }
+            // Wait() — cede la corrutina hasta el próximo disparo; devuelve los args
             lua_pushlightuserdata(L, (void*)re);
+            lua_pushboolean(L, is_server ? 1 : 0);
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
-                int fn_pos = -1;
-                for (int ai = 1; ai <= lua_gettop(pL); ai++) {
-                    if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
-                }
-                if (fn_pos == -1 || !rev) return 0;
+                bool srv = lua_toboolean(pL, lua_upvalueindex(2));
+                if (!rev) { lua_pushnil(pL); return 1; }
                 lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
                 lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
                 lua_pop(pL, 1);
                 if (!mL) mL = pL;
-                lua_pushvalue(pL, fn_pos);
-                int ref = lua_ref(pL, -1);
-                lua_pop(pL, 1);
-                rev->add_server_cb(mL, ref);
-                _gl_push_connection(pL, rev, ref); return 1;
-            }, "Connect", 1);
-            lua_setfield(L, -2, "Connect");
-            return 1;
-        }
-        if (strcmp(key, "OnClientEvent") == 0) {
-            lua_newtable(L);
-            lua_pushlightuserdata(L, (void*)re);
-            lua_pushcclosure(L, [](lua_State* pL) -> int {
-                RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
-                int fn_pos = -1;
-                for (int ai = 1; ai <= lua_gettop(pL); ai++) {
-                    if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
-                }
-                if (fn_pos == -1 || !rev) return 0;
-                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
-                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
-                lua_pop(pL, 1);
-                if (!mL) mL = pL;
-                lua_pushvalue(pL, fn_pos);
-                int ref = lua_ref(pL, -1);
-                lua_pop(pL, 1);
-                rev->add_client_cb(mL, ref);
-                _gl_push_connection(pL, rev, ref); return 1;
-            }, "Connect", 1);
-            lua_setfield(L, -2, "Connect");
+                if (srv) rev->add_server_wait(pL, mL);
+                else     rev->add_client_wait(pL, mL);
+                lua_pushstring(pL, "__WAIT_SIGNAL__");
+                return lua_yield(pL, 1);
+            }, "Wait", 2);
+            lua_setfield(L, -2, "Wait");
             return 1;
         }
     }

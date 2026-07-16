@@ -33,6 +33,12 @@ struct LuauPendingResume {
     lua_State* main_L;   // owning main state
     double     delta;    // dt argument to pass
     Node*      node_arg; // optional node (WaitForChild result); nullptr if not used
+    // Reanudar con args de red (RemoteEvent:Wait): si use_args, se decodifica
+    // `args` con el nodo ctx (por ObjectID, sin puntero colgante entre frames)
+    // y se pasan como N valores en vez de delta/node_arg.
+    Array      args;
+    uint64_t   ctx_id = 0;
+    bool       use_args = false;
 };
 inline std::vector<LuauPendingResume>& get_pending_resumes() {
     static std::vector<LuauPendingResume> v;

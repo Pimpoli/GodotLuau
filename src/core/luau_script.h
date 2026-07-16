@@ -2205,8 +2205,13 @@ public:
             LuauPendingResume& pr = pending[i];
             // Only process entries that belong to this ScriptNode's main state
             if (pr.main_L != L_main) continue;
-            if (pr.node_arg) { wrap_node(pr.thread, pr.node_arg); resume_external_thread(pr.thread, 1); }
-            else             { lua_pushnumber(pr.thread, pr.delta); resume_external_thread(pr.thread, 1); }
+            if (pr.use_args) {   // RemoteEvent:Wait → devolver los args del evento
+                Node* ctx = pr.ctx_id ? Object::cast_to<Node>(ObjectDB::get_instance(pr.ctx_id)) : nullptr;
+                int n = gl_net_decode_args(pr.thread, pr.args, ctx);
+                resume_external_thread(pr.thread, n);
+            }
+            else if (pr.node_arg) { wrap_node(pr.thread, pr.node_arg); resume_external_thread(pr.thread, 1); }
+            else                  { lua_pushnumber(pr.thread, pr.delta); resume_external_thread(pr.thread, 1); }
             pending.erase(pending.begin() + i);
         }
     }

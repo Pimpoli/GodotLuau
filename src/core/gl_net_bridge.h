@@ -13,12 +13,13 @@
 //  que lo pueden incluir roblox_remote.h, roblox_network.h y luau_script.h
 //  sin crear ciclos de include.
 //
-//  Tipos soportados en el payload:
-//    nil, bool, number, string, tablas (array y diccionario, anidadas),
-//    Vector3, Color3, tipos-tabla con __type (CFrame, UDim2, UDim, Rect…),
-//    e Instances (por ruta absoluta en el árbol; se re-resuelven en destino).
-//  Pendiente (siguiente tanda): Vector2, Vector2int, y datatypes userdata
-//  distintos de Vector3/Color3.
+//  Tipos soportados en el payload (paridad RemoteEvent con Roblox):
+//    nil, bool, number, string; tablas array, diccionario Y MIXTAS (array+hash),
+//    anidadas; Vector3, Color3 (userdata); TODOS los datatypes tipo-tabla con
+//    __type (Vector2, CFrame, UDim, UDim2, Rect, Region3, Ray, NumberRange,
+//    BrickColor, NumberSequence, ColorSequence, PhysicalProperties, DateTime…);
+//    e Instances (por ruta absoluta; se re-resuelven en destino, nil si no existe).
+//  Nota: los EnumItem viajan como su valor numérico (no como objeto EnumItem).
 // ════════════════════════════════════════════════════════════════════
 
 #include <godot_cpp/classes/node.hpp>
@@ -108,13 +109,23 @@ static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
             }
             int seq = (int)lua_objlen(L, idx);
             if (type_name.is_empty() && seq > 0) {
-                Array arr;
-                for (int i = 1; i <= seq; i++) {
-                    lua_rawgeti(L, idx, i);
-                    arr.push_back(gl_net_encode(L, -1, depth + 1));
-                    lua_pop(L, 1);
+                // Solo usar el Array rápido si es un array PURO (sin parte hash).
+                // Si la tabla es MIXTA (array + claves extra, p.ej. {1,2,foo=3}),
+                // cae al dict de abajo para NO perder la parte hash — antes se
+                // perdía, igual que el bug del encoder JSON. Roblox sí la envía.
+                int counted = 0;
+                lua_pushnil(L);
+                while (lua_next(L, idx) != 0) { counted++; lua_pop(L, 1); }
+                if (counted == seq) {
+                    Array arr;
+                    for (int i = 1; i <= seq; i++) {
+                        lua_rawgeti(L, idx, i);
+                        arr.push_back(gl_net_encode(L, -1, depth + 1));
+                        lua_pop(L, 1);
+                    }
+                    return arr;
                 }
-                return arr;
+                // tabla mixta → continúa al dict (preserva claves int 1..seq + hash)
             }
             Dictionary d;
             lua_pushnil(L);
