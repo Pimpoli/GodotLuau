@@ -276,6 +276,7 @@ public:
 };
 
 #include "roblox_remote.h"   // RemoteEventNode (entrega de eventos que llegan por red)
+#include "roblox_part.h"     // RobloxPart (física en red / Network Ownership 1.14.7)
 
 class NetworkService : public Node {
     GDCLASS(NetworkService, Node);
@@ -339,6 +340,14 @@ class NetworkService : public Node {
     // servidor se llena al replicar; en el cliente al recibir _rep_new.
     std::map<uint64_t, uint64_t> net_instances;
     uint64_t next_net_id_ctr = 1;   // servidor: contador de netId
+
+    // ── Física en red / Network Ownership (1.14.7) ───────────────────────
+    // Cada parte no anclada tiene un dueño (meta "_gl_owner": 0=servidor,
+    // N=peer). La máquina AUTORIDAD simula y transmite su transform+velocidad;
+    // las demás la congelan (kinematic) e interpolan al estado recibido.
+    double phys_timer = 0.0;
+    struct PhysTarget { Transform3D xform; Vector3 lvel; Vector3 avel; bool has = false; };
+    std::map<uint64_t, PhysTarget> phys_targets;   // netId → estado remoto a interpolar
 
     // Ping (medido cliente→servidor→cliente, en milisegundos)
     double ping_ms = -1.0;
@@ -578,6 +587,9 @@ class NetworkService : public Node {
         rpc_config("_rf_invoke_server",   r);   // RemoteFunction (1.14.6): invocar server
         rpc_config("_rf_invoke_client",   r);   // RemoteFunction: invocar cliente
         rpc_config("_rf_return",          r);   // RemoteFunction: respuesta al invocador
+        rpc_config("_phys_state",         u);   // física en red (1.14.7): estado (no confiable, último gana)
+        rpc_config("_phys_owned",         u);   // física: estado del cliente-dueño al servidor
+        rpc_config("_phys_owner",         r);   // física: cambio de dueño (confiable)
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -880,6 +892,12 @@ protected:
         ClassDB::bind_method(D_METHOD("_rf_invoke_server", "path", "call_id", "args"),          &NetworkService::_rf_invoke_server);
         ClassDB::bind_method(D_METHOD("_rf_invoke_client", "path", "call_id", "args"),          &NetworkService::_rf_invoke_client);
         ClassDB::bind_method(D_METHOD("_rf_return", "call_id", "ok", "rets"),                   &NetworkService::_rf_return);
+        // Física en red / Network Ownership (1.14.7)
+        ClassDB::bind_method(D_METHOD("net_set_owner", "net_id", "owner_peer", "is_auto"),      &NetworkService::net_set_owner);
+        ClassDB::bind_method(D_METHOD("net_is_owner", "net_id"),                                &NetworkService::net_is_owner);
+        ClassDB::bind_method(D_METHOD("_phys_state", "net_id", "t", "lv", "av"),                &NetworkService::_phys_state);
+        ClassDB::bind_method(D_METHOD("_phys_owned", "net_id", "t", "lv", "av"),                &NetworkService::_phys_owned);
+        ClassDB::bind_method(D_METHOD("_phys_owner", "net_id", "owner_peer", "is_auto"),        &NetworkService::_phys_owner);
     }
 
     void _notification(int p_what) {
@@ -933,6 +951,16 @@ public:
     void _on_peer_disconnected(int id) {
         _remove_puppet(id);
         if (is_server()) rpc("_recv_remove", id);   // que los clientes también lo quiten
+        // Física (1.14.7): partes que poseía ese peer vuelven al servidor.
+        if (is_server()) {
+            for (auto& kv : net_instances) {
+                Node* n = _rep_node(kv.first);
+                if (n && n->has_meta("_gl_owner") && (int)n->get_meta("_gl_owner") == id) {
+                    n->set_meta("_gl_owner", 0);
+                    rpc("_phys_owner", (int64_t)kv.first, 0, false);
+                }
+            }
+        }
         _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
@@ -1078,6 +1106,100 @@ public:
         if (ref.begins_with("#")) return _rep_node((uint64_t)ref.substr(1).to_int());
         if (!is_inside_tree()) return nullptr;
         return get_node_or_null(NodePath(ref));   // ruta absoluta (mismo place en cada ventana)
+    }
+
+    // ── Física en red / Network Ownership (1.14.7) ───────────────────────
+    // ¿Esta máquina simula esta parte? owner 0 = servidor; owner N = ese peer.
+    bool _phys_authority(Node* part) {
+        int owner = part->has_meta("_gl_owner") ? (int)part->get_meta("_gl_owner") : 0;
+        if (owner == 0) return is_server();
+        return owner == get_peer_id();
+    }
+    bool net_is_owner(int64_t netId) {
+        Node* n = _rep_node((uint64_t)netId);
+        return n ? _phys_authority(n) : true;
+    }
+    // Fijar dueño (SetNetworkOwner/Auto, solo servidor): aplicar local + difundir.
+    void net_set_owner(int64_t netId, int owner_peer, bool is_auto) {
+        _apply_owner((uint64_t)netId, owner_peer, is_auto);
+        rpc("_phys_owner", netId, owner_peer, is_auto);
+    }
+    void _apply_owner(uint64_t netId, int owner_peer, bool is_auto) {
+        RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(netId));
+        if (!part) return;
+        part->set_meta("_gl_owner", owner_peer);
+        part->set_meta("_gl_owner_auto", is_auto);
+        if (_phys_authority(part)) {
+            part->set_freeze_enabled(part->get_anchored());   // yo simulo (salvo anclada)
+            phys_targets.erase(netId);
+        } else if (!part->get_anchored()) {
+            part->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC);
+            part->set_freeze_enabled(true);                    // congelar para no pelear con el stream
+        }
+    }
+    void _phys_owner(int64_t netId, int owner_peer, bool is_auto) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor
+        _apply_owner((uint64_t)netId, owner_peer, is_auto);
+    }
+    void _phys_apply_remote(RobloxPart* part, uint64_t netId, const Transform3D& t, const Vector3& lv, const Vector3& av) {
+        if (!part->is_freeze_enabled()) { part->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC); part->set_freeze_enabled(true); }
+        PhysTarget& pt = phys_targets[netId];
+        pt.xform = t; pt.lvel = lv; pt.avel = av; pt.has = true;
+    }
+    void _phys_state(int64_t netId, Transform3D t, Vector3 lv, Vector3 av) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // autoridad-relay = servidor
+        RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node((uint64_t)netId));
+        if (!part || _phys_authority(part)) return;
+        _phys_apply_remote(part, (uint64_t)netId, t, lv, av);
+    }
+    void _phys_owned(int64_t netId, Transform3D t, Vector3 lv, Vector3 av) {
+        if (!is_server()) return;
+        int sender = get_multiplayer()->get_remote_sender_id();
+        RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node((uint64_t)netId));
+        if (!part) return;
+        int owner = part->has_meta("_gl_owner") ? (int)part->get_meta("_gl_owner") : 0;
+        if (owner != sender) return;   // solo el dueño real puede mandar su estado
+        _phys_apply_remote(part, (uint64_t)netId, t, lv, av);   // el server tambien lo muestra
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_valid()) {
+            PackedInt32Array peers = m->get_peers();
+            for (int i = 0; i < peers.size(); i++) if (peers[i] != sender) rpc_id(peers[i], "_phys_state", netId, t, lv, av);
+        }
+    }
+    // Tick ~20Hz: la autoridad transmite sus partes no ancladas despiertas; los
+    // demás las congelan (kinematic) para no simular contra el stream.
+    void _phys_tick() {
+        for (auto& kv : net_instances) {
+            RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(kv.first));
+            if (!part || part->get_anchored()) continue;
+            if (_phys_authority(part)) {
+                if (part->is_freeze_enabled()) part->set_freeze_enabled(false);
+                phys_targets.erase(kv.first);
+                if (part->is_sleeping()) continue;
+                Transform3D t = part->get_global_transform();
+                Vector3 lv = part->get_linear_velocity(), av = part->get_angular_velocity();
+                if (is_server()) rpc("_phys_state", (int64_t)kv.first, t, lv, av);
+                else             rpc_id(1, "_phys_owned", (int64_t)kv.first, t, lv, av);
+            } else if (!part->is_freeze_enabled()) {
+                part->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC);
+                part->set_freeze_enabled(true);
+            }
+        }
+    }
+    void _phys_lerp(double dt) {
+        if (phys_targets.empty()) return;
+        float a = 1.0f - (float)Math::pow(0.0001, dt);
+        for (auto it = phys_targets.begin(); it != phys_targets.end(); ++it) {
+            if (!it->second.has) continue;
+            RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(it->first));
+            if (!part) continue;
+            Transform3D cur = part->get_global_transform();
+            const Transform3D& tgt = it->second.xform;
+            cur.origin = cur.origin.lerp(tgt.origin, a);
+            Quaternion q = cur.basis.get_rotation_quaternion().slerp(tgt.basis.get_rotation_quaternion(), a);
+            cur.basis = Basis(q);
+            part->set_global_transform(cur);
+        }
     }
 
     // Snapshot de propiedades a replicar (shadow "_glrep_*"). Para Node3D con
@@ -1470,6 +1592,10 @@ public:
                 }
             }
             _lerp_puppets(dt);
+            // Física en red (1.14.7): la autoridad transmite ~20Hz; todos interpolan.
+            phys_timer += dt;
+            if (phys_timer >= 0.05) { phys_timer = 0.0; _phys_tick(); }
+            _phys_lerp(dt);
         }
     }
 

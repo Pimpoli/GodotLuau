@@ -2126,6 +2126,74 @@ static int godot_object_index(lua_State* L) {
             }, "ApplyAngularImpulse", 1);
             return 1;
         }
+        // ── Network Ownership (1.14.7) ──
+        if (strcmp(key, "SetNetworkOwner") == 0) {
+            lua_pushlightuserdata(L, (void*)part);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!p || !p->has_meta("_gl_netid")) return 0;
+                Node* ns = _gl_find_network_service(p);
+                if (!ns || _gl_net_mode(ns) != 1) return 0;   // solo el servidor asigna dueño
+                Node* player = _gl_node_from_lua(pL, 2);       // nil = servidor
+                int peer = player ? (int)(ns->call("peer_for_player_node", player)) : 0;
+                ns->call("net_set_owner", (int64_t)p->get_meta("_gl_netid"), peer, false);
+                return 0;
+            }, "SetNetworkOwner", 1);
+            return 1;
+        }
+        if (strcmp(key, "GetNetworkOwner") == 0) {
+            lua_pushlightuserdata(L, (void*)part);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!p) { lua_pushnil(pL); return 1; }
+                int owner = p->has_meta("_gl_owner") ? (int)p->get_meta("_gl_owner") : 0;
+                if (owner == 0) { lua_pushnil(pL); return 1; }   // servidor → nil
+                Node* ns = _gl_find_network_service(p);
+                Object* o = ns ? (Object*)ns->call("player_node_for_peer", owner) : nullptr;
+                Node* plr = Object::cast_to<Node>(o);
+                if (plr) _gl_push_node(pL, plr); else lua_pushnil(pL);
+                return 1;
+            }, "GetNetworkOwner", 1);
+            return 1;
+        }
+        if (strcmp(key, "SetNetworkOwnershipAuto") == 0) {
+            lua_pushlightuserdata(L, (void*)part);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!p || !p->has_meta("_gl_netid")) return 0;
+                Node* ns = _gl_find_network_service(p);
+                if (!ns || _gl_net_mode(ns) != 1) return 0;
+                ns->call("net_set_owner", (int64_t)p->get_meta("_gl_netid"), 0, true);   // auto = servidor (v1)
+                return 0;
+            }, "SetNetworkOwnershipAuto", 1);
+            return 1;
+        }
+        if (strcmp(key, "GetNetworkOwnershipAuto") == 0) {
+            lua_pushlightuserdata(L, (void*)part);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
+                bool a = p && p->has_meta("_gl_owner_auto") && (bool)p->get_meta("_gl_owner_auto");
+                lua_pushboolean(pL, a ? 1 : 0); return 1;
+            }, "GetNetworkOwnershipAuto", 1);
+            return 1;
+        }
+        if (strcmp(key, "IsNetworkOwner") == 0) {
+            lua_pushlightuserdata(L, (void*)part);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (!p) { lua_pushboolean(pL, 0); return 1; }
+                Node* ns = _gl_find_network_service(p);
+                if (!ns || _gl_net_mode(ns) == 0) { lua_pushboolean(pL, 1); return 1; }   // single-player: soy dueño
+                int64_t netid = p->has_meta("_gl_netid") ? (int64_t)p->get_meta("_gl_netid") : 0;
+                bool own = (bool)(ns->call("net_is_owner", netid));
+                lua_pushboolean(pL, own ? 1 : 0); return 1;
+            }, "IsNetworkOwner", 1);
+            return 1;
+        }
+        if (strcmp(key, "CanSetNetworkOwnership") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, 1); return 1; }, "CanSetNetworkOwnership");
+            return 1;
+        }
         if (strcmp(key, "GetMass") == 0) {
             lua_pushlightuserdata(L, (void*)part);
             lua_pushcclosure(L, [](lua_State* pL) -> int {
