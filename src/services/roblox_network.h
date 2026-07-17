@@ -370,7 +370,7 @@ class NetworkService : public Node {
     // las demás la congelan (kinematic) e interpolan al estado recibido.
     double phys_timer = 0.0;
     double phys_auto_timer = 0.0;   // reasignación de dueño Auto (jugador más cercano)
-    struct PhysTarget { Transform3D xform; Vector3 lvel; Vector3 avel; bool has = false; };
+    struct PhysTarget { Transform3D xform; Vector3 lvel; Vector3 avel; bool has = false; double age = 0.0; };
     std::map<uint64_t, PhysTarget> phys_targets;   // netId → estado remoto a interpolar
 
     // Ping (medido cliente→servidor→cliente, en milisegundos)
@@ -1400,6 +1400,7 @@ public:
         if (!part->is_freeze_enabled()) { part->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC); part->set_freeze_enabled(true); }
         PhysTarget& pt = phys_targets[netId];
         pt.xform = t; pt.lvel = lv; pt.avel = av; pt.has = true;
+        pt.age = 0.0;   // llegó estado fresco: reiniciar la ventana de extrapolación
     }
     void _phys_state(int64_t netId, Transform3D t, Vector3 lv, Vector3 av) {
         if (get_multiplayer()->get_remote_sender_id() != 1) return;   // autoridad-relay = servidor
@@ -1415,15 +1416,52 @@ public:
         int owner = part->has_meta("_gl_owner") ? (int)part->get_meta("_gl_owner") : 0;
         if (owner != sender) return;   // solo el dueño real puede mandar su estado
         _phys_apply_remote(part, (uint64_t)netId, t, lv, av);   // el server tambien lo muestra
-        Ref<MultiplayerAPI> m = _mp();
-        if (m.is_valid()) {
-            PackedInt32Array peers = m->get_peers();
-            for (int i = 0; i < peers.size(); i++) if (peers[i] != sender) rpc_id(peers[i], "_phys_state", netId, t, lv, av);
-        }
+        // Relay a los demás, con el mismo culling por distancia (1.14.14). Al
+        // dueño no se le devuelve: él es la autoridad de esa parte.
+        _phys_send_culled((uint64_t)netId, t, lv, av, _peer_positions(), sender);
     }
     // Tick ~20Hz: la autoridad transmite sus partes no ancladas despiertas; los
     // demás las congelan (kinematic) para no simular contra el stream.
+    // Posición del personaje de cada peer (culling + auto-ownership).
+    struct PeerPos { int peer; Vector3 pos; };
+    std::vector<PeerPos> _peer_positions() {
+        std::vector<PeerPos> out;
+        TypedArray<Node> roster = get_players_roster();
+        for (int i = 0; i < roster.size(); i++) {
+            PlayerObject* po = Object::cast_to<PlayerObject>(roster[i]);
+            if (!po) continue;
+            if (Node3D* ch = Object::cast_to<Node3D>(po->get_character()))
+                out.push_back({ peer_for_player_node(po), ch->get_global_position() });
+        }
+        return out;
+    }
+    // Culling de ancho de banda (1.14.14): el estado de una parte solo se manda a
+    // quien la tiene CERCA. Antes iba a todos por broadcast: con muchas partes es
+    // ancho de banda tirado, porque nadie ve caer una caja a 300 studs.
+    // Si de un peer no se conoce su posición se le manda igual: mejor gastar de
+    // más que dejarle las partes congeladas sin que nada avise.
+    void _phys_send_culled(uint64_t netId, const Transform3D& t, const Vector3& lv, const Vector3& av,
+                           const std::vector<PeerPos>& plrs, int skip_peer) {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return;
+        const float RANGE2 = 250.0f * 250.0f;
+        PackedInt32Array peers = m->get_peers();
+        for (int i = 0; i < peers.size(); i++) {
+            int pid = peers[i];
+            if (pid == skip_peer) continue;
+            bool found = false, near_it = false;
+            for (auto& pp : plrs) {
+                if (pp.peer != pid) continue;
+                found = true;
+                near_it = pp.pos.distance_squared_to(t.origin) <= RANGE2;
+                break;
+            }
+            if (!found || near_it) rpc_id(pid, "_phys_state", (int64_t)netId, t, lv, av);
+        }
+    }
+
     void _phys_tick() {
+        std::vector<PeerPos> plrs = is_server() ? _peer_positions() : std::vector<PeerPos>();
         for (auto& kv : net_instances) {
             RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(kv.first));
             if (!part || part->get_anchored()) continue;
@@ -1433,7 +1471,7 @@ public:
                 if (part->is_sleeping()) continue;
                 Transform3D t = part->get_global_transform();
                 Vector3 lv = part->get_linear_velocity(), av = part->get_angular_velocity();
-                if (is_server()) rpc("_phys_state", (int64_t)kv.first, t, lv, av);
+                if (is_server()) _phys_send_culled(kv.first, t, lv, av, plrs, 0);
                 else             rpc_id(1, "_phys_owned", (int64_t)kv.first, t, lv, av);
             } else if (!part->is_freeze_enabled()) {
                 part->set_freeze_mode(RigidBody3D::FREEZE_MODE_KINEMATIC);
@@ -1448,6 +1486,20 @@ public:
             if (!it->second.has) continue;
             RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(it->first));
             if (!part) continue;
+            // Predicción / dead reckoning (1.14.14): entre estado y estado se
+            // avanza el objetivo con la velocidad recibida. lvel/avel se guardaban
+            // desde la 1.14.7 y NO se usaban: el objeto iba SIEMPRE por detrás de
+            // donde de verdad estaba (los ~50ms entre estados + el retraso de la
+            // interpolación), y con latencia real eso se nota mucho. Se corta a
+            // 0.5s: si el dueño dejó de mandar, extrapolar más lo mandaría a volar.
+            PhysTarget& T = it->second;
+            T.age += dt;
+            if (T.age < 0.5) {
+                T.xform.origin += T.lvel * (float)dt;
+                float aspeed = T.avel.length();
+                if (aspeed > 0.0001f)
+                    T.xform.basis = Basis(T.avel / aspeed, aspeed * (float)dt) * T.xform.basis;
+            }
             Transform3D cur = part->get_global_transform();
             const Transform3D& tgt = it->second.xform;
             cur.origin = cur.origin.lerp(tgt.origin, a);
@@ -1461,15 +1513,7 @@ public:
     // Con histéresis + throttle (~2Hz) para no oscilar en las fronteras.
     void _phys_auto_tick() {
         if (!is_server()) return;
-        struct PP { int peer; Vector3 pos; };
-        std::vector<PP> plrs;
-        TypedArray<Node> roster = get_players_roster();
-        for (int i = 0; i < roster.size(); i++) {
-            PlayerObject* po = Object::cast_to<PlayerObject>(roster[i]);
-            if (!po) continue;
-            Node3D* ch = Object::cast_to<Node3D>(po->get_character());
-            if (ch) plrs.push_back({ peer_for_player_node(po), ch->get_global_position() });
-        }
+        std::vector<PeerPos> plrs = _peer_positions();
         const float RANGE2 = 150.0f * 150.0f;   // fuera de rango → servidor
         for (auto& kv : net_instances) {
             RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(kv.first));

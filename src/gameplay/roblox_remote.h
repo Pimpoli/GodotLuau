@@ -48,6 +48,17 @@ static inline Node* _gl_find_local_player(Node* from) {
 // Localiza el NetworkService (singleton bajo el DataModel) en el árbol.
 // RemoteEvent lo usa para preguntar el modo de red y enviar por ENet, SIN
 // incluir roblox_network.h (evita ciclo de includes): se habla por call().
+// Tope del canal NO confiable (1.14.14). Roblox rechaza payloads grandes en un
+// UnreliableRemoteEvent (~900 B) porque no caben en un datagrama; aquí pasaba
+// cualquier tamaño y ENet lo fragmentaba en silencio, que es justo lo que ese
+// tope evita. Mejor un error claro que una fragmentación invisible.
+static inline void _gl_check_unreliable_size(lua_State* L, const Array& args, bool reliable) {
+    if (reliable) return;
+    PackedByteArray b = UtilityFunctions::var_to_bytes(args);
+    if (b.size() > 900)
+        luaL_error(L, "UnreliableRemoteEvent: payload too large (%d bytes, limit is 900)", (int)b.size());
+}
+
 static inline Node* _gl_find_network_service(Node* from) {
     if (!from || !from->is_inside_tree()) return nullptr;
     std::function<Node*(Node*)> rec = [&](Node* n) -> Node* {
@@ -314,6 +325,7 @@ public:
         Node* ns = _gl_find_network_service(this);
         if (_gl_net_mode(ns) == 2 && is_inside_tree()) {
             Array args = gl_net_encode_args(L, stack_base, nargs);
+            _gl_check_unreliable_size(L, args, reliable);
             ns->call("net_send_event", String(get_path()), args, 0, reliable);
             return;
         }
@@ -332,6 +344,7 @@ public:
         if (peer == myid && myid != 0) { _run_client_cbs(L, stack_base, nargs); return; }  // el jugador del host: local
         if (peer == 0) return;   // destino no resuelto o referencia obsoleta: NO entregar local ni enviar
         Array args = gl_net_encode_args(L, stack_base, nargs);
+        _gl_check_unreliable_size(L, args, reliable);
         ns->call("net_send_event", String(get_path()), args, peer, reliable);
     }
     // FireAllClients(...): servidor → todos los clientes (incl. el host).
@@ -342,6 +355,7 @@ public:
         _run_client_cbs(L, stack_base, nargs);   // host/single: entrega local
         if (mode == 1 && is_inside_tree()) {
             Array args = gl_net_encode_args(L, stack_base, nargs);
+            _gl_check_unreliable_size(L, args, reliable);
             ns->call("net_send_event", String(get_path()), args, -1, reliable);
         }
     }
