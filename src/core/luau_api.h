@@ -682,7 +682,13 @@ static int godot_object_index(lua_State* L) {
                 strcmp(key,"PrivateServerOwnerId")==0)      { lua_pushnumber(L, 0); return 1; }
             if (strcmp(key,"PlaceVersion")==0)              { lua_pushnumber(L, 1); return 1; }
             if (strcmp(key,"CreatorType")==0)               { lua_pushstring(L, "User"); return 1; }
-            if (strcmp(key,"JobId")==0 || strcmp(key,"PrivateServerId")==0) { lua_pushstring(L, ""); return 1; }
+            // JobId (1.14.16): GUID único de ESTA instancia de servidor. Antes
+            // era "" siempre. Sin sesión de red sigue vacío, como en Studio.
+            if (strcmp(key,"JobId")==0) {
+                lua_pushstring(L, gl_net_role() == 0 ? "" : gl_ensure_job_id().utf8().get_data());
+                return 1;
+            }
+            if (strcmp(key,"PrivateServerId")==0) { lua_pushstring(L, ""); return 1; }
             if (strcmp(key,"IsLoaded")==0) {
                 lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, 1); return 1; }, "IsLoaded"); return 1;
             }

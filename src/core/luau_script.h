@@ -1966,6 +1966,19 @@ public:
             DirAccess::remove_absolute(String(luaL_checkstring(L, 1)));
             return 0;
         }, "delete");   lua_setfield(L_main, -2, "delete");
+        // Listar archivos de un directorio: lo usa el MessagingService entre
+        // instancias (1.14.16) para ver los buzones de los demás servidores.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            Ref<DirAccess> d = DirAccess::open(String(luaL_checkstring(L, 1)));
+            lua_newtable(L);
+            if (d.is_null()) return 1;
+            PackedStringArray files = d->get_files();
+            for (int i = 0; i < files.size(); i++) {
+                lua_pushstring(L, files[i].utf8().get_data());
+                lua_rawseti(L, -2, i + 1);
+            }
+            return 1;
+        }, "list");     lua_setfield(L_main, -2, "list");
         lua_setglobal(L_main, "_FileAccess");
 
         // ── _GL_NET_ROLE — 0 single-player, 1 servidor/host, 2 cliente ───────
@@ -1978,6 +1991,18 @@ public:
             return 1;
         }, "_GL_NET_ROLE");
         lua_setglobal(L_main, "_GL_NET_ROLE");
+
+        // ── _GL_VM_ID — id único de esta VM dentro del proceso (1.14.16) ─────
+        // Cada script tiene su propia VM. El MessagingService le da a cada una su
+        // propio buzón: si dos scripts del MISMO servidor compartieran buzón,
+        // cada uno saltaría el suyo al leer y NINGUNO vería los mensajes del otro.
+        // El stdlib lo pide una sola vez al cargar.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            static int64_t ctr = 0;
+            lua_pushnumber(L, (double)(++ctr));
+            return 1;
+        }, "_GL_VM_ID");
+        lua_setglobal(L_main, "_GL_VM_ID");
 
         // ── _JSON — JSON serialization ────────────────────────────────────────
         //// ── _JSON — serialización JSON ────────────────────────────────────────

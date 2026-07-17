@@ -25,6 +25,7 @@
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include "lua.h"
 #include "lualib.h"
@@ -128,6 +129,28 @@ inline int64_t& gl_local_user_id() { static int64_t v = 0; return v; }
 
 //  Prefijo de meta del shadow de replicación: valor Lua-encodeado por propiedad.
 static const char* GL_REP_SHADOW = "_glrep_";
+
+//  ── JobId (1.14.16) ──────────────────────────────────────────────────────
+//  Identificador ÚNICO de esta instancia de servidor. Antes `game.JobId`
+//  devolvía "" siempre. Se genera una vez, la primera vez que se pide.
+//  Como Roblox: sin sesión de red (equivalente a Studio) sigue siendo "".
+inline String& gl_job_id() { static String id; return id; }
+inline String gl_ensure_job_id() {
+    String& id = gl_job_id();
+    if (!id.is_empty()) return id;
+    auto hex = [](uint64_t v, int len) {
+        String s = String::num_uint64(v, 16);
+        while (s.length() < len) s = String("0") + s;
+        return s.substr(s.length() - len, len);
+    };
+    uint64_t t  = (uint64_t)Time::get_singleton()->get_unix_time_from_system();
+    uint64_t u  = (uint64_t)Time::get_singleton()->get_ticks_usec();
+    uint64_t r1 = (uint64_t)UtilityFunctions::randi();
+    uint64_t r2 = (uint64_t)UtilityFunctions::randi();
+    id = hex(t, 8) + "-" + hex(r1 & 0xFFFF, 4) + "-4" + hex((r1 >> 16) & 0xFFF, 3)
+       + "-" + hex(0x8000 | (r2 & 0x3FFF), 4) + "-" + hex((u << 16) ^ r2, 12);
+    return id;
+}
 
 //  ── netId DETERMINISTA para los nodos del PLACE (1.14.10) ────────────────
 //  Los netId de runtime los asigna el SERVIDOR con un contador y se anuncian por

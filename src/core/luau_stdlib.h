@@ -544,14 +544,20 @@ local function _make_datastore(name)
     function store:GetAsync(key)
         _ds_assert_server("GetAsync")
         local sk = tostring(key)
-        if self._cache[sk] ~= nil then return self._cache[sk] end
+        -- Se lee SIEMPRE del archivo (1.14.16). Antes la cache en memoria ganaba
+        -- para siempre: con el coordinador y sus mundos compartiendo user://,
+        -- otra instancia podia haber guardado datos nuevos y esta seguiria
+        -- devolviendo los viejos sin que nada avisara. La cache queda solo como
+        -- respaldo por si el archivo no se puede leer.
         if _FileAccess then
             local content = _FileAccess.read(_ds_path(self._name, sk))
-            local v = _ds_safe_decode(content)
-            self._cache[sk] = v
-            return v
+            if content and content ~= "" then
+                local v = _ds_safe_decode(content)
+                self._cache[sk] = v
+                return v
+            end
         end
-        return nil
+        return self._cache[sk]
     end
 
     function store:SetAsync(key, value)
@@ -1967,9 +1973,75 @@ if task then
 end
 
 -- ── Servicios que faltaban (registrados en _G["__SVC_*"]) ─────────────
-do  -- MessagingService: pub/sub en el proceso
-    local topics = {}
+do  -- MessagingService: pub/sub ENTRE INSTANCIAS del mismo coordinador (1.14.16)
+    -- Antes era pub/sub solo dentro del proceso: publicar no llegaba a los otros
+    -- mundos, que es justo para lo que existe este servicio. El coordinador y sus
+    -- instancias comparten user:// (ahi ya se escriben los latidos), asi que se
+    -- usa un buzon por topico+emisor y cada instancia lee los de los demas.
+    -- Sin coordinador (un solo servidor) sigue funcionando: es pub/sub local.
+    local topics = {}      -- topic -> lista de conexiones
+    local seen = {}        -- "topic|archivo" -> ultimo seq ya entregado
+    local polling = false
     local S = {}
+    -- Un buzon por VM, no por proceso: cada script tiene su propia VM y al leer
+    -- salta el suyo, asi que dos scripts del mismo servidor con buzon compartido
+    -- no se verian entre ellos.
+    local _vmid = tostring((_GL_VM_ID and _GL_VM_ID()) or 0)
+
+    local function _box(topic, who)
+        return "user://msg_" .. topic .. "__" .. who .. ".json"
+    end
+    local function _me()
+        local id = game and game.JobId or ""
+        return ((id ~= "" and id) or "local") .. "_" .. _vmid
+    end
+    local function _deliver(topic, msg)
+        local l = topics[topic]
+        if not l then return end
+        local snap = {}
+        for _, c in ipairs(l) do snap[#snap + 1] = c end
+        for _, c in ipairs(snap) do if c.Connected then task.spawn(c._cb, msg) end end
+    end
+    -- Lee los buzones de las OTRAS instancias y entrega lo que no se haya visto.
+    local function _poll()
+        if not _FileAccess or not _FileAccess.list then return end
+        local mine = _me()
+        for _, fname in ipairs(_FileAccess.list("user://")) do
+            local topic, who = string.match(fname, "^msg_(.+)__(.+)%.json$")
+            if topic and who and who ~= mine and topics[topic] then
+                local raw = _FileAccess.read("user://" .. fname)
+                local ok, list = pcall(function() return _JSON and _JSON.decode(raw) end)
+                if ok and type(list) == "table" then
+                    local mark = topic .. "|" .. fname
+                    -- Por SECUENCIA, no por indice: el buzon se recorta y los
+                    -- indices se desplazarian (se perderian o repetirian mensajes).
+                    local last = seen[mark]
+                    if last == nil then   -- 1a vez: solo lo que llegue a partir de ahora
+                        last = (list[#list] and list[#list].seq) or 0
+                    end
+                    for i = 1, #list do
+                        local m = list[i]
+                        if m and m.seq and m.seq > last then
+                            _deliver(topic, { Data = m.Data, Sent = m.Sent })
+                            last = m.seq
+                        end
+                    end
+                    seen[mark] = last
+                end
+            end
+        end
+    end
+    local function _ensure_polling()
+        if polling then return end
+        polling = true
+        task.spawn(function()
+            while true do
+                task.wait(0.5)
+                pcall(_poll)
+            end
+        end)
+    end
+
     function S:SubscribeAsync(topic, cb)
         topics[topic] = topics[topic] or {}
         local conn = { Connected = true, _cb = cb }
@@ -1979,32 +2051,101 @@ do  -- MessagingService: pub/sub en el proceso
             if l then for i, c in ipairs(l) do if c == conn then table.remove(l, i) break end end end
         end
         table.insert(topics[topic], conn)
+        _ensure_polling()
         return conn
     end
     function S:PublishAsync(topic, message)
-        local l = topics[topic]
-        if not l then return end
-        local snap = {}
-        for _, c in ipairs(l) do snap[#snap + 1] = c end
-        for _, c in ipairs(snap) do if c.Connected then task.spawn(c._cb, { Data = message, Sent = os.time() }) end end
+        local msg = { Data = message, Sent = os.time() }
+        _deliver(topic, msg)   -- entrega local inmediata (como antes)
+        -- ...y dejarlo en MI buzon para que lo lean las otras instancias.
+        if not (_FileAccess and _JSON) then return end
+        local path = _box(topic, _me())
+        local list = {}
+        local raw = _FileAccess.read(path)
+        if raw and raw ~= "" then
+            local ok, prev = pcall(_JSON.decode, raw)
+            if ok and type(prev) == "table" then list = prev end
+        end
+        -- Secuencia creciente: sobrevive al recorte del buzon.
+        local seq = ((list[#list] and list[#list].seq) or 0) + 1
+        table.insert(list, { seq = seq, Data = message, Sent = msg.Sent })
+        -- Solo se guarda una cola corta: es un buzon, no un historial.
+        while #list > 64 do table.remove(list, 1) end
+        pcall(function() _FileAccess.write(path, _JSON.encode(list)) end)
     end
     _G["__SVC_MessagingService"] = S
 end
 
-do  -- MemoryStoreService: mapas/colas en memoria
-    local function _newMap()
-        local data = {}
+do  -- MemoryStoreService: mapas/colas COMPARTIDOS entre instancias (1.14.16)
+    -- Antes vivia solo en memoria y, peor, GetSortedMap("x") devolvia un mapa
+    -- NUEVO en cada llamada: ni siquiera era consistente dentro del mismo
+    -- servidor. Ahora se respalda en user://, que el coordinador y sus mundos
+    -- comparten, con expiracion real (el MemoryStore de Roblox es efimero).
+    local _maps = {}   -- name -> mapa (uno por nombre, como Roblox)
+
+    local function _path(name) return "user://mem_" .. name .. ".json" end
+    local function _read(name)
+        if not (_FileAccess and _JSON) then return {} end
+        local raw = _FileAccess.read(_path(name))
+        if not raw or raw == "" then return {} end
+        local ok, d = pcall(_JSON.decode, raw)
+        return (ok and type(d) == "table") and d or {}
+    end
+    local function _write(name, d)
+        if not (_FileAccess and _JSON) then return end
+        pcall(function() _FileAccess.write(_path(name), _JSON.encode(d)) end)
+    end
+    local function _alive(e)
+        return e ~= nil and (e.exp == nil or e.exp == 0 or e.exp > os.time())
+    end
+    local function _newMap(name)
         local m = {}
-        function m:SetAsync(k, v) data[k] = v; return true end
-        function m:GetAsync(k) return data[k] end
-        function m:RemoveAsync(k) data[k] = nil end
-        function m:UpdateAsync(k, cb) local nv = cb(data[k]); if nv ~= nil then data[k] = nv end; return data[k] end
-        function m:GetRangeAsync() local out = {}; for k, v in pairs(data) do out[#out + 1] = { key = k, value = v } end; return out end
+        -- Se lee del archivo en CADA acceso: otra instancia pudo cambiarlo y una
+        -- cache en memoria daria un valor viejo sin que nada avisara.
+        function m:SetAsync(k, v, expiration)
+            local d = _read(name)
+            d[tostring(k)] = { v = v, exp = expiration and (os.time() + expiration) or 0 }
+            _write(name, d)
+            return true
+        end
+        function m:GetAsync(k)
+            local e = _read(name)[tostring(k)]
+            if _alive(e) then return e.v end
+            return nil
+        end
+        function m:RemoveAsync(k)
+            local d = _read(name)
+            d[tostring(k)] = nil
+            _write(name, d)
+        end
+        function m:UpdateAsync(k, cb, expiration)
+            local d = _read(name)
+            local sk = tostring(k)
+            local e = d[sk]
+            local old = _alive(e) and e.v or nil
+            local nv = cb(old)
+            if nv ~= nil then
+                d[sk] = { v = nv, exp = expiration and (os.time() + expiration) or (e and e.exp or 0) }
+                _write(name, d)
+            end
+            return nv
+        end
+        function m:GetRangeAsync()
+            local out = {}
+            for k, e in pairs(_read(name)) do
+                if _alive(e) then out[#out + 1] = { key = k, value = e.v } end
+            end
+            return out
+        end
         return m
     end
+    local function _map(name)
+        _maps[name] = _maps[name] or _newMap(name)
+        return _maps[name]
+    end
     local S = {}
-    function S:GetSortedMap(name) return _newMap() end
-    function S:GetHashMap(name) return _newMap() end
+    function S:GetSortedMap(name) return _map(name) end
+    function S:GetHashMap(name) return _map(name) end
     function S:GetQueue(name)
         local q = {}
         local Q = {}
