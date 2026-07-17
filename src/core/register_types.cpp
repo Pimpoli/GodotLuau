@@ -127,11 +127,14 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<StarterPack>();
         ClassDB::register_class<Players>();
         ClassDB::register_class<PlayerObject>();   // objeto "Player" (Player ≠ Character)
+        ClassDB::register_class<PlayerGui>();      // contenedores por jugador (1.14.10)
+        ClassDB::register_class<PlayerScripts>();
         ClassDB::register_class<RobloxValue>();   // NumberValue/IntValue/StringValue/…
         ClassDB::register_class<Lighting>();
         ClassDB::register_class<MaterialService>();
         ClassDB::register_class<NetworkClient>();
         ClassDB::register_class<Teams>();
+        ClassDB::register_class<Team>();   // 1.14.10 (el cliente lo instancia por nombre al replicar)
         ClassDB::register_class<Folder>();
         ClassDB::register_class<RemoteEventNode>();
         ClassDB::register_class<UnreliableRemoteEventNode>();

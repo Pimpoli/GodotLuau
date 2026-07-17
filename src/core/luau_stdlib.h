@@ -529,10 +529,20 @@ local function _ds_path(storeName, key)
     return "user://ds_" .. storeName .. "_" .. tostring(key) .. ".json"
 end
 
+-- En Roblox tocar un DataStore desde el cliente es error. Aquí ademas TODAS las
+-- ventanas del proyecto comparten user://, asi que un cliente escribiendo
+-- pisaria los archivos del servidor. Rol 2 = cliente puro.
+local function _ds_assert_server(what)
+    if _GL_NET_ROLE and _GL_NET_ROLE() == 2 then
+        error(what .. " can only be called from the server (DataStore is not accessible to clients)", 3)
+    end
+end
+
 local function _make_datastore(name)
     local store = { _name = name, _cache = {} }
 
     function store:GetAsync(key)
+        _ds_assert_server("GetAsync")
         local sk = tostring(key)
         if self._cache[sk] ~= nil then return self._cache[sk] end
         if _FileAccess then
@@ -545,6 +555,7 @@ local function _make_datastore(name)
     end
 
     function store:SetAsync(key, value)
+        _ds_assert_server("SetAsync")
         local sk = tostring(key)
         self._cache[sk] = value
         if _FileAccess then
@@ -566,6 +577,7 @@ local function _make_datastore(name)
     end
 
     function store:RemoveAsync(key)
+        _ds_assert_server("RemoveAsync")
         local sk = tostring(key)
         local old = self._cache[sk]
         self._cache[sk] = nil

@@ -137,6 +137,11 @@ public:
     bool     added_fired = false; // PlayerAdded ya disparado (una sola vez por Player)
     int      camera_mode = 0;     // Enum.CameraMode (0 Classic, 1 LockFirstPerson)
     int      peer_id = 0;         // peer ENet (0 = local/single)
+    uint64_t team_id = 0;         // ObjectID del Team (1.14.10); 0 = Neutral
+
+    Node* get_team() const {
+        return team_id ? Object::cast_to<Node>(ObjectDB::get_instance(team_id)) : nullptr;
+    }
 
     struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
     std::vector<LuaCallback> char_added_cbs;
@@ -396,6 +401,20 @@ protected:
 
 // ScreenGuis here are cloned into each player's HUD
 //// ScreenGuis aquí se clonan al HUD de cada jugador
+// ── Contenedores por jugador (1.14.10) ───────────────────────────────
+// En Roblox cada Player tiene los suyos y al entrar se CLONA dentro lo que haya
+// en StarterGui / StarterPack / StarterPlayerScripts. (Backpack ya existía.)
+class PlayerGui : public Node {
+    GDCLASS(PlayerGui, Node);
+protected:
+    static void _bind_methods() {}
+};
+class PlayerScripts : public Node {
+    GDCLASS(PlayerScripts, Node);
+protected:
+    static void _bind_methods() {}
+};
+
 class StarterGui : public Node {
     GDCLASS(StarterGui, Node);
 protected:
@@ -427,9 +446,14 @@ class Players : public Node {
     GDCLASS(Players, Node);
 
 public:
-    struct LuaCallback { lua_State* main_L; int ref; bool active = true; };
+    struct LuaCallback { lua_State* main_L; int ref; bool active = true; bool once = false; };
     std::vector<LuaCallback> player_added_cbs;
     std::vector<LuaCallback> player_removing_cbs;
+    // PlayerAdded:Wait() / PlayerRemoving:Wait() (1.14.10): el hilo cede y lo
+    // reanuda _fire_player_event con el Player por la cola compartida.
+    struct LuaWait { lua_State* th; lua_State* main_L; };
+    std::vector<LuaWait> player_added_waits;
+    std::vector<LuaWait> player_removing_waits;
     int max_players = 50;
 
     // PlayerAdded del jugador LOCAL: se dispara una sola vez, cuando el personaje
@@ -446,6 +470,7 @@ protected:
     }
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &Players::_gl_disconnect);
+        ClassDB::bind_method(D_METHOD("load_local_character"), &Players::load_local_character);
         ClassDB::bind_method(D_METHOD("get_local_player"),     &Players::get_local_player);
         ClassDB::bind_method(D_METHOD("get_players"),          &Players::get_players);
         ClassDB::bind_method(D_METHOD("get_max_players"),      &Players::get_max_players);
@@ -475,15 +500,63 @@ public:
     int  get_max_players() const { return max_players; }
     void set_max_players(int v)  { max_players = v; }
 
-    void add_player_added_cb(lua_State* L, int ref)    { player_added_cbs.push_back({L,ref,true}); }
-    void add_player_removing_cb(lua_State* L, int ref) { player_removing_cbs.push_back({L,ref,true}); }
+    void add_player_added_cb(lua_State* L, int ref, bool once = false)    { player_added_cbs.push_back({L,ref,true,once}); }
+    void add_player_removing_cb(lua_State* L, int ref, bool once = false) { player_removing_cbs.push_back({L,ref,true,once}); }
+    // Crea PlayerGui/Backpack/PlayerScripts del jugador y clona dentro lo que
+    // haya en StarterGui/StarterPack/StarterPlayerScripts (como Roblox al
+    // entrar). Idempotente. Se instancia por NOMBRE de clase para no depender
+    // del orden de includes (Backpack vive en otra cabecera).
+    void ensure_player_containers(PlayerObject* po) {
+        if (!po || !is_inside_tree()) return;
+        Node* dm = get_parent();   // DataModel
+        if (!dm) return;
+        // Los Starter se clonan SOLO para el jugador local. El PlayerGui de un
+        // jugador REMOTO existe (el servidor puede mirarlo) pero va vacío: si se
+        // clonara para todos, cada máquina renderizaría N copias de la UI, una
+        // por jugador conectado.
+        bool local = po->is_local;
+        _make_container(po, "PlayerGui", "PlayerGui", local ? dm->get_node_or_null("StarterGui") : nullptr);
+        _make_container(po, "Backpack",  "Backpack",  local ? dm->get_node_or_null("StarterPack") : nullptr);
+        // PlayerScripts: contenedor SIN clonar dentro. Hoy los StarterPlayerScripts
+        // los clona el Workspace sobre el PERSONAJE; clonarlos aquí también los
+        // haría correr DOS veces. Mover ese cargador aquí es lo correcto en
+        // Roblox pero cambia script.Parent → se hará aparte, no de tapadillo.
+        _make_container(po, "PlayerScripts", "PlayerScripts", nullptr);
+    }
+    void _make_container(PlayerObject* po, const char* cls, const char* name, Node* starter) {
+        if (po->get_node_or_null(NodePath(name))) return;   // ya existe
+        Node* c = Object::cast_to<Node>(ClassDB::instantiate(StringName(cls)));
+        if (!c) return;
+        c->set_name(name);
+        po->add_child(c);
+        if (!starter) return;
+        for (int i = 0; i < starter->get_child_count(); i++) {
+            Node* src = starter->get_child(i);
+            Node* dup = src ? src->duplicate() : nullptr;
+            if (dup) c->add_child(dup);
+        }
+    }
+
+    void add_player_added_wait(lua_State* th, lua_State* mL)    { player_added_waits.push_back({th, mL}); }
+    void add_player_removing_wait(lua_State* th, lua_State* mL) { player_removing_waits.push_back({th, mL}); }
     void _gl_disconnect(int ref) {
         for (auto& cb : player_added_cbs)    if (cb.ref == ref) cb.active = false;
         for (auto& cb : player_removing_cbs) if (cb.ref == ref) cb.active = false;
     }
 
-    void fire_player_added(Node* player)    { _fire_player_event(player_added_cbs, player); }
-    void fire_player_removing(Node* player) { _fire_player_event(player_removing_cbs, player); }
+    void fire_player_added(Node* player)    { _fire_player_event(player_added_cbs, player); _drain_waits(player_added_waits, player); }
+    void fire_player_removing(Node* player) { _fire_player_event(player_removing_cbs, player); _drain_waits(player_removing_waits, player); }
+    void _drain_waits(std::vector<LuaWait>& waits, Node* player) {
+        if (waits.empty()) return;
+        std::vector<LuaWait> snap = waits;
+        waits.clear();   // vaciar ANTES: el hilo reanudado puede volver a esperar
+        for (auto& w : snap) {
+            if (!gl_state_alive(w.main_L)) continue;
+            LuauPendingResume pr;
+            pr.thread = w.th; pr.main_L = w.main_L; pr.delta = 0.0; pr.node_arg = player;
+            get_pending_resumes().push_back(pr);
+        }
+    }
 
     // Busca el PERSONAJE local (RobloxPlayer/2D) en Workspace.
     Node* _find_local_character() const {
@@ -527,8 +600,28 @@ public:
             po->display_name = pname;
             add_child(po);
         }
+        ensure_player_containers(po);   // PlayerGui/Backpack/PlayerScripts (1.14.10)
         if (character) po->set_character_silent(character);  // sin disparar (CharacterAdded se dispara tras PlayerAdded)
         return po;
+    }
+
+    // Player:LoadCharacter() (1.14.10): rehace el personaje LOCAL disparando
+    // CharacterRemoving y luego CharacterAdded, como Roblox. La construcción la
+    // hace el Workspace (build_local_character), que es quien sabe del spawn,
+    // el rig y los StarterCharacterScripts.
+    void load_local_character() {
+        if (!is_inside_tree()) return;
+        PlayerObject* po = ensure_local_player_obj();
+        if (Node* old = _find_local_character()) {
+            if (po) po->fire_character_removing();
+            if (old->get_parent()) old->get_parent()->remove_child(old);
+            old->queue_free();
+        }
+        Node* dm = get_parent();
+        Node* ws = dm ? dm->get_node_or_null("Workspace") : nullptr;
+        if (ws && ws->has_method("build_local_character")) ws->call("build_local_character");
+        Node* fresh = _find_local_character();
+        if (po && fresh) { po->set_character_silent(fresh); po->fire_character_added(); }
     }
 
     // Players.LocalPlayer → el OBJETO Player local (no el personaje).
@@ -572,9 +665,11 @@ private:
         for (int i = (int)list.size()-1; i >= 0; --i) {
             auto& cb = list[i];
             if (!cb.active || !gl_state_alive(cb.main_L)) { list.erase(list.begin()+i); continue; }
+            bool once = cb.once;
             lua_State* th = lua_newthread(cb.main_L);
             lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
             if (lua_isfunction(cb.main_L, -1)) {
+                if (once) list[i].active = false;   // :Once → desconectar ANTES de invocar (como Roblox)
                 lua_xmove(cb.main_L, th, 1);
                 if (player) {
                     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_newuserdata(th, sizeof(GodotObjectWrapper));
@@ -591,12 +686,48 @@ private:
     }
 };
 
+// Team — a team players can belong to (child of the Teams service)
+//// Team (1.14.10) — antes NO existía esta clase: Player.Team devolvía nil
+//// siempre y Teams era un nodo vacío. Un Team es un nodo hijo de Teams y los
+//// Player apuntan a él por ObjectID. Se replica solo: "Teams" es contenedor
+//// replicable, así que un Team creado por el servidor aparece en los clientes.
+class Team : public Node {
+    GDCLASS(Team, Node);
+public:
+    int  team_color = 1;            // BrickColor (número)
+    bool auto_assignable = true;
+
+    int  get_team_color() const      { return team_color; }
+    void set_team_color(int v)       { team_color = v; }
+    bool get_auto_assignable() const { return auto_assignable; }
+    void set_auto_assignable(bool v) { auto_assignable = v; }
+
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("get_team_color"),          &Team::get_team_color);
+        ClassDB::bind_method(D_METHOD("set_team_color", "v"),     &Team::set_team_color);
+        ClassDB::bind_method(D_METHOD("get_auto_assignable"),     &Team::get_auto_assignable);
+        ClassDB::bind_method(D_METHOD("set_auto_assignable", "v"), &Team::set_auto_assignable);
+        ADD_PROPERTY(PropertyInfo(Variant::INT,  "TeamColor"),      "set_team_color",      "get_team_color");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "AutoAssignable"), "set_auto_assignable", "get_auto_assignable");
+    }
+};
+
 // Teams management — players can belong to colored teams
 //// Gestión de equipos — los jugadores pueden pertenecer a equipos con colores
 class Teams : public Node {
     GDCLASS(Teams, Node);
+public:
+    TypedArray<Node> get_teams() {
+        TypedArray<Node> out;
+        for (int i = 0; i < get_child_count(); i++)
+            if (Object::cast_to<Team>(get_child(i))) out.push_back(get_child(i));
+        return out;
+    }
 protected:
-    static void _bind_methods() {}
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("get_teams"), &Teams::get_teams);
+    }
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
     }

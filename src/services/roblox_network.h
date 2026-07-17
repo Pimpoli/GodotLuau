@@ -363,6 +363,10 @@ class NetworkService : public Node {
     // Ping (medido cliente→servidor→cliente, en milisegundos)
     double ping_ms = -1.0;
     double ping_timer = 0.0;
+    // Ping de CADA cliente, visto por el servidor (1.14.10). La medida la hace
+    // el cliente (solo él conoce la ida y vuelta) y la reporta; el servidor la
+    // guarda para que Player:GetNetworkPing() funcione desde un ServerScript.
+    std::map<int, double> peer_ping_ms;
     // Reloj sincronizado (1.14.8): el cliente sincroniza su offset con el servidor.
     double time_sync_timer = 0.0;
     bool   time_synced = false;
@@ -446,6 +450,7 @@ class NetworkService : public Node {
         po->set_name(pname);
         po->display_name = pname;
         ps->add_child(po);
+        ps->ensure_player_containers(po);   // PlayerGui/Backpack/PlayerScripts (1.14.10)
         peer_player_ids[peer] = (uint64_t)po->get_instance_id();
         return po;
     }
@@ -598,6 +603,10 @@ class NetworkService : public Node {
         rpc_config("_recv_chat",     r);
         rpc_config("_ping_req",      u);   // medicion de ping (para el menu de ajustes)
         rpc_config("_ping_res",      u);
+        rpc_config("_ping_report",   u);   // el cliente reporta su ping al servidor (GetNetworkPing 1.14.10)
+        rpc_config("_kicked",        r);   // Kick: el motivo NO se puede perder (1.14.10)
+        rpc_config("_set_team",      r);   // equipo de un jugador (1.14.10)
+        rpc_config("_load_character", r);  // LoadCharacter de otro jugador (1.14.10)
         // RemoteEvent por red (Fase 2): confiables y no-confiables, ambos sentidos
         rpc_config("_re_deliver_server",  r);
         rpc_config("_re_deliver_client",  r);
@@ -876,6 +885,14 @@ protected:
         ClassDB::bind_method(D_METHOD("_recv_chat", "from", "name", "text"),        &NetworkService::_recv_chat);
         ClassDB::bind_method(D_METHOD("_ping_req", "t"),                            &NetworkService::_ping_req);
         ClassDB::bind_method(D_METHOD("_ping_res", "t"),                            &NetworkService::_ping_res);
+        ClassDB::bind_method(D_METHOD("_ping_report", "ms"),                        &NetworkService::_ping_report);
+        ClassDB::bind_method(D_METHOD("net_ping_for_player", "player"),             &NetworkService::net_ping_for_player);
+        ClassDB::bind_method(D_METHOD("net_kick_player", "player", "msg"),          &NetworkService::net_kick_player);
+        ClassDB::bind_method(D_METHOD("_kicked", "msg"),                            &NetworkService::_kicked);
+        ClassDB::bind_method(D_METHOD("net_set_team", "player", "team"),            &NetworkService::net_set_team);
+        ClassDB::bind_method(D_METHOD("_set_team", "peer", "team_netid"),           &NetworkService::_set_team);
+        ClassDB::bind_method(D_METHOD("net_load_character", "player"),              &NetworkService::net_load_character);
+        ClassDB::bind_method(D_METHOD("_load_character"),                           &NetworkService::_load_character);
         ClassDB::bind_method(D_METHOD("_time_req", "c_unix", "c_dgt"),              &NetworkService::_time_req);
         ClassDB::bind_method(D_METHOD("_time_res", "c_unix", "c_dgt", "s_unix", "s_dgt"), &NetworkService::_time_res);
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
@@ -993,6 +1010,7 @@ public:
         }
         // RemoteFunction en vuelo hacia ese peer: nunca va a contestar (1.14.9.1).
         _rf_fail_pending(id, "InvokeClient: the player left the game");
+        peer_ping_ms.erase(id);
         _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
@@ -1207,12 +1225,14 @@ public:
         Node* ws = _find_by_class(root, "RobloxWorkspace");
         if (!ws) ws = _find_by_class(root, "RobloxWorkspace2D");
         Node* rs = _find_by_name(root, "ReplicatedStorage");
+        Node* tm = _find_by_name(root, "Teams");   // los Team del editor también (1.14.10)
         if (!ws && !rs) return;   // árbol aún sin montar: reintentar el próximo frame
         // Los contenedores en sí NO se sellan (ya se referencian por ruta), solo
         // lo que cuelga de ellos.
         int count = 0;
         if (ws) for (int i = 0; i < ws->get_child_count(); i++) _stamp_subtree(ws->get_child(i), 0, count);
         if (rs) for (int i = 0; i < rs->get_child_count(); i++) _stamp_subtree(rs->get_child(i), 0, count);
+        if (tm) for (int i = 0; i < tm->get_child_count(); i++) _stamp_subtree(tm->get_child(i), 0, count);
         static_ids_done = true;
         // Se registra el número: si saliera 0 con un place lleno, querría decir
         // que el filtro por owner no reconoce estos nodos, y el fallo sería mudo.
@@ -1475,6 +1495,16 @@ public:
             for (int i = 0; i < keys.size(); i++)
                 rpc_id(id, "_rep_prop", (int64_t)pr.first, String(keys[i]), p[keys[i]]);
         }
+        // Equipos (1.14.10): el que entra necesita saber en qué equipo está cada
+        // uno; los Team ya le llegaron arriba como instancias replicadas.
+        TypedArray<Node> roster = get_players_roster();
+        for (int i = 0; i < roster.size(); i++) {
+            PlayerObject* po = Object::cast_to<PlayerObject>(roster[i]);
+            if (!po || !po->team_id) continue;
+            Node* t = Object::cast_to<Node>(ObjectDB::get_instance(po->team_id));
+            if (t && t->has_meta("_gl_netid"))
+                rpc_id(id, "_set_team", peer_for_player_node(po), (int64_t)t->get_meta("_gl_netid"));
+        }
     }
 
     // (cliente) receptores — solo aceptan del servidor (peer 1)
@@ -1618,6 +1648,98 @@ public:
     }
     void _ping_res(double t) {
         ping_ms = (double)Time::get_singleton()->get_ticks_msec() - t;
+        rpc_id(1, "_ping_report", ping_ms);   // el servidor no puede medirlo él solo (1.14.10)
+    }
+    void _ping_report(double ms) {
+        if (!is_server()) return;
+        peer_ping_ms[get_multiplayer()->get_remote_sender_id()] = ms;
+    }
+    // Player:GetNetworkPing() → SEGUNDOS (como Roblox, no milisegundos).
+    double net_ping_for_player(Object* player_node) {
+        Node* pn = Object::cast_to<Node>(player_node);
+        if (!pn || mode == 0) return 0.0;
+        int target = peer_for_player_node(pn);
+        if (target == get_peer_id()) return ping_ms > 0.0 ? ping_ms / 1000.0 : 0.0;   // yo mismo
+        if (is_server()) {
+            auto it = peer_ping_ms.find(target);
+            return it != peer_ping_ms.end() ? it->second / 1000.0 : 0.0;
+        }
+        return 0.0;   // un cliente no conoce el ping de otro (Roblox tampoco)
+    }
+
+    // ── LoadCharacter (1.14.10) ──────────────────────────────────────────
+    // Cada máquina construye su propio personaje, así que respawnear a OTRO
+    // jugador es pedirle a SU cliente que lo rehaga.
+    void net_load_character(Object* player_node) {
+        Node* pn = Object::cast_to<Node>(player_node);
+        if (!pn) return;
+        int target = peer_for_player_node(pn);
+        int myid = get_peer_id();
+        if (mode == 0 || target == 0 || target == myid) { _do_load_character(); return; }
+        if (is_server()) rpc_id(target, "_load_character");
+    }
+    void _load_character() {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor lo pide
+        _do_load_character();
+    }
+    void _do_load_character() {
+        if (Players* ps = _players_service()) ps->load_local_character();
+    }
+
+    // ── Equipos (1.14.10) ────────────────────────────────────────────────
+    // El Team en sí se replica solo (Teams es contenedor replicable); lo que
+    // hay que difundir es a QUÉ equipo pertenece cada jugador, porque el objeto
+    // Player lo construye cada máquina por su cuenta.
+    void net_set_team(Object* player_node, Object* team_node) {
+        Node* pn = Object::cast_to<Node>(player_node);
+        if (!pn) return;
+        Node* tn = Object::cast_to<Node>(team_node);
+        int target = peer_for_player_node(pn);
+        int64_t tid = (tn && tn->has_meta("_gl_netid")) ? (int64_t)tn->get_meta("_gl_netid") : 0;
+        _apply_team(target, tid);
+        if (is_server()) rpc("_set_team", target, tid);
+    }
+    void _apply_team(int peer, int64_t team_netid) {
+        PlayerObject* po = (peer == get_peer_id() || peer == 0) ? _local_player_obj() : _peer_player(peer);
+        if (!po) return;
+        Node* t = team_netid ? _rep_node((uint64_t)team_netid) : nullptr;
+        po->team_id = t ? (uint64_t)t->get_instance_id() : 0;
+    }
+    void _set_team(int peer, int64_t team_netid) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor asigna
+        _apply_team(peer, team_netid);
+    }
+
+    // ── Kick (1.14.10) ───────────────────────────────────────────────────
+    // Roblox: el servidor puede expulsar a cualquiera; un cliente, solo a sí
+    // mismo. Antes esto era literalmente `return 0`: no hacía nada y no avisaba.
+    void net_kick_player(Object* player_node, String msg) {
+        Node* pn = Object::cast_to<Node>(player_node);
+        if (!pn) return;
+        int target = peer_for_player_node(pn);
+        int myid = get_peer_id();
+        if (mode == 0 || target == 0) { _kick_self(msg); return; }   // single-player
+        if (is_server()) {
+            if (target == myid) { _kick_self(msg); return; }         // el host se echa a sí mismo
+            Ref<MultiplayerAPI> m = _mp();
+            if (m.is_null() || !m->get_peers().has(target)) return;
+            rpc_id(target, "_kicked", msg);
+            // Desconexión GRACEFUL (now=false): ENet vacía el RPC del motivo
+            // antes de cortar. Con now=true el jugador se iría sin saber por qué.
+            if (peer.is_valid()) peer->disconnect_peer(target, false);
+            return;
+        }
+        if (target == myid) _kick_self(msg);   // cliente: solo a sí mismo
+    }
+    void _kick_self(const String& msg) {
+        gl_mp_log(String("expulsado del juego: ") + msg);
+        UtilityFunctions::push_warning(String("[GodotLuau] Kicked: ") + msg);
+        if (player_index >= 2 && is_inside_tree()) get_tree()->quit();   // ventana de jugador: cerrar
+        else disconnect_net();
+    }
+    void _kicked(String msg) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor expulsa
+        _kick_self(msg);
     }
     // Reloj sincronizado (1.14.8). El cliente manda su reloj; el servidor responde
     // con el suyo (unix + DGT). El cliente estima el desfase con media vuelta.
@@ -2047,6 +2169,7 @@ public:
         net_instances.clear();
         static_ids_done = false;   // al reconectar hay que volver a registrar el place (1.14.10)
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
+        peer_ping_ms.clear(); ping_ms = -1.0;
         // RemoteFunction en vuelo: depositar el fallo (NO limpiar las respuestas,
         // que es justo lo que el invocador tiene que recoger para re-lanzarlo).
         _rf_fail_pending(0, "RemoteFunction invoke cancelled: left the game");

@@ -1968,6 +1968,17 @@ public:
         }, "delete");   lua_setfield(L_main, -2, "delete");
         lua_setglobal(L_main, "_FileAccess");
 
+        // ── _GL_NET_ROLE — 0 single-player, 1 servidor/host, 2 cliente ───────
+        // Lo usa el DataStoreService del stdlib para no dejar que un cliente
+        // toque los datos (en Roblox eso es error). Aquí importa el doble: TODAS
+        // las ventanas del proyecto comparten `user://`, así que un cliente
+        // escribiendo pisaría literalmente los archivos del servidor.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            lua_pushnumber(L, (double)gl_net_role());
+            return 1;
+        }, "_GL_NET_ROLE");
+        lua_setglobal(L_main, "_GL_NET_ROLE");
+
         // ── _JSON — JSON serialization ────────────────────────────────────────
         //// ── _JSON — serialización JSON ────────────────────────────────────────
         lua_newtable(L_main);

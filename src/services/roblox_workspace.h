@@ -129,6 +129,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("build_local_character"),                &RobloxWorkspace::build_local_character);   // LoadCharacter (1.14.10)
         ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
@@ -352,6 +353,13 @@ public:
             if (sm) { sm->set_name("SettingsMenu"); get_parent()->call_deferred("add_child", sm); }
         }
 
+        build_local_character();
+    }
+
+public:
+    // Construye el personaje local (spawn + rig + Humanoid + scripts). Extraído
+    // de _ready para que Player:LoadCharacter() pueda rehacerlo (1.14.10).
+    void build_local_character() {
         // ── 1. Find StarterPlayer (sibling of Workspace in the scene) ──────────
         //// ── 1. Buscar StarterPlayer (hermano del Workspace en la escena) ────────
         Node* starter_player = nullptr;

@@ -686,8 +686,17 @@ static int godot_object_index(lua_State* L) {
             if (strcmp(key, "DisplayName") == 0) { lua_pushstring(L, plr->display_name.utf8().get_data()); return 1; }
             if (strcmp(key, "AccountAge") == 0)  { lua_pushnumber(L, (double)plr->account_age); return 1; }
             if (strcmp(key, "ClassName") == 0)   { lua_pushstring(L, "Player"); return 1; }
-            if (strcmp(key, "Team") == 0)        { lua_pushnil(L); return 1; }
-            if (strcmp(key, "Neutral") == 0)     { lua_pushboolean(L, 1); return 1; }
+            if (strcmp(key, "Team") == 0) {
+                Node* t = plr->get_team();
+                if (t) wrap_node(L, t); else lua_pushnil(L);
+                return 1;
+            }
+            if (strcmp(key, "Neutral") == 0)     { lua_pushboolean(L, plr->get_team() ? 0 : 1); return 1; }
+            if (strcmp(key, "TeamColor") == 0) {
+                Node* t = plr->get_team();
+                lua_pushnumber(L, t ? (double)(int)t->get("TeamColor") : (double)plr->team_color);
+                return 1;
+            }
             if (strcmp(key, "FollowUserId") == 0){ lua_pushnumber(L, 0); return 1; }
             // Miembros reales de Player que antes vivían en el personaje (compat):
             if (strcmp(key, "CameraMode") == 0)  { lua_pushnumber(L, plr->camera_mode); return 1; }
@@ -736,7 +745,40 @@ static int godot_object_index(lua_State* L) {
                 }, "IsA"); return 1;
             }
             if (strcmp(key, "Kick") == 0) {
-                lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "Kick"); return 1;
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    if (!p) return 0;
+                    String msg = lua_isstring(pL, 2) ? String::utf8(lua_tostring(pL, 2)) : String();
+                    if (Node* ns = _gl_find_network_service(p)) ns->call("net_kick_player", (Object*)p, msg);
+                    return 0;
+                }, "Kick", 1);
+                return 1;
+            }
+            if (strcmp(key, "LoadCharacter") == 0) {
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    if (!p) return 0;
+                    if (Node* ns = _gl_find_network_service(p)) { ns->call("net_load_character", (Object*)p); return 0; }
+                    // Sin NetworkService (juego normal sin red): respawn local.
+                    Node* ps = p->get_parent();
+                    if (ps && ps->has_method("load_local_character")) ps->call("load_local_character");
+                    return 0;
+                }, "LoadCharacter", 1);
+                return 1;
+            }
+            // Ping en SEGUNDOS (como Roblox). Antes no existía en el runtime pese
+            // a estar anunciado en el autocompletado: llamarlo reventaba.
+            if (strcmp(key, "GetNetworkPing") == 0) {
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    Node* ns = p ? _gl_find_network_service(p) : nullptr;
+                    lua_pushnumber(pL, ns ? (double)(ns->call("net_ping_for_player", (Object*)p)) : 0.0);
+                    return 1;
+                }, "GetNetworkPing", 1);
+                return 1;
             }
             if (strcmp(key, "CharacterAdded") == 0) {
                 lua_newtable(L);
@@ -1075,8 +1117,81 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, ps, ref); return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            // :Once — igual que Connect pero se desconecta tras el primer disparo.
+            lua_pushlightuserdata(L, (void*)players_svc);
+            lua_pushstring(L, sig);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                Players* ps = (Players*)lua_touserdata(pL, lua_upvalueindex(1));
+                const char* ev = lua_tostring(pL, lua_upvalueindex(2));
+                if (!lua_isfunction(pL, 2) || !ps) return 0;
+                lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                lua_pop(pL, 1);
+                if (!mL) mL = pL;
+                if (strcmp(ev, "PlayerAdded") == 0)    ps->add_player_added_cb(mL, ref, true);
+                else                                    ps->add_player_removing_cb(mL, ref, true);
+                _gl_push_connection(pL, ps, ref); return 1;
+            }, "Once", 2);
+            lua_setfield(L, -2, "Once");
+            // :Wait — cede el hilo y lo reanuda con el Player del próximo disparo.
+            lua_pushlightuserdata(L, (void*)players_svc);
+            lua_pushstring(L, sig);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                Players* ps = (Players*)lua_touserdata(pL, lua_upvalueindex(1));
+                const char* ev = lua_tostring(pL, lua_upvalueindex(2));
+                if (!ps) { lua_pushnil(pL); return 1; }
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1);
+                lua_pop(pL, 1);
+                if (!mL) mL = pL;
+                if (strcmp(ev, "PlayerAdded") == 0)    ps->add_player_added_wait(pL, mL);
+                else                                    ps->add_player_removing_wait(pL, mL);
+                lua_pushstring(pL, "__WAIT_SIGNAL__"); return lua_yield(pL, 1);
+            }, "Wait", 2);
+            lua_setfield(L, -2, "Wait");
             return 1;
         }
+    }
+
+    // ── Teams / Team (1.14.10) ────────────────────────────────────
+    if (Object::cast_to<Teams>(n) && strcmp(key, "GetTeams") == 0) {
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Teams* ts = Object::cast_to<Teams>((Node*)lua_touserdata(pL, lua_upvalueindex(1)));
+            lua_newtable(pL);
+            if (!ts) return 1;
+            TypedArray<Node> arr = ts->get_teams();
+            for (int i = 0; i < arr.size(); i++) {
+                wrap_node(pL, Object::cast_to<Node>(arr[i]));
+                lua_rawseti(pL, -2, i + 1);
+            }
+            return 1;
+        }, "GetTeams", 1);
+        return 1;
+    }
+    if (Object::cast_to<Team>(n) && strcmp(key, "GetPlayers") == 0) {
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Node* team = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
+            lua_newtable(pL);
+            if (!team) return 1;
+            // Team > Teams > DataModel: Players es un hermano de Teams.
+            Node* teams_svc = team->get_parent();
+            Node* dm = teams_svc ? teams_svc->get_parent() : nullptr;
+            Players* ps = dm ? Object::cast_to<Players>(dm->get_node_or_null("Players")) : nullptr;
+            if (!ps) return 1;
+            uint64_t tid = (uint64_t)team->get_instance_id();
+            int out = 0;
+            for (int i = 0; i < ps->get_child_count(); i++) {
+                PlayerObject* po = Object::cast_to<PlayerObject>(ps->get_child(i));
+                if (!po || po->team_id != tid) continue;
+                wrap_node(pL, po);
+                lua_rawseti(pL, -2, ++out);
+            }
+            return 1;
+        }, "GetPlayers", 1);
+        return 1;
     }
 
     // ── TextChatService ───────────────────────────────────────────
@@ -3207,11 +3322,29 @@ static int godot_object_newindex_impl(lua_State* L) {
             return 0;
         }
         if (strcmp(key, "DisplayName") == 0) { plr->display_name = String(luaL_checkstring(L, 3)); return 0; }
+        // Team (1.14.10): antes se aceptaba y se DESCARTABA en silencio. Ahora
+        // asigna de verdad y el servidor lo difunde (cada máquina construye su
+        // propio objeto Player, así que el equipo hay que replicarlo aparte).
+        if (strcmp(key, "Team") == 0) {
+            Node* t = lua_isnil(L, 3) ? nullptr : _gl_node_from_lua(L, 3);
+            plr->team_id = t ? (uint64_t)t->get_instance_id() : 0;
+            if (Node* ns = _gl_find_network_service(plr))
+                ns->call("net_set_team", (Object*)plr, (Object*)t);
+            return 0;
+        }
+        if (strcmp(key, "Neutral") == 0) {
+            if (lua_toboolean(L, 3)) {   // Neutral = true → sin equipo
+                plr->team_id = 0;
+                if (Node* ns = _gl_find_network_service(plr))
+                    ns->call("net_set_team", (Object*)plr, (Object*)nullptr);
+            }
+            return 0;
+        }
+        if (strcmp(key, "TeamColor") == 0) { plr->team_color = (int)luaL_checknumber(L, 3); return 0; }
         if (strcmp(key, "CameraMinZoomDistance") == 0 || strcmp(key, "CameraMaxZoomDistance") == 0 ||
             strcmp(key, "AutoJumpEnabled") == 0 || strcmp(key, "DevComputerMovementMode") == 0 ||
             strcmp(key, "DevTouchMovementMode") == 0 || strcmp(key, "DevCameraOcclusionMode") == 0 ||
-            strcmp(key, "DevComputerCameraMode") == 0 || strcmp(key, "Team") == 0 ||
-            strcmp(key, "TeamColor") == 0 || strcmp(key, "Neutral") == 0)
+            strcmp(key, "DevComputerCameraMode") == 0)
             return 0;   // aceptar y descartar (no romper)
     }
 
@@ -3825,7 +3958,9 @@ static bool gl_rep_is_replicable(Node* n) {
     for (Node* p = n ? n->get_parent() : nullptr; p; p = p->get_parent()) {
         StringName nm = p->get_name();
         if (nm == StringName("ServerStorage") || nm == StringName("ServerScriptService")) return false;
-        if (nm == StringName("Workspace") || nm == StringName("ReplicatedStorage")) return true;
+        // Teams (1.14.10): en Roblox los equipos se replican, así que un Team
+        // creado por el servidor tiene que aparecer solo en los clientes.
+        if (nm == StringName("Workspace") || nm == StringName("ReplicatedStorage") || nm == StringName("Teams")) return true;
         if (p->is_class("RobloxWorkspace") || p->is_class("RobloxWorkspace2D")) return true;
     }
     return false;
