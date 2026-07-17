@@ -346,6 +346,7 @@ class NetworkService : public Node {
     // N=peer). La máquina AUTORIDAD simula y transmite su transform+velocidad;
     // las demás la congelan (kinematic) e interpolan al estado recibido.
     double phys_timer = 0.0;
+    double phys_auto_timer = 0.0;   // reasignación de dueño Auto (jugador más cercano)
     struct PhysTarget { Transform3D xform; Vector3 lvel; Vector3 avel; bool has = false; };
     std::map<uint64_t, PhysTarget> phys_targets;   // netId → estado remoto a interpolar
 
@@ -1201,6 +1202,44 @@ public:
             part->set_global_transform(cur);
         }
     }
+    // Auto ownership (como Roblox): el servidor da cada parte no anclada en modo
+    // Auto al jugador MÁS CERCANO dentro de rango (o al servidor si nadie cerca).
+    // Con histéresis + throttle (~2Hz) para no oscilar en las fronteras.
+    void _phys_auto_tick() {
+        if (!is_server()) return;
+        struct PP { int peer; Vector3 pos; };
+        std::vector<PP> plrs;
+        TypedArray<Node> roster = get_players_roster();
+        for (int i = 0; i < roster.size(); i++) {
+            PlayerObject* po = Object::cast_to<PlayerObject>(roster[i]);
+            if (!po) continue;
+            Node3D* ch = Object::cast_to<Node3D>(po->get_character());
+            if (ch) plrs.push_back({ peer_for_player_node(po), ch->get_global_position() });
+        }
+        const float RANGE2 = 150.0f * 150.0f;   // fuera de rango → servidor
+        for (auto& kv : net_instances) {
+            RobloxPart* part = Object::cast_to<RobloxPart>(_rep_node(kv.first));
+            if (!part || part->get_anchored()) continue;
+            bool is_auto = !part->has_meta("_gl_owner_auto") || (bool)part->get_meta("_gl_owner_auto");
+            if (!is_auto) continue;   // dueño fijado a mano → no tocar
+            Vector3 pp = part->get_global_position();
+            int best = 0; float best_d = RANGE2;
+            for (auto& pl : plrs) { float d = pl.pos.distance_squared_to(pp); if (d < best_d) { best_d = d; best = pl.peer; } }
+            int cur = part->has_meta("_gl_owner") ? (int)part->get_meta("_gl_owner") : 0;
+            if (best == cur) continue;
+            // Histéresis: si ya hay un dueño-jugador, solo cambiar si el nuevo está
+            // >25% más cerca (evita flip-flop y spam de RPC en la frontera).
+            if (cur != 0 && best != 0) {
+                for (auto& pl : plrs) if (pl.peer == cur) {
+                    if (best_d > pl.pos.distance_squared_to(pp) * 0.75f) best = cur;
+                    break;
+                }
+            }
+            if (best == cur) continue;
+            _apply_owner(kv.first, best, true);
+            rpc("_phys_owner", (int64_t)kv.first, best, true);
+        }
+    }
 
     // Snapshot de propiedades a replicar (shadow "_glrep_*"). Para Node3D con
     // transform tocada, manda la posición/rotación GLOBAL resuelta en vez del
@@ -1596,6 +1635,11 @@ public:
             phys_timer += dt;
             if (phys_timer >= 0.05) { phys_timer = 0.0; _phys_tick(); }
             _phys_lerp(dt);
+            // Auto ownership (1.14.7.1): el servidor reasigna al más cercano ~2Hz.
+            if (is_server()) {
+                phys_auto_timer += dt;
+                if (phys_auto_timer >= 0.5) { phys_auto_timer = 0.0; _phys_auto_tick(); }
+            }
         }
     }
 

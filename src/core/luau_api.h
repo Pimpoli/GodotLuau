@@ -2172,7 +2172,8 @@ static int godot_object_index(lua_State* L) {
             lua_pushlightuserdata(L, (void*)part);
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 RobloxPart* p = (RobloxPart*)lua_touserdata(pL, lua_upvalueindex(1));
-                bool a = p && p->has_meta("_gl_owner_auto") && (bool)p->get_meta("_gl_owner_auto");
+                // Auto es el modo por defecto en Roblox: true si no se fijó dueño a mano.
+                bool a = p && (!p->has_meta("_gl_owner_auto") || (bool)p->get_meta("_gl_owner_auto"));
                 lua_pushboolean(pL, a ? 1 : 0); return 1;
             }, "GetNetworkOwnershipAuto", 1);
             return 1;
