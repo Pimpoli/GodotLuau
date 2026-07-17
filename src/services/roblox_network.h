@@ -289,6 +289,9 @@ class NetworkService : public Node {
         Vector2 tpos2d;               // objetivo 2D
         float   tyaw = 0.0f;
         bool    has_target = false;
+        // Estado de animacion REPLICADO por su dueño (1.14.17), no deducido aqui.
+        float   anim_sp = 0.0f;
+        bool    anim_air = false;
         // Animacion de caminar (bob del visual, como el test-anim del local)
         float   walk_phase = 0.0f;
         float   vis_base_y = 0.0f;
@@ -414,6 +417,18 @@ class NetworkService : public Node {
         }
         return nullptr;
     }
+    // Mi peer id, o 0 si aún no hay conexión de verdad (1.14.17).
+    // `has_multiplayer_peer()` sigue diciendo true mientras el peer CONECTA o ya
+    // se cayó, pero `get_unique_id()` de ENet exige que esté ACTIVO y si no lanza
+    // "The multiplayer instance isn't currently active" en consola. Se repetía en
+    // 6 sitios; ahora se pregunta por el estado real de la conexión en uno solo.
+    int _my_peer_id() {
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->has_multiplayer_peer()) return 0;
+        Ref<MultiplayerPeer> p = m->get_multiplayer_peer();
+        if (p.is_null() || p->get_connection_status() != MultiplayerPeer::CONNECTION_CONNECTED) return 0;
+        return m->get_unique_id();
+    }
     bool _valid(Node* n) const { return n && UtilityFunctions::is_instance_valid(n); }
 
     // El personaje local. También fija is_2d según lo que exista en el mundo.
@@ -474,8 +489,7 @@ class NetworkService : public Node {
     void _gl_peer_uid(int peer, int uid) {
         if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor asigna
         peer_seq_uid[peer] = (int64_t)uid;
-        Ref<MultiplayerAPI> m = _mp();
-        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        int myid = _my_peer_id();
         if (peer == myid) {
             gl_local_user_id() = (int64_t)uid;
             if (PlayerObject* lp = _local_player_obj()) lp->user_id = (int64_t)uid;
@@ -621,6 +635,7 @@ class NetworkService : public Node {
         rpc_config("_set_team",      r);   // equipo de un jugador (1.14.10)
         rpc_config("_load_character", r);  // LoadCharacter de otro jugador (1.14.10)
         rpc_config("_set_char_health", r); // salud autoritativa del servidor (1.14.11)
+        rpc_config("_gl_teleport",   r);   // TeleportService: cambiar de mundo (1.14.17)
         rpc_config("_relay_anim",    r);   // animaciones: NO se pueden perder (1.14.12)
         rpc_config("_recv_anim",     r);
         // RemoteEvent por red (Fase 2): confiables y no-confiables, ambos sentidos
@@ -732,7 +747,7 @@ class NetworkService : public Node {
         pup->add_child(hum);
     }
 
-    void _update_puppet3d(int key, int idx, Vector3 pos, float yaw, float hp) {
+    void _update_puppet3d(int key, int idx, Vector3 pos, float yaw, float hp, float sp, bool air) {
         // El estado 3D que llega DEFINE la dimensión del mundo: no dependemos del
         // is_2d cacheado (que puede no estar puesto si el jugador local aún no nació).
         is_2d = false;
@@ -760,6 +775,7 @@ class NetworkService : public Node {
             // quitar la entrada ANTES de que el puntero quede colgando.
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
             Puppet P; P.node = pup; P.tpos = pos; P.tyaw = yaw; P.has_target = true;
+            P.anim_sp = sp; P.anim_air = air;
             if (Node3D* v = Object::cast_to<Node3D>(pup->get_node_or_null("Visual")))
                 P.vis_base_y = v->get_position().y;
             puppets[key] = P;
@@ -783,6 +799,7 @@ class NetworkService : public Node {
                 gl_anim_apply(pup, ait->second.id, ait->second.name, ait->second.speed, ait->second.looped, true);
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
+            it->second.anim_sp = sp; it->second.anim_air = air;
             _apply_puppet_health(it->second.node, key, hp);
         }
     }
@@ -867,49 +884,48 @@ class NetworkService : public Node {
         for (auto& kv : puppets) if (_valid(kv.second.node)) kv.second.node->queue_free();
         puppets.clear();
     }
+    // Aplica el estado de los otros jugadores TAL CUAL llega (1.14.17).
+    // Antes se interpolaba con una constante de tiempo de ~0,2s: el muñeco iba
+    // por detrás y, sobre todo, SUAVIZABA el movimiento — si el otro se movía a
+    // trompicones, tú lo veías deslizarse limpio. Y la animación se ADIVINABA de
+    // cuánto se había movido el muñeco, que es justo por lo que su salto parecía
+    // durar más de lo que duró. Ahora se copia la posición y el estado de
+    // animación que mandó su dueño, sin inventar nada.
     void _lerp_puppets(double dt) {
-        float a = 1.0f - (float)Math::pow(0.01, dt);
         for (auto& kv : puppets) {
             Puppet& pu = kv.second;
             if (!_valid(pu.node) || !pu.has_target) continue;
             if (is_2d) {
                 Node2D* n = Object::cast_to<Node2D>(pu.node);
                 if (!n) continue;
-                n->set_global_position(n->get_global_position().lerp(pu.tpos2d, a));
+                n->set_global_position(pu.tpos2d);
                 n->set_rotation(pu.tyaw);
             } else {
                 Node3D* n = Object::cast_to<Node3D>(pu.node);
                 if (!n) continue;
                 Vector3 before = n->get_global_position();
-                n->set_global_position(before.lerp(pu.tpos, a));
-                // Rotacion SUAVIZADA por el camino corto (lerp_angle): antes el
-                // muñeco saltaba de golpe al nuevo angulo y se veia raro.
+                n->set_global_position(pu.tpos);
                 Vector3 r = n->get_rotation();
-                r.y = (float)Math::lerp_angle((double)r.y, (double)pu.tyaw, (double)a);
+                r.y = pu.tyaw;
                 n->set_rotation(r);
-                // Animacion: el R6Animator del muñeco recibe el estado derivado
-                // del movimiento (velocidad horizontal + si esta en el aire).
-                float dist = before.distance_to(pu.tpos);
                 // Aplanado (1.14.11): el animador es hijo DIRECTO. Se conserva la
                 // ruta vieja para el caso sin rig (cápsula / StarterCharacter).
                 Node* anim = n->get_node_or_null(NodePath("R6Animator"));
                 if (!anim) anim = n->get_node_or_null(NodePath("Visual/R6Animator"));
                 if (anim) {
-                    Vector3 dp = pu.tpos - before;
-                    double hspeed = Vector2(dp.x, dp.z).length() / Math::max(dt, 0.001);
-                    bool airborne = Math::abs(dp.y) / Math::max(dt, 0.001) > 2.5;
-                    anim->call("set_move_state", Math::clamp(hspeed / 8.0, 0.0, 1.0), airborne);
+                    anim->call("set_move_state", (double)pu.anim_sp, pu.anim_air);
                 } else {
-                    // Fallback capsula: bob simple al moverse
+                    // Fallback capsula (sin rig R6): bob simple al moverse.
                     Node3D* vis = Object::cast_to<Node3D>(n->get_node_or_null("Visual"));
                     if (vis) {
-                        if (dist > 0.05f) pu.walk_phase += (float)dt * 12.0f;
-                        else              pu.walk_phase *= 0.85f;
+                        if (pu.anim_sp > 0.05f) pu.walk_phase += (float)dt * 12.0f;
+                        else                     pu.walk_phase *= 0.85f;
                         Vector3 vp = vis->get_position();
                         vp.y = pu.vis_base_y + Math::abs(Math::sin(pu.walk_phase)) * 0.14f;
                         vis->set_position(vp);
                     }
                 }
+                (void)before;
             }
         }
     }
@@ -945,11 +961,18 @@ class NetworkService : public Node {
             float   y = n->get_global_rotation().y;   // yaw GLOBAL (robusto ante padres rotados)
             // Salud del personaje (1.14.11): viaja con el estado para que los demás
             // vean el valor real. -1 = sin Humanoid (no tocar la del muñeco).
-            float hp = -1.0f;
-            if (Humanoid* hum = Object::cast_to<Humanoid>(lp->get_node_or_null(NodePath("Humanoid"))))
-                hp = hum->get_health();
-            if (server) rpc("_recv_state", 1, p, y, display_num, hp);
-            else        rpc_id(1, "_relay_state", p, y, display_num, hp);
+            // Animación (1.14.17): viaja el estado REAL de mi Humanoid. Antes cada
+            // máquina lo ADIVINABA de cuánto se había movido el muñeco, y por eso
+            // el salto de otro jugador se veía más largo de lo que fue.
+            float hp = -1.0f, sp = 0.0f;
+            bool air = false;
+            if (Humanoid* hum = Object::cast_to<Humanoid>(lp->get_node_or_null(NodePath("Humanoid")))) {
+                hp  = hum->get_health();
+                sp  = hum->anim_speed01;
+                air = hum->anim_airborne;
+            }
+            if (server) rpc("_recv_state", 1, p, y, display_num, hp, sp, air);
+            else        rpc_id(1, "_relay_state", p, y, display_num, hp, sp, air);
         }
     }
 
@@ -962,8 +985,8 @@ protected:
         ClassDB::bind_method(D_METHOD("_on_server_disconnected"),     &NetworkService::_on_server_disconnected);
         ClassDB::bind_method(D_METHOD("_auto_init"),                  &NetworkService::_auto_init);
         // RPCs de réplica
-        ClassDB::bind_method(D_METHOD("_recv_state", "who", "pos", "yaw", "idx", "hp"), &NetworkService::_recv_state);
-        ClassDB::bind_method(D_METHOD("_relay_state", "pos", "yaw", "idx", "hp"),   &NetworkService::_relay_state);
+        ClassDB::bind_method(D_METHOD("_recv_state", "who", "pos", "yaw", "idx", "hp", "sp", "air"), &NetworkService::_recv_state);
+        ClassDB::bind_method(D_METHOD("_relay_state", "pos", "yaw", "idx", "hp", "sp", "air"),      &NetworkService::_relay_state);
         ClassDB::bind_method(D_METHOD("_set_char_health", "hp"),                    &NetworkService::_set_char_health);
         ClassDB::bind_method(D_METHOD("net_anim_state", "character", "anim_id", "anim_name", "speed", "looped", "play"), &NetworkService::net_anim_state);
         ClassDB::bind_method(D_METHOD("_relay_anim", "anim_id", "anim_name", "speed", "looped", "play"),                 &NetworkService::_relay_anim);
@@ -986,6 +1009,11 @@ protected:
         ClassDB::bind_method(D_METHOD("net_load_character", "player"),              &NetworkService::net_load_character);
         ClassDB::bind_method(D_METHOD("_load_character"),                           &NetworkService::_load_character);
         ClassDB::bind_method(D_METHOD("disconnect_net"),                            &NetworkService::disconnect_net);   // para poder diferirlo (1.14.10 Finish)
+        ClassDB::bind_method(D_METHOD("net_teleport_player", "player", "dest_port", "data"), &NetworkService::net_teleport_player);
+        ClassDB::bind_method(D_METHOD("_gl_teleport", "dest_port", "data"),         &NetworkService::_gl_teleport);
+        ClassDB::bind_method(D_METHOD("net_teleport_data"),                         &NetworkService::net_teleport_data);
+        ClassDB::bind_method(D_METHOD("net_teleport_arrived"),                      &NetworkService::net_teleport_arrived);
+        ClassDB::bind_method(D_METHOD("net_world_ports"),                           &NetworkService::net_world_ports);
         ClassDB::bind_method(D_METHOD("_time_req", "c_unix", "c_dgt"),              &NetworkService::_time_req);
         ClassDB::bind_method(D_METHOD("_time_res", "c_unix", "c_dgt", "s_unix", "s_dgt"), &NetworkService::_time_res);
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
@@ -1782,11 +1810,11 @@ public:
 
     // ── RPCs de réplica ──────────────────────────────────────────────────
     // Cliente -> servidor: "aquí estoy". El servidor lo muestra y lo reenvía.
-    void _relay_state(Vector3 pos, float yaw, int idx, float hp) {
+    void _relay_state(Vector3 pos, float yaw, int idx, float hp, float sp, bool air) {
         int sid = get_multiplayer()->get_remote_sender_id();
         if (_diag_tick()) { gl_mp_log(String("RX relay de peer ") + String::num_int64(sid) + " pos=" + String(pos)); diag_timer = 1.0; }
-        _update_puppet3d(sid, idx, pos, yaw, hp);
-        rpc("_recv_state", sid, pos, yaw, idx, hp);
+        _update_puppet3d(sid, idx, pos, yaw, hp, sp, air);
+        rpc("_recv_state", sid, pos, yaw, idx, hp, sp, air);
     }
     void _relay_state2d(Vector2 pos, float rot, int idx) {
         int sid = get_multiplayer()->get_remote_sender_id();
@@ -1794,16 +1822,14 @@ public:
         rpc("_recv_state2d", sid, pos, rot, idx);
     }
     // Servidor -> clientes: estado autoritativo de "who".
-    void _recv_state(int who, Vector3 pos, float yaw, int idx, float hp) {
-        Ref<MultiplayerAPI> m = _mp();
-        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+    void _recv_state(int who, Vector3 pos, float yaw, int idx, float hp, float sp, bool air) {
+        int myid = _my_peer_id();
         if (who == myid) return;              // ese soy yo
         if (_diag_tick()) { gl_mp_log(String("RX estado de ") + String::num_int64(who) + " pos=" + String(pos)); diag_timer = 1.0; }
-        _update_puppet3d(who, idx, pos, yaw, hp);
+        _update_puppet3d(who, idx, pos, yaw, hp, sp, air);
     }
     void _recv_state2d(int who, Vector2 pos, float rot, int idx) {
-        Ref<MultiplayerAPI> m = _mp();
-        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        int myid = _my_peer_id();
         if (who == myid) return;
         _update_puppet2d(who, idx, pos, rot);
     }
@@ -1831,8 +1857,7 @@ public:
         rpc("_recv_chat", sid, name, text);        // reenviar a todos los clientes
     }
     void _recv_chat(int from, String name, String text) {
-        Ref<MultiplayerAPI> m = _mp();
-        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        int myid = _my_peer_id();
         if (from == myid) return;                  // yo ya lo mostre al enviarlo
         _show_chat(name, text);
     }
@@ -1886,8 +1911,7 @@ public:
         rpc("_recv_anim", sid, anim_id, anim_name, speed, looped, play);
     }
     void _recv_anim(int who, String anim_id, String anim_name, float speed, bool looped, bool play) {
-        Ref<MultiplayerAPI> m = _mp();
-        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        int myid = _my_peer_id();
         if (who == myid) return;   // ese soy yo
         _apply_anim_puppet(who, anim_id, anim_name, speed, looped, play);
     }
@@ -1899,6 +1923,93 @@ public:
         auto it = puppets.find(who);
         if (it == puppets.end() || !_valid(it->second.node)) return;
         gl_anim_apply(it->second.node, anim_id, anim_name, speed, looped, play);
+    }
+
+    // ── TeleportService (1.14.17) ────────────────────────────────────────
+    // Mover un jugador de un MUNDO a otro del mismo coordinador. Aquí un "place"
+    // es una instancia-mundo: se descubren por los latidos de user:// (los mismos
+    // que ya usa el coordinador), así que un mundo puede mandarte a otro sin
+    // hablar con nadie. El cliente reaprovecha el camino de _gl_assign: soltar
+    // este servidor y reconectar al otro.
+    // Devuelve el puerto destino, o 0 si no hay a dónde ir.
+    int net_teleport_player(Object* player_node, int dest_port, String data_json) {
+        if (!is_server()) return 0;
+        Node* pn = Object::cast_to<Node>(player_node);
+        if (!pn) return 0;
+        int target = peer_for_player_node(pn);
+        if (target <= 0 || target == get_peer_id()) return 0;   // al host no se le teletransporta
+        if (dest_port <= 0) {
+            // Sin destino: el mundo con menos gente que NO sea este.
+            std::vector<InstInfo> insts = _coord_read_instances();
+            int mejor = 0, mejorN = 1 << 30;
+            for (auto& ii : insts) {
+                if (ii.port == coord_port) continue;   // este mismo mundo
+                if (ii.players < mejorN) { mejor = ii.port; mejorN = ii.players; }
+            }
+            dest_port = mejor;
+        }
+        if (dest_port <= 0) {
+            UtilityFunctions::push_warning("[GodotLuau] Teleport: no hay otro mundo al que ir (¿coordinador activo?)");
+            return 0;
+        }
+        Ref<MultiplayerAPI> m = _mp();
+        if (m.is_null() || !m->get_peers().has(target)) return 0;
+        rpc_id(target, "_gl_teleport", dest_port, data_json);
+        gl_mp_log(String("teleport: peer ") + String::num_int64(target) + " -> mundo :" + String::num_int64(dest_port));
+        return dest_port;
+    }
+    // (cliente) El servidor me manda a otro mundo. Los datos del teleport se
+    // guardan en memoria: el PROCESO sobrevive a la reconexión, así que al llegar
+    // siguen ahí (por eso no hace falta archivo).
+    void _gl_teleport(int dest_port, String data_json) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo mi servidor
+        gl_teleport_data() = data_json;
+        gl_teleport_arrived() = true;
+        reconnect_ip = target_address.is_empty() ? gl_mp_host() : target_address.split(":")[0];
+        reconnect_port = dest_port;
+        reconnect_try = 40; reconnect_timer = 0.0;
+        gl_mp_log(String("teleport: me mandan al mundo :") + String::num_int64(dest_port));
+        call_deferred("disconnect_net");   // soltar este mundo; el _process reconecta al otro
+    }
+    // Lo consulta TeleportService:GetLocalPlayerTeleportData() en el destino.
+    String net_teleport_data() { return gl_teleport_data(); }
+    bool net_teleport_arrived() {
+        bool v = gl_teleport_arrived();
+        gl_teleport_arrived() = false;   // se consume una sola vez, como Roblox
+        return v;
+    }
+    // Puertos de los mundos vivos (para ReserveServer/listados).
+    PackedInt32Array net_world_ports() {
+        PackedInt32Array out;
+        for (auto& ii : _coord_read_instances()) out.push_back(ii.port);
+        return out;
+    }
+
+    // ── Contenedores solo-servidor (1.14.17) ─────────────────────────────
+    // En Roblox el contenido de ServerScriptService y ServerStorage NUNCA llega
+    // al cliente. Aquí todas las ventanas cargan el MISMO place, así que un
+    // LocalScript podía leerlos enteros: `game.ServerStorage.LoQueSea` funcionaba.
+    // Al pasar a cliente se vacían, así que no hay nada que leer.
+    // LIMITACIÓN honesta: esto corta el acceso desde Luau, pero los datos siguen
+    // dentro del .pck del cliente. Blindarlo de verdad exige no EMPAQUETARLOS en
+    // la build de cliente, que es cosa del exportador (no de esta versión).
+    void _strip_server_only() {
+        if (!is_inside_tree()) return;
+        Node* root = (Node*)get_tree()->get_root();
+        const char* solo_server[] = { "ServerScriptService", "ServerStorage", nullptr };
+        for (int i = 0; solo_server[i]; i++) {
+            Node* c = _find_by_name(root, solo_server[i]);
+            if (!c) continue;
+            int n = c->get_child_count();
+            for (int j = n - 1; j >= 0; j--) {
+                Node* ch = c->get_child(j);
+                if (!ch) continue;
+                c->remove_child(ch);
+                ch->queue_free();
+            }
+            if (n > 0) gl_mp_log(String("cliente: vaciado ") + solo_server[i]
+                                 + " (" + String::num_int64(n) + " hijos, solo-servidor)");
+        }
     }
 
     // ── LoadCharacter (1.14.10) ──────────────────────────────────────────
@@ -2152,7 +2263,10 @@ public:
             _stamp_static_ids();
             if (m->get_peers().size() > 0) {
                 bcast_timer += dt;
-                if (bcast_timer >= 0.05) { bcast_timer = 0.0; _broadcast_local(); }
+                // 30Hz (1.14.17): al aplicar el estado TAL CUAL (sin suavizar),
+                // los 20Hz de antes se verian a saltos. El canal es no confiable
+                // y son pocos bytes, asi que sale barato.
+                if (bcast_timer >= 0.0333) { bcast_timer = 0.0; _broadcast_local(); }
                 // Ping: el cliente pregunta cada segundo
                 if (mode == 2 && net_connected) {
                     ping_timer += dt;
@@ -2400,6 +2514,7 @@ public:
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 2;
         gl_net_role() = 2; gl_net_service_id() = (uint64_t)get_instance_id();   // replicación: somos cliente
+        _strip_server_only();  // lo que solo ve el servidor, fuera de esta ventana (1.14.17)
         _stamp_static_ids();   // mismo place → mismos netId que el servidor (1.14.10)
         set_process(true);
         return true;
@@ -2434,10 +2549,7 @@ public:
         return m.is_valid() && m->has_multiplayer_peer() && !m->is_server();
     }
     int get_mode() const { return mode; }
-    int get_peer_id() {
-        Ref<MultiplayerAPI> m = _mp();
-        return (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
-    }
+    int get_peer_id() { return _my_peer_id(); }
     int get_player_count() {
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_null() || !m->has_multiplayer_peer()) return 1;

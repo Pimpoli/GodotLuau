@@ -891,34 +891,86 @@ local TeleportService = {}
 TeleportService.__index = TeleportService
 local _ts_callbacks = {}
 
+-- 1.14.17: teleport REAL entre los mundos de un mismo coordinador. Aqui un
+-- "place" es una instancia-mundo; se descubren solas por los latidos de user://
+-- que el coordinador ya escribia, asi que un mundo puede mandarte a otro sin
+-- hablar con nadie. placeId se acepta como PUERTO destino; si es nil o 0, va al
+-- mundo con menos gente que no sea este.
+local _ts_llegada = {}
+
 TeleportService.TeleportInitFailed = { Connect = function(_, fn) end }
-TeleportService.LocalPlayerArrivedFromTeleport = { Connect = function(_, fn) end }
+TeleportService.LocalPlayerArrivedFromTeleport = {
+    Connect = function(_, fn)
+        table.insert(_ts_llegada, fn)
+        return { Connected = true, Disconnect = function(self)
+            self.Connected = false
+            for i, f in ipairs(_ts_llegada) do if f == fn then table.remove(_ts_llegada, i) break end end
+        end }
+    end
+}
 
 function TeleportService:Teleport(placeId, player, teleportData, customLoadingScreen)
-    warn("[TeleportService] Teleport a " .. tostring(placeId) .. " no soportado en GodotLuau.")
+    player = player or (game:GetService("Players").LocalPlayer)
+    if not player then warn("[TeleportService] Teleport sin jugador.") return end
+    if not _GL_NET then warn("[TeleportService] Teleport necesita una sesion de red.") return end
+    local datos = ""
+    if teleportData ~= nil and _JSON then
+        local ok, s = pcall(_JSON.encode, teleportData)
+        datos = ok and s or ""
+    end
+    local destino = _GL_NET.teleport(player, tonumber(placeId) or 0, datos)
+    if destino == 0 then
+        warn("[TeleportService] Teleport: no hay otro mundo al que ir (¿coordinador activo?).")
+    end
+    return destino
 end
 
 function TeleportService:TeleportAsync(placeId, players, teleportOptions)
-    warn("[TeleportService] TeleportAsync no soportado.")
+    local datos = teleportOptions and teleportOptions.TeleportData or nil
+    for _, p in ipairs(players or {}) do self:Teleport(placeId, p, datos) end
     return { Instances = players or {} }
 end
 
 function TeleportService:TeleportToSpawnByName(placeId, spawnName, player, teleportData)
-    warn("[TeleportService] TeleportToSpawnByName no soportado.")
+    -- El nombre del spawn viaja en los datos; el mundo destino decide que hacer.
+    local d = teleportData or {}
+    if type(d) == "table" then d.SpawnName = spawnName end
+    return self:Teleport(placeId, player, d)
 end
 
-function TeleportService:TeleportToPlaceInstance(placeId, instanceId, player)
-    warn("[TeleportService] TeleportToPlaceInstance no soportado.")
+function TeleportService:TeleportToPlaceInstance(placeId, instanceId, player, teleportData)
+    -- instanceId = el PUERTO del mundo concreto.
+    return self:Teleport(tonumber(instanceId) or placeId, player, teleportData)
 end
 
 function TeleportService:TeleportPartyAsync(placeId, players, teleportOptions)
-    warn("[TeleportService] TeleportPartyAsync no soportado.")
-    return {}
+    return self:TeleportAsync(placeId, players, teleportOptions)
+end
+
+-- Mundos vivos (puertos). Extra de GodotLuau: en Roblox no existe.
+function TeleportService:GetWorlds()
+    return _GL_NET and _GL_NET.call("net_world_ports") or {}
 end
 
 function TeleportService:GetLocalPlayerTeleportData()
-    return nil
+    if not _GL_NET then return nil end
+    local s = _GL_NET.call("net_teleport_data")
+    if not s or s == "" or not _JSON then return nil end
+    local ok, d = pcall(_JSON.decode, s)
+    return ok and d or nil
 end
+
+-- Al entrar a un mundo, si venimos de un teleport se avisa una sola vez.
+task.spawn(function()
+    task.wait(0.5)
+    while true do
+        if _GL_NET and _GL_NET.call("net_teleport_arrived") then
+            local d = TeleportService:GetLocalPlayerTeleportData()
+            for _, fn in ipairs(_ts_llegada) do task.spawn(fn, d) end
+        end
+        task.wait(1)
+    end
+end)
 
 function TeleportService:GetTeleportSetting(name)
     return nil

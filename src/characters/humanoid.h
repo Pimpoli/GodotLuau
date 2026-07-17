@@ -67,6 +67,12 @@ public:
     std::vector<LuaCallback> health_changed_cbs;
     std::vector<LuaCallback> state_changed_cbs;
 
+    // Estado de animación REAL de este personaje (1.14.17). Lo lee el
+    // NetworkService para replicarlo tal cual, en vez de que cada máquina lo
+    // deduzca del movimiento del muñeco (que hacía durar de más los saltos).
+    float anim_speed01  = 0.0f;
+    bool  anim_airborne = false;
+
     void add_died_callback(lua_State* main_L, int ref) {
         died_cbs.push_back({main_L, ref, true});
     }
@@ -550,10 +556,15 @@ public:
             Node* character = body ? body->get_node_or_null(NodePath("Character")) : nullptr;
             anim = character ? character->get_node_or_null(NodePath("R6Animator")) : nullptr;
         }
+        Vector3 horiz(velocity.x, 0.0f, velocity.z);
+        double speed01 = Math::clamp((double)horiz.length() / (double)Math::max(walk_speed, 0.1f), 0.0, 1.0);
+        // Estado REAL de animación (1.14.17): se guarda para que el NetworkService
+        // lo replique tal cual. Antes cada máquina lo ADIVINABA del movimiento del
+        // muñeco, y por eso el salto de otro jugador duraba más de la cuenta.
+        anim_speed01  = (float)speed01;
+        anim_airborne = !body->is_on_floor();
         if (anim) {
-            Vector3 horiz(velocity.x, 0.0f, velocity.z);
-            double speed01 = Math::clamp((double)horiz.length() / (double)Math::max(walk_speed, 0.1f), 0.0, 1.0);
-            anim->call("set_move_state", speed01, !body->is_on_floor());
+            anim->call("set_move_state", speed01, anim_airborne);
             return;
         }
         _test_animate(body, velocity, delta);

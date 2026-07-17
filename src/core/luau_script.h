@@ -1437,6 +1437,33 @@ public:
 
         lua_pushcfunction(L_main, godot_object_newindex, "__newindex");
         lua_setfield(L_main, -2, "__newindex");
+
+        // ── __eq (1.14.17) ────────────────────────────────────────────────────
+        // Cada acceso a una propiedad crea un envoltorio NUEVO, asi que sin esto
+        // Lua comparaba los userdata y dos referencias al MISMO nodo daban
+        // siempre false: `hit.Parent == player.Character`, `p.Character == x`…
+        // El idioma mas comun de Roblox no entraba NUNCA, y en silencio.
+        // Se comparan los ObjectID, no los punteros: asi dos referencias al mismo
+        // nodo son iguales aunque sean envoltorios distintos, y sigue funcionando
+        // con nodos ya destruidos (mismo id = misma instancia).
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            GodotObjectWrapper* a = (GodotObjectWrapper*)lua_touserdata(L, 1);
+            GodotObjectWrapper* b = (GodotObjectWrapper*)lua_touserdata(L, 2);
+            lua_pushboolean(L, (a && b && a->obj_id == b->obj_id) ? 1 : 0);
+            return 1;
+        }, "__eq");
+        lua_setfield(L_main, -2, "__eq");
+
+        // __tostring: en Roblox imprimir una instancia da su Nombre; antes salia
+        // "userdata: 0x…", que ademas hacia irreconocibles los prints de depuracion.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+            Node* n = w ? gow_node(w) : nullptr;
+            lua_pushstring(L, n ? String(n->get_name()).utf8().get_data() : "NULL");
+            return 1;
+        }, "__tostring");
+        lua_setfield(L_main, -2, "__tostring");
+
         lua_pop(L_main, 1);
 
         // Replicación (1.14.5): instala el aplicador de propiedades del cliente
@@ -2003,6 +2030,47 @@ public:
             return 1;
         }, "_GL_VM_ID");
         lua_setglobal(L_main, "_GL_VM_ID");
+
+        // ── _GL_NET — puente al NetworkService para el stdlib (1.14.17) ──────
+        // Lo usa TeleportService. Se resuelve por ObjectID y se llama por NOMBRE,
+        // asi que el stdlib no depende de roblox_network.h.
+        lua_newtable(L_main);
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            Object* ns = ObjectDB::get_instance(gl_net_service_id());
+            if (!ns) { lua_pushnil(L); return 1; }
+            const char* m = luaL_checkstring(L, 1);
+            // (metodo, arg1, arg2, arg3) -> Variant; solo lo que necesita el stdlib
+            Variant r;
+            if (lua_gettop(L) >= 4)      r = ns->call(StringName(m), (int64_t)luaL_checknumber(L, 2),
+                                                     (int64_t)luaL_checknumber(L, 3), String(luaL_checkstring(L, 4)));
+            else if (lua_gettop(L) >= 2) r = ns->call(StringName(m), (int64_t)luaL_checknumber(L, 2));
+            else                          r = ns->call(StringName(m));
+            if (r.get_type() == Variant::STRING)      lua_pushstring(L, String(r).utf8().get_data());
+            else if (r.get_type() == Variant::BOOL)   lua_pushboolean(L, (bool)r ? 1 : 0);
+            else if (r.get_type() == Variant::INT)    lua_pushnumber(L, (double)(int64_t)r);
+            else if (r.get_type() == Variant::PACKED_INT32_ARRAY) {
+                PackedInt32Array a = r;
+                lua_newtable(L);
+                for (int i = 0; i < a.size(); i++) { lua_pushnumber(L, a[i]); lua_rawseti(L, -2, i + 1); }
+            }
+            else lua_pushnil(L);
+            return 1;
+        }, "call");
+        lua_setfield(L_main, -2, "call");
+        // Teleport necesita pasar el NODO del jugador, no un numero.
+        lua_pushcfunction(L_main, [](lua_State* L) -> int {
+            Object* ns = ObjectDB::get_instance(gl_net_service_id());
+            GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
+            Node* plr = w ? gow_node(w) : nullptr;
+            if (!ns || !plr) { lua_pushnumber(L, 0); return 1; }
+            int port = (int)luaL_optnumber(L, 2, 0);
+            String data = lua_isstring(L, 3) ? String(lua_tostring(L, 3)) : String();
+            Variant r = ns->call("net_teleport_player", (Object*)plr, port, data);
+            lua_pushnumber(L, (double)(int64_t)r);
+            return 1;
+        }, "teleport");
+        lua_setfield(L_main, -2, "teleport");
+        lua_setglobal(L_main, "_GL_NET");
 
         // ── _JSON — JSON serialization ────────────────────────────────────────
         //// ── _JSON — serialización JSON ────────────────────────────────────────

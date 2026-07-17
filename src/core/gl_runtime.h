@@ -135,6 +135,13 @@ static const char* GL_REP_SHADOW = "_glrep_";
 //  devolvía "" siempre. Se genera una vez, la primera vez que se pide.
 //  Como Roblox: sin sesión de red (equivalente a Studio) sigue siendo "".
 inline String& gl_job_id() { static String id; return id; }
+
+//  ── TeleportData (1.14.17) ───────────────────────────────────────────────
+//  Datos que viajan con el jugador al cambiar de mundo. Van en memoria porque
+//  el PROCESO del cliente sobrevive a la reconexión: solo se suelta el servidor
+//  viejo y se entra al nuevo, así que al llegar siguen aquí.
+inline String& gl_teleport_data()   { static String d;  return d; }
+inline bool&   gl_teleport_arrived(){ static bool b = false; return b; }
 inline String gl_ensure_job_id() {
     String& id = gl_job_id();
     if (!id.is_empty()) return id;
