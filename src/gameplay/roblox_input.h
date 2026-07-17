@@ -14,6 +14,12 @@
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/window.hpp>
+#include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/world3d.hpp>
+#include <godot_cpp/classes/physics_direct_space_state3d.hpp>
+#include <godot_cpp/classes/physics_ray_query_parameters3d.hpp>
+#include <godot_cpp/classes/collision_object3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <vector>
 #include <cstring>
@@ -26,6 +32,141 @@
 #include "gl_runtime.h"
 
 using namespace godot;
+
+// ════════════════════════════════════════════════════════════════════
+//  RobloxMouse — el objeto que devuelve Player:GetMouse() (1.14.10 Finish)
+//  ------------------------------------------------------------------
+//  No existía NADA de esto: GetMouse estaba anunciado en el autocompletado
+//  y en la base de tipos, pero no en el runtime, así que llamarlo reventaba.
+//
+//  Hit/Target se calculan BAJO DEMANDA con un raycast desde la cámara por el
+//  ratón (no hay coste por frame si nadie los lee). Como en Roblox, el rayo
+//  ignora el personaje del propio jugador y el TargetFilter.
+//  Los eventos (Button1Down/Up, Button2Down/Up, Move, rueda) salen de _input.
+// ════════════════════════════════════════════════════════════════════
+class RobloxMouse : public Node {
+    GDCLASS(RobloxMouse, Node);
+
+public:
+    struct LuaCB { lua_State* main_L; int ref; bool active = true; bool once = false; };
+    std::vector<LuaCB> b1down, b1up, b2down, b2up, move_cbs, wheel_f, wheel_b;
+    uint64_t target_filter_id = 0;   // Mouse.TargetFilter
+    uint64_t character_id = 0;       // el personaje propio: el rayo lo ignora
+
+    void add_cb(std::vector<LuaCB>& v, lua_State* mL, int ref, bool once) { v.push_back({mL, ref, true, once}); }
+    // Selección por índice: un array con comas dentro de lua_pushcclosure (que es
+    // una MACRO) el preprocesador lo parte en argumentos. Por eso va aquí.
+    std::vector<LuaCB>* cb_list(int idx) {
+        switch (idx) {
+            case 0: return &b1down;
+            case 1: return &b1up;
+            case 2: return &b2down;
+            case 3: return &b2up;
+            case 4: return &move_cbs;
+            case 5: return &wheel_f;
+            case 6: return &wheel_b;
+        }
+        return nullptr;
+    }
+    void _gl_disconnect(int ref) {
+        std::vector<LuaCB>* all[] = { &b1down, &b1up, &b2down, &b2up, &move_cbs, &wheel_f, &wheel_b };
+        for (auto* v : all) for (auto& c : *v) if (c.ref == ref) c.active = false;
+    }
+
+    Camera3D* cam() { return is_inside_tree() ? get_viewport()->get_camera_3d() : nullptr; }
+    Vector2 pos2d()  { return is_inside_tree() ? get_viewport()->get_mouse_position() : Vector2(); }
+    Vector2 view_size() {
+        if (!is_inside_tree()) return Vector2();
+        return get_viewport()->get_visible_rect().size;
+    }
+
+    // Junta los RID de todos los CollisionObject3D de un subárbol (para excluir).
+    void _collect_rids(Node* n, TypedArray<RID>& out, int depth = 0) {
+        if (!n || depth > 32) return;
+        if (CollisionObject3D* co = Object::cast_to<CollisionObject3D>(n)) out.push_back(co->get_rid());
+        for (int i = 0; i < n->get_child_count(); i++) _collect_rids(n->get_child(i), out, depth + 1);
+    }
+
+    // Raycast desde la cámara por el ratón. Dict vacío si no hay impacto.
+    Dictionary cast() {
+        Dictionary empty;
+        Camera3D* c = cam();
+        if (!c || !c->is_inside_tree()) return empty;
+        Ref<World3D> w = c->get_world_3d();
+        if (w.is_null()) return empty;
+        PhysicsDirectSpaceState3D* ss = w->get_direct_space_state();
+        if (!ss) return empty;
+        Vector2 mp = pos2d();
+        Vector3 from = c->project_ray_origin(mp);
+        Vector3 dir  = c->project_ray_normal(mp);
+        Ref<PhysicsRayQueryParameters3D> q;
+        q.instantiate();
+        q->set_from(from);
+        q->set_to(from + dir * 5000.0f);   // Roblox usa ~1000 studs; de sobra
+        TypedArray<RID> ex;
+        if (Node* ch = character_id ? Object::cast_to<Node>(ObjectDB::get_instance(character_id)) : nullptr)
+            _collect_rids(ch, ex);
+        if (Node* tf = target_filter_id ? Object::cast_to<Node>(ObjectDB::get_instance(target_filter_id)) : nullptr)
+            _collect_rids(tf, ex);
+        if (ex.size() > 0) q->set_exclude(ex);
+        return ss->intersect_ray(q);
+    }
+    Vector3 unit_ray_origin() { Camera3D* c = cam(); return c ? c->project_ray_origin(pos2d()) : Vector3(); }
+    Vector3 unit_ray_dir()    { Camera3D* c = cam(); return c ? c->project_ray_normal(pos2d()) : Vector3(0,0,-1); }
+
+    // Lo llama Players::load_local_character tras respawnear: si no, un
+    // `local mouse = plr:GetMouse()` guardado una vez seguiría filtrando por el
+    // personaje MUERTO y el rayo empezaría a chocar contra el nuevo.
+    void _gl_set_character(Object* ch) {
+        Node* n = Object::cast_to<Node>(ch);
+        character_id = n ? (uint64_t)n->get_instance_id() : 0;
+    }
+
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &RobloxMouse::_gl_disconnect);
+        ClassDB::bind_method(D_METHOD("_gl_set_character", "ch"), &RobloxMouse::_gl_set_character);
+    }
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_READY && !Engine::get_singleton()->is_editor_hint())
+            set_process_input(true);
+    }
+
+public:
+    void _input(const Ref<InputEvent>& event) override {
+        if (event.is_null()) return;
+        Ref<InputEventMouseButton> mb = event;
+        if (mb.is_valid()) {
+            int b = (int)mb->get_button_index();
+            bool down = mb->is_pressed();
+            if      (b == MOUSE_BUTTON_LEFT)        _fire(down ? b1down : b1up);
+            else if (b == MOUSE_BUTTON_RIGHT)       _fire(down ? b2down : b2up);
+            else if (b == MOUSE_BUTTON_WHEEL_UP   && down) _fire(wheel_f);
+            else if (b == MOUSE_BUTTON_WHEEL_DOWN && down) _fire(wheel_b);
+            return;
+        }
+        Ref<InputEventMouseMotion> mm = event;
+        if (mm.is_valid()) _fire(move_cbs);
+    }
+
+    void _fire(std::vector<LuaCB>& list) {
+        if (list.empty()) return;
+        std::vector<LuaCB> snap = list;   // copia defensiva: un callback puede conectar/desconectar
+        for (size_t i = 0; i < snap.size(); i++) {
+            LuaCB& cb = snap[i];
+            if (!cb.active || !gl_state_alive(cb.main_L)) continue;
+            if (cb.once) for (auto& o : list) if (o.ref == cb.ref) o.active = false;   // :Once antes de invocar
+            lua_State* th = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, th, 1);
+                gl_check_resume(th, lua_resume(th, nullptr, 0));
+            } else lua_pop(cb.main_L, 1);
+            lua_pop(cb.main_L, 1);
+        }
+        for (int i = (int)list.size()-1; i >= 0; --i) if (!list[i].active) list.erase(list.begin()+i);
+    }
+};
 
 // ────────────────────────────────────────────────────────────────────
 //  Helpers: Roblox Enum.KeyCode ↔ Godot Key conversion

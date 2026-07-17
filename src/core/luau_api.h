@@ -89,6 +89,18 @@ static void wrap_node(lua_State* L, Node* node) {
     lua_setmetatable(L, -2);
 }
 
+// Empuja un CFrame de POSICIÓN. Los CFrame son tablas tipadas creadas en Lua,
+// así que se construye llamando al constructor global (1.14.10 Finish).
+static void _gl_push_cframe_pos(lua_State* L, const Vector3& p) {
+    lua_getglobal(L, "CFrame");
+    if (!lua_istable(L, -1)) { lua_pop(L, 1); lua_pushnil(L); return; }
+    lua_getfield(L, -1, "new");
+    if (!lua_isfunction(L, -1)) { lua_pop(L, 2); lua_pushnil(L); return; }
+    lua_pushnumber(L, p.x); lua_pushnumber(L, p.y); lua_pushnumber(L, p.z);
+    if (lua_pcall(L, 3, 1, 0) != LUA_OK) { lua_pop(L, 2); lua_pushnil(L); return; }
+    lua_remove(L, -2);   // quitar la tabla CFrame, dejar solo el resultado
+}
+
 static LuauVector3* push_vector3(lua_State* L, float x, float y, float z) {
     LuauVector3* v = (LuauVector3*)lua_newuserdata(L, sizeof(LuauVector3));
     v->x = x; v->y = y; v->z = z;
@@ -755,6 +767,31 @@ static int godot_object_index(lua_State* L) {
                 }, "Kick", 1);
                 return 1;
             }
+            // GetMouse (1.14.10 Finish): crea (una vez) el RobloxMouse del
+            // jugador y lo devuelve. Solo tiene sentido en el jugador LOCAL:
+            // el ratón es de esta máquina (en Roblox igual, es de LocalScript).
+            if (strcmp(key, "GetMouse") == 0) {
+                lua_pushlightuserdata(L, (void*)plr);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
+                    if (!p || !p->is_inside_tree()) { lua_pushnil(pL); return 1; }
+                    if (!p->is_local) {
+                        luaL_error(pL, "GetMouse: only the LocalPlayer has a Mouse");
+                        return 0;
+                    }
+                    RobloxMouse* m = Object::cast_to<RobloxMouse>(p->get_node_or_null(NodePath("Mouse")));
+                    if (!m) {
+                        m = memnew(RobloxMouse);
+                        m->set_name("Mouse");
+                        p->add_child(m);
+                    }
+                    m->character_id = (uint64_t)0;
+                    if (Node* ch = p->get_character()) m->character_id = (uint64_t)ch->get_instance_id();
+                    wrap_node(pL, m);
+                    return 1;
+                }, "GetMouse", 1);
+                return 1;
+            }
             if (strcmp(key, "LoadCharacter") == 0) {
                 lua_pushlightuserdata(L, (void*)plr);
                 lua_pushcclosure(L, [](lua_State* pL) -> int {
@@ -1150,6 +1187,83 @@ static int godot_object_index(lua_State* L) {
                 lua_pushstring(pL, "__WAIT_SIGNAL__"); return lua_yield(pL, 1);
             }, "Wait", 2);
             lua_setfield(L, -2, "Wait");
+            return 1;
+        }
+    }
+
+    // ── RobloxMouse — Player:GetMouse() (1.14.10 Finish) ──────────
+    if (RobloxMouse* mo = Object::cast_to<RobloxMouse>(n)) {
+        if (strcmp(key, "X") == 0)         { lua_pushnumber(L, (double)mo->pos2d().x); return 1; }
+        if (strcmp(key, "Y") == 0)         { lua_pushnumber(L, (double)mo->pos2d().y); return 1; }
+        if (strcmp(key, "ViewSizeX") == 0) { lua_pushnumber(L, (double)mo->view_size().x); return 1; }
+        if (strcmp(key, "ViewSizeY") == 0) { lua_pushnumber(L, (double)mo->view_size().y); return 1; }
+        if (strcmp(key, "ClassName") == 0) { lua_pushstring(L, "Mouse"); return 1; }
+        // Hit: CFrame en el punto de impacto. Si el rayo no da a nada, Roblox
+        // devuelve un punto lejano sobre el rayo (no nil) → mismo comportamiento.
+        if (strcmp(key, "Hit") == 0) {
+            Dictionary r = mo->cast();
+            Vector3 p = r.is_empty() ? (mo->unit_ray_origin() + mo->unit_ray_dir() * 1000.0f)
+                                     : (Vector3)r.get("position", Vector3());
+            _gl_push_cframe_pos(L, p);
+            return 1;
+        }
+        if (strcmp(key, "Target") == 0) {
+            Dictionary r = mo->cast();
+            Variant cv = r.get("collider", Variant());
+            Node* hit = (cv.get_type() == Variant::OBJECT) ? Object::cast_to<Node>(cv.operator Object*()) : nullptr;
+            if (hit) wrap_node(L, hit); else lua_pushnil(L);
+            return 1;
+        }
+        if (strcmp(key, "TargetSurface") == 0) {
+            Dictionary r = mo->cast();
+            Vector3 nrm = r.get("normal", Vector3(0,1,0));
+            push_vector3(L, nrm.x, nrm.y, nrm.z);   // Roblox da un Enum.NormalId; aquí la normal cruda
+            return 1;
+        }
+        if (strcmp(key, "UnitRay") == 0) {
+            lua_getglobal(L, "Ray");
+            if (lua_istable(L, -1)) {
+                lua_getfield(L, -1, "new");
+                if (lua_isfunction(L, -1)) {
+                    Vector3 o = mo->unit_ray_origin(), d = mo->unit_ray_dir();
+                    push_vector3(L, o.x, o.y, o.z);
+                    push_vector3(L, d.x, d.y, d.z);
+                    if (lua_pcall(L, 2, 1, 0) == LUA_OK) { lua_remove(L, -2); return 1; }
+                }
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            return 1;
+        }
+        if (strcmp(key, "TargetFilter") == 0) {
+            Node* tf = mo->target_filter_id ? Object::cast_to<Node>(ObjectDB::get_instance(mo->target_filter_id)) : nullptr;
+            if (tf) wrap_node(L, tf); else lua_pushnil(L);
+            return 1;
+        }
+        const char* MOUSE_EVENTS[] = { "Button1Down","Button1Up","Button2Down","Button2Up","Move","WheelForward","WheelBackward", nullptr };
+        for (int i = 0; MOUSE_EVENTS[i]; i++) {
+            if (strcmp(key, MOUSE_EVENTS[i]) != 0) continue;
+            lua_newtable(L);
+            for (int once = 0; once < 2; once++) {
+                lua_pushlightuserdata(L, (void*)mo);
+                lua_pushinteger(L, i);
+                lua_pushboolean(L, once);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    RobloxMouse* m = (RobloxMouse*)lua_touserdata(pL, lua_upvalueindex(1));
+                    int idx = (int)lua_tointeger(pL, lua_upvalueindex(2));
+                    bool once_f = lua_toboolean(pL, lua_upvalueindex(3)) != 0;
+                    if (!m || !lua_isfunction(pL, 2)) { lua_pushnil(pL); return 1; }
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL, 1);
+                    if (!mL) mL = pL;
+                    int ref = lua_ref(pL, 2);
+                    if (auto* lst = m->cb_list(idx)) m->add_cb(*lst, mL, ref, once_f);
+                    _gl_push_connection(pL, m, ref);
+                    return 1;
+                }, once ? "Once" : "Connect", 3);
+                lua_setfield(L, -2, once ? "Once" : "Connect");
+            }
             return 1;
         }
     }
@@ -3309,6 +3423,15 @@ static int godot_object_newindex_impl(lua_State* L) {
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) return 0;
     Node* n = gow_node(wrapper);
+
+    // Mouse.TargetFilter — subárbol que el rayo ignora (1.14.10 Finish).
+    if (RobloxMouse* mo = Object::cast_to<RobloxMouse>(n)) {
+        if (strcmp(key, "TargetFilter") == 0) {
+            Node* tf = lua_isnil(L, 3) ? nullptr : _gl_node_from_lua(L, 3);
+            mo->target_filter_id = tf ? (uint64_t)tf->get_instance_id() : 0;
+            return 0;
+        }
+    }
 
     // ── PlayerObject: escrituras de miembros de Player (CameraMode, etc.) ──
     // Antes LocalPlayer ERA el personaje y estas escrituras iban al character;

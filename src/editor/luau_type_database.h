@@ -210,7 +210,7 @@ static const std::vector<RobloxMember>& roblox_get_members(const std::string& p_
         {"OnTeleport",        "RBXScriptSignal<Enum.TeleportState, number, string>", "Teleport state change", 2},
         {"Kick",              "(message: string?) -> ()", "Disconnect player from game", 1},
         {"GetMouse",          "() -> Mouse",       "Get the player's Mouse object", 1},
-        {"GetNetworkPing",    "() -> number",      "Network latency in milliseconds", 1},
+        {"GetNetworkPing",    "() -> number",      "Network latency in seconds", 1},
         {"GetFriendStatus",   "(player: Player) -> Enum.FriendStatus", "Friendship status", 1},
         {"GetRankInGroupAsync","(groupId: number) -> number", "Group rank 0-255", 1},
         {"GetRoleInGroupAsync","(groupId: number) -> string", "Group role name string", 1},

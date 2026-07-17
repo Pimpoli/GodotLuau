@@ -893,6 +893,7 @@ protected:
         ClassDB::bind_method(D_METHOD("_set_team", "peer", "team_netid"),           &NetworkService::_set_team);
         ClassDB::bind_method(D_METHOD("net_load_character", "player"),              &NetworkService::net_load_character);
         ClassDB::bind_method(D_METHOD("_load_character"),                           &NetworkService::_load_character);
+        ClassDB::bind_method(D_METHOD("disconnect_net"),                            &NetworkService::disconnect_net);   // para poder diferirlo (1.14.10 Finish)
         ClassDB::bind_method(D_METHOD("_time_req", "c_unix", "c_dgt"),              &NetworkService::_time_req);
         ClassDB::bind_method(D_METHOD("_time_res", "c_unix", "c_dgt", "s_unix", "s_dgt"), &NetworkService::_time_res);
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
@@ -1700,7 +1701,10 @@ public:
         if (is_server()) rpc("_set_team", target, tid);
     }
     void _apply_team(int peer, int64_t team_netid) {
-        PlayerObject* po = (peer == get_peer_id() || peer == 0) ? _local_player_obj() : _peer_player(peer);
+        // _ensure_peer_player, NO _peer_player: en el late-join el objeto Player
+        // del otro puede no estar construido todavía en esta máquina y el equipo
+        // se perdería en silencio.
+        PlayerObject* po = (peer == get_peer_id() || peer == 0) ? _local_player_obj() : _ensure_peer_player(peer);
         if (!po) return;
         Node* t = team_netid ? _rep_node((uint64_t)team_netid) : nullptr;
         po->team_id = t ? (uint64_t)t->get_instance_id() : 0;
@@ -1735,7 +1739,9 @@ public:
         gl_mp_log(String("expulsado del juego: ") + msg);
         UtilityFunctions::push_warning(String("[GodotLuau] Kicked: ") + msg);
         if (player_index >= 2 && is_inside_tree()) get_tree()->quit();   // ventana de jugador: cerrar
-        else disconnect_net();
+        // DIFERIDO: esto puede venir del handler del RPC _kicked, y soltar el
+        // peer de ENet en mitad del poll de la red no es seguro.
+        else call_deferred("disconnect_net");
     }
     void _kicked(String msg) {
         if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor expulsa

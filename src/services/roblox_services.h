@@ -621,7 +621,14 @@ public:
         Node* ws = dm ? dm->get_node_or_null("Workspace") : nullptr;
         if (ws && ws->has_method("build_local_character")) ws->call("build_local_character");
         Node* fresh = _find_local_character();
-        if (po && fresh) { po->set_character_silent(fresh); po->fire_character_added(); }
+        if (po && fresh) {
+            po->set_character_silent(fresh);
+            // Re-apuntar el Mouse al personaje NUEVO (por método, para no depender
+            // del orden de includes con RobloxMouse).
+            if (Node* mo = po->get_node_or_null(NodePath("Mouse")))
+                if (mo->has_method("_gl_set_character")) mo->call("_gl_set_character", fresh);
+            po->fire_character_added();
+        }
     }
 
     // Players.LocalPlayer → el OBJETO Player local (no el personaje).
