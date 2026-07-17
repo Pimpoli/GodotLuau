@@ -4146,7 +4146,20 @@ static void gl_rep_on_newindex(lua_State* L) {
 static void gl_rep_apply_prop(Node* target, const String& key, const Variant& enc) {
     if (!target) return;
     lua_State* L = gl_any_state();
-    if (!L) return;
+    if (!L) {
+        // Sin NINGUNA VM Luau viva (place sin LocalScripts) la réplica se perdía
+        // en silencio (huecos #6/#9 de 1.14.5). Los tipos simples se pueden
+        // aplicar directo al objeto sin pasar por Luau; los compuestos (CFrame,
+        // Instances…) llegan como Dictionary y sí necesitan el decodificador.
+        switch (enc.get_type()) {
+            case Variant::BOOL: case Variant::INT: case Variant::FLOAT:
+            case Variant::STRING: case Variant::VECTOR3: case Variant::COLOR:
+                target->set(StringName(key), enc);
+                break;
+            default: break;
+        }
+        return;
+    }
     lua_State* th = lua_newthread(L);
     wrap_node(th, target);                          // idx 1
     lua_pushstring(th, key.utf8().get_data());      // idx 2

@@ -1314,9 +1314,21 @@ public:
         }
         for (int i = 0; i < n->get_child_count(); i++) _stamp_subtree(n->get_child(i), depth + 1, count);
     }
+    // Marca lo que viene en el PLACE (1.14.13). Se recorre TODO el árbol, no solo
+    // lo replicable: las plantillas que se clonan suelen vivir en
+    // ReplicatedStorage o ServerStorage. Los :Clone() heredan la marca (duplicate
+    // copia las metas), y es lo que permite saber que hay que mandar su estado
+    // REAL en vez de solo el shadow — sin cobrarle ese coste a las instancias
+    // creadas por script, que sí tienen shadow y pueden ser miles (mundo voxel).
+    void _mark_place_subtree(Node* n, int depth = 0) {
+        if (!n || depth > 64) return;
+        if (n->get_owner() != nullptr) n->set_meta("_gl_from_place", true);
+        for (int i = 0; i < n->get_child_count(); i++) _mark_place_subtree(n->get_child(i), depth + 1);
+    }
     void _stamp_static_ids() {
         if (static_ids_done || !is_inside_tree()) return;
         Node* root = (Node*)get_tree()->get_root();
+        _mark_place_subtree(root);
         Node* ws = _find_by_class(root, "RobloxWorkspace");
         if (!ws) ws = _find_by_class(root, "RobloxWorkspace2D");
         Node* rs = _find_by_name(root, "ReplicatedStorage");
@@ -1488,8 +1500,45 @@ public:
     // valor crudo: el cliente la aplica siempre en-árbol (add_child antes de
     // props) → set_global_*, así coincide sin importar el orden de escritura ni
     // el offset del ancestro (fix del bug local/global).
-    Dictionary rep_build_props(Node* n) {
+    // Propiedades REALES del nodo (hueco #5 de 1.14.5). Las props AUTORADAS EN EL
+    // EDITOR nunca pasan por el newindex, así que no tienen shadow: un :Clone() de
+    // una plantilla del editor llegaba a los clientes con los valores POR DEFECTO
+    // (parte gris del tamaño de fábrica). Aquí se leen del objeto.
+    // Discriminador: el motor registra las props estilo Roblox en PascalCase y las
+    // internas de Godot van en snake_case.
+    // Solo tipos que sobreviven el viaje intactos: gl_net_decode convierte
+    // cualquier otro en nil, y aplicar nil rompería la propiedad.
+    static bool _rep_prop_type_ok(const Variant& v) {
+        switch (v.get_type()) {
+            case Variant::BOOL: case Variant::INT: case Variant::FLOAT:
+            case Variant::STRING: case Variant::VECTOR3: case Variant::COLOR:
+                return true;
+            default: return false;
+        }
+    }
+    void _rep_real_props(Node* n, Dictionary& out) {
+        TypedArray<Dictionary> pl = n->get_property_list();
+        for (int i = 0; i < pl.size(); i++) {
+            Dictionary p = pl[i];
+            if (!((int)p.get("usage", 0) & PROPERTY_USAGE_STORAGE)) continue;   // categorías/grupos
+            String name = p.get("name", String());
+            if (name.is_empty()) continue;
+            char32_t c0 = name[0];
+            if (c0 < 'A' || c0 > 'Z') continue;   // snake_case → prop interna de Godot
+            Variant v = n->get(StringName(name));
+            if (!_rep_prop_type_ok(v)) continue;
+            out[name] = v;
+        }
+    }
+    // Solo lo que CAMBIÓ por script (para nodos del place, que el cliente ya tiene).
+    Dictionary rep_build_shadow_props(Node* n) { return _rep_props(n, false); }
+    // Estado completo (para instancias NUEVAS que el cliente tiene que crear).
+    Dictionary rep_build_props(Node* n) { return _rep_props(n, true); }
+    Dictionary _rep_props(Node* n, bool include_real) {
         Dictionary props;
+        // Solo los nodos venidos del place (y sus clones) necesitan el estado
+        // real; lo creado por script ya lo tiene todo en el shadow.
+        if (include_real && n->has_meta("_gl_from_place")) _rep_real_props(n, props);   // el shadow manda sobre esto
         TypedArray<StringName> metas = n->get_meta_list();
         for (int i = 0; i < metas.size(); i++) {
             String mk = String(metas[i]);
@@ -1584,7 +1633,10 @@ public:
         // es justo lo que el cliente no puede saber por su cuenta. Si el servidor
         // no tocó nada, no se manda nada.
         for (auto& pr : statics) {
-            Dictionary p = rep_build_props(pr.second);
+            // SOLO el shadow: el cliente ya tiene estos nodos con sus valores del
+            // editor. Mandarles el estado completo sería el diluvio que evitó la
+            // 1.14.9.2, ahora con props además de con instancias.
+            Dictionary p = rep_build_shadow_props(pr.second);
             p.erase("__glvclass");   // el subtipo de Value ya viene en el place
             Array keys = p.keys();
             for (int i = 0; i < keys.size(); i++)
