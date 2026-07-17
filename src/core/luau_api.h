@@ -1684,6 +1684,7 @@ static int godot_object_index(lua_State* L) {
                 }
                 // Get animation name from arg (AnimationObject or string)
                 String anim_name_s = "default";
+                String anim_id_s   = "";   // se guarda en el track para poder replicarlo (1.14.12)
                 GodotObjectWrapper* aw = (GodotObjectWrapper*)lua_touserdata(pL, 2);
                 if (aw && gow_node(aw)) {
                     AnimationObject* ao = Object::cast_to<AnimationObject>(gow_node(aw));
@@ -1691,6 +1692,7 @@ static int godot_object_index(lua_State* L) {
                         anim_name_s = ao->get_anim_name();
                         // Load the animation from file if specified
                         String aid = ao->get_animation_id();
+                        anim_id_s = aid;
                         if (!aid.is_empty() && !ap->has_animation(StringName(anim_name_s))) {
                             Ref<Animation> loaded_anim = ResourceLoader::get_singleton()->load(aid, "Animation");
                             if (loaded_anim.is_valid()) {
@@ -1706,6 +1708,7 @@ static int godot_object_index(lua_State* L) {
                 }
                 AnimationTrack* track = memnew(AnimationTrack);
                 track->set_name("__anim_track__");
+                track->set_anim_id(anim_id_s);
                 track->setup(anim_name_s, ap);
                 h->add_child(track);
                 // Wrap and return

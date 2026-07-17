@@ -39,6 +39,40 @@ using namespace godot;
 //    anim.Speed = 1.5
 //    anim.Ended:Connect(function() end)
 // ────────────────────────────────────────────────────────────────────
+// Reproduce (o para) una animación en un personaje CUALQUIERA —típicamente el
+// muñeco de otro jugador—, cargando el recurso si hace falta. Es el mismo camino
+// que Humanoid:LoadAnimation, para que se vea exactamente lo que hizo su dueño
+// (1.14.12).
+static inline void gl_anim_apply(Node* character, const String& anim_id, const String& anim_name,
+                                 float speed, bool looped, bool play) {
+    if (!character) return;
+    AnimationPlayer* ap = nullptr;
+    for (int i = 0; i < character->get_child_count(); i++) {
+        ap = Object::cast_to<AnimationPlayer>(character->get_child(i));
+        if (ap) break;
+    }
+    if (!play) { if (ap) ap->stop(); return; }
+    if (!ap) {
+        ap = memnew(AnimationPlayer);
+        ap->set_name("AnimationPlayer");
+        character->add_child(ap);
+    }
+    if (!anim_name.is_empty() && !anim_id.is_empty() && !ap->has_animation(StringName(anim_name))) {
+        Ref<Animation> loaded = ResourceLoader::get_singleton()->load(anim_id, "Animation");
+        if (loaded.is_valid()) {
+            Ref<AnimationLibrary> lib;
+            lib.instantiate();
+            lib->add_animation(StringName(anim_name), loaded);
+            ap->add_animation_library(StringName(""), lib);
+        }
+    }
+    if (anim_name.is_empty() || !ap->has_animation(StringName(anim_name))) return;
+    Ref<Animation> a = ap->get_animation(StringName(anim_name));
+    if (a.is_valid()) a->set_loop_mode(looped ? Animation::LOOP_LINEAR : Animation::LOOP_NONE);
+    ap->set_speed_scale(speed);
+    ap->play(StringName(anim_name));
+}
+
 class AnimationTrack : public Node {
     GDCLASS(AnimationTrack, Node);
 
@@ -50,11 +84,29 @@ public:
 
 private:
     String            anim_name    = "";
+    String            anim_id      = "";   // ruta del recurso (para replicar, 1.14.12)
     bool              looped       = false;
     float             speed        = 1.0f;
     float             weight       = 1.0f;
     bool              playing      = false;
     AnimationPlayer*  anim_player  = nullptr;
+
+public:
+    void set_anim_id(const String& id) { anim_id = id; }
+
+private:
+    // Replicación (1.14.12): al reproducir/parar una animación en MI personaje,
+    // avisar al NetworkService para que los demás la vean en mi muñeco. Se
+    // resuelve por ObjectID + call() para no depender de roblox_network.h.
+    void _net_notify(bool play_flag) {
+        if (!gl_net_service_id()) return;   // sin sesión de red: nada que replicar
+        Object* ns = ObjectDB::get_instance(gl_net_service_id());
+        if (!ns) return;
+        Node* hum = get_parent();                       // AnimationTrack > Humanoid
+        Node* character = hum ? hum->get_parent() : nullptr;
+        if (!character) return;
+        ns->call("net_anim_state", (Object*)character, anim_id, anim_name, speed, looped, play_flag);
+    }
 
 protected:
     static void _bind_methods() {
@@ -94,6 +146,7 @@ public:
         anim_player->play(StringName(anim_name));
         playing = true;
         _update_loop();
+        _net_notify(true);
     }
 
     void stop() {
@@ -102,6 +155,7 @@ public:
         playing = false;
         emit_signal("Stopped", false);
         _fire_noarg(stopped_cbs);
+        _net_notify(false);
     }
 
     bool is_playing() const {

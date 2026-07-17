@@ -277,6 +277,7 @@ public:
 
 #include "roblox_remote.h"   // RemoteEventNode (entrega de eventos que llegan por red)
 #include "roblox_part.h"     // RobloxPart (física en red / Network Ownership 1.14.7)
+#include "roblox_animation.h" // gl_anim_apply (animaciones replicadas 1.14.12)
 
 class NetworkService : public Node {
     GDCLASS(NetworkService, Node);
@@ -348,6 +349,13 @@ class NetworkService : public Node {
     // la de su copia para saber si un ServerScript la cambió y avisar al dueño.
     std::map<int, float> peer_net_health;
     double health_auth_timer = 0.0;
+
+    // Animación activa de cada peer (1.14.12). Sirve para dos cosas: aplicarla en
+    // cuanto aparece su muñeco (la animación puede llegar ANTES que el primer
+    // estado de posición) y para que el servidor se la cuente a quien entra tarde
+    // —si no, una animación en bucle sería invisible para el recién llegado—.
+    struct AnimState { String id; String name; float speed = 1.0f; bool looped = false; bool play = false; };
+    std::map<int, AnimState> peer_anim;
 
     // ── Replicación automática (1.14.5) ─────────────────────────────────
     // netId (asignado por el servidor) -> ObjectID del nodo replicado. En el
@@ -613,6 +621,8 @@ class NetworkService : public Node {
         rpc_config("_set_team",      r);   // equipo de un jugador (1.14.10)
         rpc_config("_load_character", r);  // LoadCharacter de otro jugador (1.14.10)
         rpc_config("_set_char_health", r); // salud autoritativa del servidor (1.14.11)
+        rpc_config("_relay_anim",    r);   // animaciones: NO se pueden perder (1.14.12)
+        rpc_config("_recv_anim",     r);
         // RemoteEvent por red (Fase 2): confiables y no-confiables, ambos sentidos
         rpc_config("_re_deliver_server",  r);
         rpc_config("_re_deliver_client",  r);
@@ -767,6 +777,10 @@ class NetworkService : public Node {
             }
             gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo (pos " + String(pos) + ")");
             _apply_puppet_health(pup, key, hp);
+            // Animación que ya estaba sonando antes de que naciera su muñeco (1.14.12).
+            auto ait = peer_anim.find(key);
+            if (ait != peer_anim.end() && ait->second.play)
+                gl_anim_apply(pup, ait->second.id, ait->second.name, ait->second.speed, ait->second.looped, true);
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
             _apply_puppet_health(it->second.node, key, hp);
@@ -951,6 +965,9 @@ protected:
         ClassDB::bind_method(D_METHOD("_recv_state", "who", "pos", "yaw", "idx", "hp"), &NetworkService::_recv_state);
         ClassDB::bind_method(D_METHOD("_relay_state", "pos", "yaw", "idx", "hp"),   &NetworkService::_relay_state);
         ClassDB::bind_method(D_METHOD("_set_char_health", "hp"),                    &NetworkService::_set_char_health);
+        ClassDB::bind_method(D_METHOD("net_anim_state", "character", "anim_id", "anim_name", "speed", "looped", "play"), &NetworkService::net_anim_state);
+        ClassDB::bind_method(D_METHOD("_relay_anim", "anim_id", "anim_name", "speed", "looped", "play"),                 &NetworkService::_relay_anim);
+        ClassDB::bind_method(D_METHOD("_recv_anim", "who", "anim_id", "anim_name", "speed", "looped", "play"),           &NetworkService::_recv_anim);
         ClassDB::bind_method(D_METHOD("_recv_state2d", "who", "pos", "rot", "idx"), &NetworkService::_recv_state2d);
         ClassDB::bind_method(D_METHOD("_relay_state2d", "pos", "rot", "idx"),       &NetworkService::_relay_state2d);
         ClassDB::bind_method(D_METHOD("_recv_remove", "who"),                       &NetworkService::_recv_remove);
@@ -1088,6 +1105,7 @@ public:
         _rf_fail_pending(id, "InvokeClient: the player left the game");
         peer_ping_ms.erase(id);
         peer_net_health.erase(id);
+        peer_anim.erase(id);
         _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
@@ -1582,6 +1600,13 @@ public:
             if (t && t->has_meta("_gl_netid"))
                 rpc_id(id, "_set_team", peer_for_player_node(po), (int64_t)t->get_meta("_gl_netid"));
         }
+        // Animaciones en curso (1.14.12): sin esto, una animación en bucle que ya
+        // estaba sonando sería invisible para el que acaba de entrar.
+        for (auto& kv : peer_anim) {
+            if (!kv.second.play || kv.first == id) continue;
+            rpc_id(id, "_recv_anim", kv.first, kv.second.id, kv.second.name,
+                   kv.second.speed, kv.second.looped, true);
+        }
     }
 
     // (cliente) receptores — solo aceptan del servidor (peer 1)
@@ -1742,6 +1767,42 @@ public:
             return it != peer_ping_ms.end() ? it->second / 1000.0 : 0.0;
         }
         return 0.0;   // un cliente no conoce el ping de otro (Roblox tampoco)
+    }
+
+    // ── Animaciones replicadas (1.14.12) ─────────────────────────────────
+    // Lo llama AnimationTrack::play/stop. Solo se replica MI personaje: la
+    // animación de cada jugador la decide su dueño (como Roblox).
+    void net_anim_state(Object* character, String anim_id, String anim_name, float speed, bool looped, bool play) {
+        Node* ch = Object::cast_to<Node>(character);
+        if (!ch || mode == 0) return;
+        if (ch != _local_player()) return;   // no re-emitir la animación de un muñeco
+        if (mode == 2 && !net_connected) return;
+        if (is_server()) {
+            peer_anim[1] = { anim_id, anim_name, speed, looped, play };   // la mía, para el late-join
+            rpc("_recv_anim", 1, anim_id, anim_name, speed, looped, play);
+        } else {
+            rpc_id(1, "_relay_anim", anim_id, anim_name, speed, looped, play);
+        }
+    }
+    void _relay_anim(String anim_id, String anim_name, float speed, bool looped, bool play) {
+        int sid = get_multiplayer()->get_remote_sender_id();
+        _apply_anim_puppet(sid, anim_id, anim_name, speed, looped, play);
+        rpc("_recv_anim", sid, anim_id, anim_name, speed, looped, play);
+    }
+    void _recv_anim(int who, String anim_id, String anim_name, float speed, bool looped, bool play) {
+        Ref<MultiplayerAPI> m = _mp();
+        int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
+        if (who == myid) return;   // ese soy yo
+        _apply_anim_puppet(who, anim_id, anim_name, speed, looped, play);
+    }
+    void _apply_anim_puppet(int who, const String& anim_id, const String& anim_name, float speed, bool looped, bool play) {
+        // Se recuerda SIEMPRE, aunque el muñeco no exista todavía: se aplicará en
+        // cuanto aparezca (_update_puppet3d) y sirve para contárselo a los que
+        // entren después.
+        peer_anim[who] = { anim_id, anim_name, speed, looped, play };
+        auto it = puppets.find(who);
+        if (it == puppets.end() || !_valid(it->second.node)) return;
+        gl_anim_apply(it->second.node, anim_id, anim_name, speed, looped, play);
     }
 
     // ── LoadCharacter (1.14.10) ──────────────────────────────────────────
@@ -2259,6 +2320,7 @@ public:
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
         peer_ping_ms.clear(); ping_ms = -1.0;
         peer_net_health.clear(); health_auth_timer = 0.0;
+        peer_anim.clear();
         // RemoteFunction en vuelo: depositar el fallo (NO limpiar las respuestas,
         // que es justo lo que el invocador tiene que recoger para re-lanzarlo).
         _rf_fail_pending(0, "RemoteFunction invoke cancelled: left the game");
