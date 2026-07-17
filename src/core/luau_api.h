@@ -3811,7 +3811,7 @@ static int godot_object_newindex_impl(lua_State* L) {
 //  roblox_network.h). Coste cero fuera de un servidor de red: la guarda
 //  gl_net_role()==1 corta al instante en single-player/cliente.
 // ════════════════════════════════════════════════════════════════════
-static const char* GL_REP_SHADOW = "_glrep_";   // prefijo de meta: valor Lua-encodeado por propiedad
+// GL_REP_SHADOW vive en gl_runtime.h: lo comparten este hook y el NetworkService.
 
 static NetworkService* gl_rep_service() {
     if (gl_net_role() != 1) return nullptr;

@@ -126,6 +126,27 @@ inline uint64_t& gl_net_service_id() { static uint64_t id = 0; return id; }
 //  recibe por RPC (_gl_peer_uid) al conectarse.
 inline int64_t& gl_local_user_id() { static int64_t v = 0; return v; }
 
+//  Prefijo de meta del shadow de replicación: valor Lua-encodeado por propiedad.
+static const char* GL_REP_SHADOW = "_glrep_";
+
+//  ── netId DETERMINISTA para los nodos del PLACE (1.14.10) ────────────────
+//  Los netId de runtime los asigna el SERVIDOR con un contador y se anuncian por
+//  RPC; los nodos que vienen en el place nunca pasan por ahí, así que no tenían
+//  id y nada suyo se podía sincronizar (ni física ni props). Como TODAS las
+//  ventanas cargan el MISMO place, la ruta absoluta ya identifica al nodo igual
+//  en todas: hasheándola (FNV-1a) cada máquina llega al MISMO id sin negociar.
+//  El bit 62 marca "estático" y mantiene ese rango separado del contador de
+//  runtime (que empieza en 1), así que los dos tipos de id nunca chocan.
+static const uint64_t GL_STATIC_ID_BIT = 0x4000000000000000ULL;
+inline uint64_t gl_static_netid(const String& path) {
+    CharString cs = path.utf8();
+    const char* p = cs.get_data();
+    uint64_t h = 1469598103934665603ULL;   // FNV-1a offset basis
+    for (int i = 0; p && p[i]; i++) { h ^= (uint8_t)p[i]; h *= 1099511628211ULL; }
+    return (h & 0x3FFFFFFFFFFFFFFFULL) | GL_STATIC_ID_BIT;
+}
+inline bool gl_is_static_netid(uint64_t id) { return (id & GL_STATIC_ID_BIT) != 0; }
+
 //  Reloj sincronizado (1.14.8). El servidor es la referencia; el cliente estima
 //  su desfase por round-trip (NetworkService._time_req/_time_res). En servidor y
 //  single-player los offsets son 0 → devuelven el reloj local.

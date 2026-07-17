@@ -349,6 +349,7 @@ class NetworkService : public Node {
     // servidor se llena al replicar; en el cliente al recibir _rep_new.
     std::map<uint64_t, uint64_t> net_instances;
     uint64_t next_net_id_ctr = 1;   // servidor: contador de netId
+    bool static_ids_done = false;   // los nodos del place ya llevan netId determinista (1.14.10)
 
     // ── Física en red / Network Ownership (1.14.7) ───────────────────────
     // Cada parte no anclada tiene un dueño (meta "_gl_owner": 0=servidor,
@@ -381,6 +382,17 @@ class NetworkService : public Node {
         if (n->is_class(cls)) return n;
         for (int i = 0; i < n->get_child_count(); i++) {
             Node* r = _find_by_class(n->get_child(i), cls);
+            if (r) return r;
+        }
+        return nullptr;
+    }
+    // Los contenedores virtuales (ReplicatedStorage…) pueden ser un Node
+    // genérico, así que se buscan por NOMBRE y no por clase.
+    static Node* _find_by_name(Node* n, const char* nm) {
+        if (!n) return nullptr;
+        if (n->get_name() == StringName(nm)) return n;
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* r = _find_by_name(n->get_child(i), nm);
             if (r) return r;
         }
         return nullptr;
@@ -1156,6 +1168,56 @@ public:
     // esto es una capa de deltas de runtime. Los envíos los dispara luau_api.h
     // (godot_object_newindex/method_destroy) llamando estos métodos por tipo.
     int64_t rep_next_id() { return (int64_t)(next_net_id_ctr++); }
+
+    // ── netId de los nodos del PLACE (1.14.10) ───────────────────────────
+    // Hasta ahora solo lo creado en RUNTIME tenía netId, así que una parte
+    // puesta en el EDITOR no sincronizaba nada: ni su física ni sus props.
+    // Aquí se les sella un id determinista por ruta (gl_static_netid), igual en
+    // todas las ventanas porque todas cargan el mismo place. Con eso entran en
+    // net_instances y _phys_tick/_phys_auto_tick las recogen sin más cambios.
+    // Idempotente: se puede re-llamar (p.ej. al reconectar).
+    void _stamp_subtree(Node* n, int depth, int& count) {
+        if (!n || depth > 64) return;
+        // Solo lo que viene en el place: Godot le pone owner a los nodos
+        // guardados en la escena. Lo creado en runtime (personaje local,
+        // muñecos, lo que hagan los scripts) tiene owner nulo y ya recibe su
+        // netId por el camino normal — sellarlo sería un desastre: cada ventana
+        // mapearía el mismo id a SU propio personaje local.
+        bool from_place = (n->get_owner() != nullptr);
+        bool has_runtime_id = n->has_meta("_gl_netid")
+                           && !gl_is_static_netid((uint64_t)(int64_t)n->get_meta("_gl_netid"));
+        if (from_place && !has_runtime_id) {
+            uint64_t id = gl_static_netid(String(n->get_path()));
+            // Colisión de hash (astronómicamente improbable): perturbar de forma
+            // DETERMINISTA, para que todas las ventanas lleguen al mismo id.
+            for (int guard = 1; guard <= 16; guard++) {
+                auto it = net_instances.find(id);
+                if (it == net_instances.end() || it->second == (uint64_t)n->get_instance_id()) break;
+                id = gl_static_netid(String(n->get_path()) + String("#") + String::num_int64(guard));
+            }
+            n->set_meta("_gl_netid", (int64_t)id);
+            net_instances[id] = (uint64_t)n->get_instance_id();
+            count++;
+        }
+        for (int i = 0; i < n->get_child_count(); i++) _stamp_subtree(n->get_child(i), depth + 1, count);
+    }
+    void _stamp_static_ids() {
+        if (static_ids_done || !is_inside_tree()) return;
+        Node* root = (Node*)get_tree()->get_root();
+        Node* ws = _find_by_class(root, "RobloxWorkspace");
+        if (!ws) ws = _find_by_class(root, "RobloxWorkspace2D");
+        Node* rs = _find_by_name(root, "ReplicatedStorage");
+        if (!ws && !rs) return;   // árbol aún sin montar: reintentar el próximo frame
+        // Los contenedores en sí NO se sellan (ya se referencian por ruta), solo
+        // lo que cuelga de ellos.
+        int count = 0;
+        if (ws) for (int i = 0; i < ws->get_child_count(); i++) _stamp_subtree(ws->get_child(i), 0, count);
+        if (rs) for (int i = 0; i < rs->get_child_count(); i++) _stamp_subtree(rs->get_child(i), 0, count);
+        static_ids_done = true;
+        // Se registra el número: si saliera 0 con un place lleno, querría decir
+        // que el filtro por owner no reconoce estos nodos, y el fallo sería mudo.
+        gl_mp_log(String("place registrado para replicacion: ") + String::num_int64(count) + String(" nodos"));
+    }
     void rep_map(int64_t id, Object* node) {
         Node* n = Object::cast_to<Node>(node);
         if (n) net_instances[(uint64_t)id] = (uint64_t)n->get_instance_id();
@@ -1371,9 +1433,15 @@ public:
         // re-parentado bajo un padre de netId mayor rompería el orden ascendente y
         // el cliente lo descartaría por padre inexistente. Punto fijo multipasada.
         std::vector<std::pair<uint64_t, Node*>> live;
+        std::vector<std::pair<uint64_t, Node*>> statics;
         for (auto& kv : net_instances) {
             Node* n = Object::cast_to<Node>(ObjectDB::get_instance(kv.second));
-            if (n) live.push_back(std::pair<uint64_t, Node*>(kv.first, n));
+            if (!n) continue;
+            // Los nodos del place (1.14.10) NO se re-crean: el cliente ya los
+            // tiene, cargó el mismo place y les sella el MISMO id. Mandarles un
+            // _rep_new sería un diluvio inútil de RPCs en cada join.
+            if (gl_is_static_netid(kv.first)) statics.push_back(std::pair<uint64_t, Node*>(kv.first, n));
+            else                              live.push_back(std::pair<uint64_t, Node*>(kv.first, n));
         }
         std::unordered_set<uint64_t> sent;
         bool progress = true;
@@ -1396,6 +1464,16 @@ public:
                 sent.insert(pr.first);
                 progress = true;
             }
+        }
+        // Nodos del place: solo las props que el servidor CAMBIÓ (el shadow), que
+        // es justo lo que el cliente no puede saber por su cuenta. Si el servidor
+        // no tocó nada, no se manda nada.
+        for (auto& pr : statics) {
+            Dictionary p = rep_build_props(pr.second);
+            p.erase("__glvclass");   // el subtipo de Value ya viene en el place
+            Array keys = p.keys();
+            for (int i = 0; i < keys.size(); i++)
+                rpc_id(id, "_rep_prop", (int64_t)pr.first, String(keys[i]), p[keys[i]]);
         }
     }
 
@@ -1708,6 +1786,9 @@ public:
         // 2. Réplica: difundir mi estado y suavizar a los muñecos
         Ref<MultiplayerAPI> m = _mp();
         if (m.is_valid() && m->has_multiplayer_peer()) {
+            // Red de seguridad por si al abrir la sesión el árbol aún no estaba
+            // montado: se auto-ignora en cuanto el place ya está sellado.
+            _stamp_static_ids();
             if (m->get_peers().size() > 0) {
                 bcast_timer += dt;
                 if (bcast_timer >= 0.05) { bcast_timer = 0.0; _broadcast_local(); }
@@ -1930,6 +2011,7 @@ public:
         // UserId secuencial: el host es SIEMPRE el jugador 1; los peers toman 2,3,...
         peer_seq_uid[1] = 1; next_seq_uid = 2; gl_local_user_id() = 1;
         if (PlayerObject* lp = _local_player_obj()) lp->user_id = 1;
+        _stamp_static_ids();   // antes de correr scripts: que ya vean el place con netId (1.14.10)
         gl_run_deferred_server_scripts();   // si esta ventana era cliente y se promovió a host, corre ahora sus ServerScripts
         set_process(true);
         return true;
@@ -1951,6 +2033,7 @@ public:
         if (m.is_valid()) m->set_multiplayer_peer(peer);
         mode = 2;
         gl_net_role() = 2; gl_net_service_id() = (uint64_t)get_instance_id();   // replicación: somos cliente
+        _stamp_static_ids();   // mismo place → mismos netId que el servidor (1.14.10)
         set_process(true);
         return true;
     }
@@ -1962,6 +2045,7 @@ public:
         mode = 0;
         gl_net_role() = 0;   // replicación off
         net_instances.clear();
+        static_ids_done = false;   // al reconectar hay que volver a registrar el place (1.14.10)
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
         // RemoteFunction en vuelo: depositar el fallo (NO limpiar las respuestas,
         // que es justo lo que el invocador tiene que recoger para re-lanzarlo).
