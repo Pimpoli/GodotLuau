@@ -903,6 +903,7 @@ protected:
         // Física en red / Network Ownership (1.14.7)
         ClassDB::bind_method(D_METHOD("net_set_owner", "net_id", "owner_peer", "is_auto"),      &NetworkService::net_set_owner);
         ClassDB::bind_method(D_METHOD("net_is_owner", "net_id"),                                &NetworkService::net_is_owner);
+        ClassDB::bind_method(D_METHOD("net_node_by_id", "net_id"),                              &NetworkService::net_node_by_id);
         ClassDB::bind_method(D_METHOD("_phys_state", "net_id", "t", "lv", "av"),                &NetworkService::_phys_state);
         ClassDB::bind_method(D_METHOD("_phys_owned", "net_id", "t", "lv", "av"),                &NetworkService::_phys_owned);
         ClassDB::bind_method(D_METHOD("_phys_owner", "net_id", "owner_peer", "is_auto"),        &NetworkService::_phys_owner);
@@ -1127,6 +1128,9 @@ public:
         Node* n = _rep_node((uint64_t)netId);
         return n ? _phys_authority(n) : true;
     }
+    // Resolver una instancia replicada por su netId (1.14.9: Instances por id en
+    // los payloads de RemoteEvent/Function en vez de por ruta).
+    Object* net_node_by_id(int64_t netId) { return _rep_node((uint64_t)netId); }
     // Fijar dueño (SetNetworkOwner/Auto, solo servidor): aplicar local + difundir.
     void net_set_owner(int64_t netId, int owner_peer, bool is_auto) {
         _apply_owner((uint64_t)netId, owner_peer, is_auto);

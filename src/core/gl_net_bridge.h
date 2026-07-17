@@ -75,6 +75,11 @@ static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
                 Node* nd = w ? gow_node(w) : nullptr;
                 Dictionary d;
                 d["__glnet"] = "inst";
+                // Instances por netId ESTABLE (1.14.9): si la instancia está
+                // replicada, se referencia por su id (inequívoco entre ventanas)
+                // en vez de solo la ruta. La ruta queda de respaldo (compat +
+                // instancias del editor sin netId).
+                d["id"] = (nd && nd->has_meta("_gl_netid")) ? (int64_t)nd->get_meta("_gl_netid") : (int64_t)0;
                 d["p"] = (nd && nd->is_inside_tree()) ? String(nd->get_path()) : String();
                 return d;
             }
@@ -208,10 +213,19 @@ static void gl_net_decode(lua_State* L, const Variant& v, Node* ctx, int depth =
             if (d.has("__glnet")) {
                 String tag = d["__glnet"];
                 if (tag == String("inst")) {
-                    String p = d.get("p", String());
                     Node* nd = nullptr;
-                    if (!p.is_empty() && ctx && ctx->is_inside_tree())
-                        nd = ctx->get_node_or_null(NodePath(p));
+                    // 1) por netId estable (1.14.9): resolver vía el NetworkService.
+                    int64_t nid = d.has("id") ? (int64_t)d["id"] : (int64_t)0;
+                    if (nid != 0) {
+                        Object* nso = ObjectDB::get_instance(gl_net_service_id());
+                        if (nso) nd = Object::cast_to<Node>((Object*)nso->call("net_node_by_id", nid));
+                    }
+                    // 2) respaldo: ruta absoluta (instancias del editor sin netId).
+                    if (!nd) {
+                        String p = d.get("p", String());
+                        if (!p.is_empty() && ctx && ctx->is_inside_tree())
+                            nd = ctx->get_node_or_null(NodePath(p));
+                    }
                     gl_net_push_node(L, nd);
                     return;
                 }

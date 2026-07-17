@@ -2256,6 +2256,9 @@ static int godot_object_index(lua_State* L) {
             lua_pushcclosure(L, [](lua_State* pL) -> int {
                 RemoteEventNode* rev = (RemoteEventNode*)lua_touserdata(pL, lua_upvalueindex(1));
                 if (!rev) return 0;
+                // Como Roblox: el 1er argumento DEBE ser un Player (1.14.9).
+                Node* fc_plr = _gl_node_from_lua(pL, 2);
+                if (!fc_plr || !fc_plr->is_class("PlayerObject")) { luaL_error(pL, "FireClient: first argument must be a Player"); return 0; }
                 int nargs = lua_gettop(pL) - 2;
                 rev->fire_client(pL, 2, 3, nargs < 0 ? 0 : nargs);
                 return 0;
