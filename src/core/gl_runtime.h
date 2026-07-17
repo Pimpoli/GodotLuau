@@ -147,6 +147,20 @@ inline uint64_t gl_static_netid(const String& path) {
 }
 inline bool gl_is_static_netid(uint64_t id) { return (id & GL_STATIC_ID_BIT) != 0; }
 
+//  ── Qué nodo se reporta en Touched (1.14.11) ─────────────────────────────
+//  En Roblox el Touched entrega una PARTE del personaje, y por eso el idioma
+//  universal es `hit.Parent:FindFirstChild("Humanoid")`. Aquí el colisionador
+//  es el personaje ENTERO (lleva una sola cápsula), así que reportarlo tal cual
+//  dejaba `hit.Parent` = Workspace y ese idioma no entraba NUNCA. Se reporta su
+//  HumanoidRootPart (o Torso), cuyo Parent sí es el personaje.
+inline Node* gl_touch_reported_node(Node* body) {
+    if (!body) return nullptr;
+    if (!body->get_node_or_null(NodePath("Humanoid"))) return body;   // no es un personaje
+    if (Node* p = body->get_node_or_null(NodePath("HumanoidRootPart"))) return p;
+    if (Node* t = body->get_node_or_null(NodePath("Torso"))) return t;
+    return body;
+}
+
 //  Reloj sincronizado (1.14.8). El servidor es la referencia; el cliente estima
 //  su desfase por round-trip (NetworkService._time_req/_time_res). En servidor y
 //  single-player los offsets son 0 → devuelven el reloj local.

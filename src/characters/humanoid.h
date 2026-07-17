@@ -496,7 +496,9 @@ public:
             if (col.is_valid()) {
                 Node* collider = Object::cast_to<Node>(col->get_collider());
                 if (collider && collider->has_signal("Touched")) {
-                    collider->emit_signal("Touched", body);
+                    // Se reporta una PARTE del personaje, no el personaje: así
+                    // `hit.Parent:FindFirstChild("Humanoid")` funciona (1.14.11).
+                    collider->emit_signal("Touched", gl_touch_reported_node(body));
                 }
             }
         }
@@ -538,8 +540,16 @@ public:
 
     // ── Animacion del personaje: R6Animator (avatar por partes) o fallback ──
     void _drive_animation(CharacterBody3D* body, const Vector3& velocity, double delta) {
-        Node* character = body ? body->get_node_or_null(NodePath("Character")) : nullptr;
-        Node* anim = character ? character->get_node_or_null(NodePath("R6Animator")) : nullptr;
+        // Desde 1.14.5.3 el personaje está APLANADO: el nodo "Character" del rig
+        // desaparece y el animador queda como hijo DIRECTO. Buscar solo en
+        // "Character/R6Animator" dejó las animaciones R6 del jugador local
+        // MUERTAS (caían al fallback) sin que nada avisara. Se mira primero el
+        // camino aplanado y se conserva el viejo por compatibilidad.
+        Node* anim = body ? body->get_node_or_null(NodePath("R6Animator")) : nullptr;
+        if (!anim) {
+            Node* character = body ? body->get_node_or_null(NodePath("Character")) : nullptr;
+            anim = character ? character->get_node_or_null(NodePath("R6Animator")) : nullptr;
+        }
         if (anim) {
             Vector3 horiz(velocity.x, 0.0f, velocity.z);
             double speed01 = Math::clamp((double)horiz.length() / (double)Math::max(walk_speed, 0.1f), 0.0, 1.0);

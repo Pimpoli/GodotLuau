@@ -344,6 +344,11 @@ class NetworkService : public Node {
     std::map<int64_t, RFPending> rf_expect;
     double rf_gc_timer = 0.0;
 
+    // Última salud que difundió cada peer (1.14.11). El servidor la compara con
+    // la de su copia para saber si un ServerScript la cambió y avisar al dueño.
+    std::map<int, float> peer_net_health;
+    double health_auth_timer = 0.0;
+
     // ── Replicación automática (1.14.5) ─────────────────────────────────
     // netId (asignado por el servidor) -> ObjectID del nodo replicado. En el
     // servidor se llena al replicar; en el cliente al recibir _rep_new.
@@ -607,6 +612,7 @@ class NetworkService : public Node {
         rpc_config("_kicked",        r);   // Kick: el motivo NO se puede perder (1.14.10)
         rpc_config("_set_team",      r);   // equipo de un jugador (1.14.10)
         rpc_config("_load_character", r);  // LoadCharacter de otro jugador (1.14.10)
+        rpc_config("_set_char_health", r); // salud autoritativa del servidor (1.14.11)
         // RemoteEvent por red (Fase 2): confiables y no-confiables, ambos sentidos
         rpc_config("_re_deliver_server",  r);
         rpc_config("_re_deliver_client",  r);
@@ -704,7 +710,19 @@ class NetworkService : public Node {
         return body;
     }
 
-    void _update_puppet3d(int key, int idx, Vector3 pos, float yaw) {
+    // Humanoid del personaje remoto (1.14.11). NO lo mueve: Humanoid::
+    // _physics_process hace cast_to<CharacterBody3D>(get_parent()) y sale, y el
+    // muñeco es un AnimatableBody3D → queda solo como objeto de API (Health,
+    // WalkSpeed, TakeDamage, Died, HealthChanged...), que es justo lo que hace
+    // falta. La posición la sigue mandando la red.
+    void _ensure_puppet_humanoid(Node* pup) {
+        if (!pup || pup->get_node_or_null(NodePath("Humanoid"))) return;
+        Humanoid* hum = memnew(Humanoid);
+        hum->set_name("Humanoid");
+        pup->add_child(hum);
+    }
+
+    void _update_puppet3d(int key, int idx, Vector3 pos, float yaw, float hp) {
         // El estado 3D que llega DEFINE la dimensión del mundo: no dependemos del
         // is_2d cacheado (que puede no estar puesto si el jugador local aún no nació).
         is_2d = false;
@@ -716,9 +734,18 @@ class NetworkService : public Node {
             pup->set_name(String("RemotePlayer_") + String::num_int64(key));
             wsp->add_child(pup);
             pup->set_global_position(pos);
-            // .Character del jugador remoto = este cuerpo; subir su HumanoidRootPart
-            // a hijo directo para que el world gen del servidor lea su .Position.
+            // ── Personaje remoto REAL (1.14.11) ──────────────────────────
+            // Antes esto era un muñeco: el rig entero colgaba de "Visual" y solo
+            // se subía el HumanoidRootPart. Resultado: `hit.Parent:FindFirstChild
+            // ("Humanoid")` daba nil con otros jugadores y NADA de daño/detección
+            // funcionaba contra ellos (la causa real de los warnings "Humanoid no
+            // encontrado"). Ahora se aplana igual que el personaje local: las
+            // partes llevan su nombre Roblox y son hijas DIRECTAS del personaje.
+            gl_flatten_r6_character(pup, pup->get_node_or_null("Visual"));
+            // Si no era un rig R6 (cápsula de fallback o StarterCharacter), el
+            // aplanado no aplica y "Visual" sigue ahí: se sube al menos el HRP.
             gl_lift_hrp(pup, pup->get_node_or_null("Visual"));
+            _ensure_puppet_humanoid(pup);
             // Si el muñeco sale del árbol por fuera (Luau Destroy/ClearAllChildren),
             // quitar la entrada ANTES de que el puntero quede colgando.
             pup->connect("tree_exiting", Callable(this, "_on_puppet_gone").bind(key));
@@ -739,9 +766,48 @@ class NetworkService : public Node {
                 po->fire_character_added();
             }
             gl_mp_log(String("Player") + String::num_int64(idx) + " aparecio en tu mundo (pos " + String(pos) + ")");
+            _apply_puppet_health(pup, key, hp);
         } else {
             it->second.tpos = pos; it->second.tyaw = yaw; it->second.has_target = true;
+            _apply_puppet_health(it->second.node, key, hp);
         }
+    }
+    // Salud del personaje remoto (1.14.11). La difunde su DUEÑO junto con la
+    // posición; se anota lo último recibido para poder distinguir después un
+    // cambio hecho por el SERVIDOR (ver _health_authority_tick).
+    void _apply_puppet_health(Node* pup, int key, float hp) {
+        if (!pup || hp < 0.0f) return;
+        Node* hn = pup->get_node_or_null(NodePath("Humanoid"));
+        if (!hn) return;
+        Humanoid* hum = Object::cast_to<Humanoid>(hn);
+        if (!hum) return;
+        hum->set_health(hp);
+        peer_net_health[key] = hp;
+    }
+    // (servidor) Si un ServerScript cambia la salud del personaje de un jugador
+    // (`hum:TakeDamage(10)`), ese cambio vive solo en la copia del servidor y su
+    // dueño lo pisaría con el próximo broadcast. Aquí se detecta la diferencia y
+    // se le ORDENA al dueño; su siguiente broadcast propaga el valor a todos.
+    void _health_authority_tick() {
+        if (!is_server()) return;
+        for (auto& kv : puppets) {
+            if (!_valid(kv.second.node)) continue;
+            Humanoid* hum = Object::cast_to<Humanoid>(kv.second.node->get_node_or_null(NodePath("Humanoid")));
+            if (!hum) continue;
+            auto it = peer_net_health.find(kv.first);
+            if (it == peer_net_health.end()) continue;
+            if (Math::abs((double)(hum->get_health() - it->second)) < 0.01) continue;
+            it->second = hum->get_health();
+            rpc_id(kv.first, "_set_char_health", hum->get_health());
+        }
+    }
+    // (dueño) El servidor manda la salud autoritativa de MI personaje.
+    void _set_char_health(float hp) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;
+        Node* lp = _local_player();
+        if (!lp) return;
+        if (Humanoid* hum = Object::cast_to<Humanoid>(lp->get_node_or_null(NodePath("Humanoid"))))
+            hum->set_health(hp);
     }
     void _update_puppet2d(int key, int idx, Vector2 pos, float rot) {
         is_2d = true;
@@ -810,7 +876,10 @@ class NetworkService : public Node {
                 // Animacion: el R6Animator del muñeco recibe el estado derivado
                 // del movimiento (velocidad horizontal + si esta en el aire).
                 float dist = before.distance_to(pu.tpos);
-                Node* anim = n->get_node_or_null(NodePath("Visual/R6Animator"));
+                // Aplanado (1.14.11): el animador es hijo DIRECTO. Se conserva la
+                // ruta vieja para el caso sin rig (cápsula / StarterCharacter).
+                Node* anim = n->get_node_or_null(NodePath("R6Animator"));
+                if (!anim) anim = n->get_node_or_null(NodePath("Visual/R6Animator"));
                 if (anim) {
                     Vector3 dp = pu.tpos - before;
                     double hspeed = Vector2(dp.x, dp.z).length() / Math::max(dt, 0.001);
@@ -860,8 +929,13 @@ class NetworkService : public Node {
             if (!n) return;
             Vector3 p = n->get_global_position();
             float   y = n->get_global_rotation().y;   // yaw GLOBAL (robusto ante padres rotados)
-            if (server) rpc("_recv_state", 1, p, y, display_num);
-            else        rpc_id(1, "_relay_state", p, y, display_num);
+            // Salud del personaje (1.14.11): viaja con el estado para que los demás
+            // vean el valor real. -1 = sin Humanoid (no tocar la del muñeco).
+            float hp = -1.0f;
+            if (Humanoid* hum = Object::cast_to<Humanoid>(lp->get_node_or_null(NodePath("Humanoid"))))
+                hp = hum->get_health();
+            if (server) rpc("_recv_state", 1, p, y, display_num, hp);
+            else        rpc_id(1, "_relay_state", p, y, display_num, hp);
         }
     }
 
@@ -874,8 +948,9 @@ protected:
         ClassDB::bind_method(D_METHOD("_on_server_disconnected"),     &NetworkService::_on_server_disconnected);
         ClassDB::bind_method(D_METHOD("_auto_init"),                  &NetworkService::_auto_init);
         // RPCs de réplica
-        ClassDB::bind_method(D_METHOD("_recv_state", "who", "pos", "yaw", "idx"),   &NetworkService::_recv_state);
-        ClassDB::bind_method(D_METHOD("_relay_state", "pos", "yaw", "idx"),         &NetworkService::_relay_state);
+        ClassDB::bind_method(D_METHOD("_recv_state", "who", "pos", "yaw", "idx", "hp"), &NetworkService::_recv_state);
+        ClassDB::bind_method(D_METHOD("_relay_state", "pos", "yaw", "idx", "hp"),   &NetworkService::_relay_state);
+        ClassDB::bind_method(D_METHOD("_set_char_health", "hp"),                    &NetworkService::_set_char_health);
         ClassDB::bind_method(D_METHOD("_recv_state2d", "who", "pos", "rot", "idx"), &NetworkService::_recv_state2d);
         ClassDB::bind_method(D_METHOD("_relay_state2d", "pos", "rot", "idx"),       &NetworkService::_relay_state2d);
         ClassDB::bind_method(D_METHOD("_recv_remove", "who"),                       &NetworkService::_recv_remove);
@@ -1012,6 +1087,7 @@ public:
         // RemoteFunction en vuelo hacia ese peer: nunca va a contestar (1.14.9.1).
         _rf_fail_pending(id, "InvokeClient: the player left the game");
         peer_ping_ms.erase(id);
+        peer_net_health.erase(id);
         _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
@@ -1585,11 +1661,11 @@ public:
 
     // ── RPCs de réplica ──────────────────────────────────────────────────
     // Cliente -> servidor: "aquí estoy". El servidor lo muestra y lo reenvía.
-    void _relay_state(Vector3 pos, float yaw, int idx) {
+    void _relay_state(Vector3 pos, float yaw, int idx, float hp) {
         int sid = get_multiplayer()->get_remote_sender_id();
         if (_diag_tick()) { gl_mp_log(String("RX relay de peer ") + String::num_int64(sid) + " pos=" + String(pos)); diag_timer = 1.0; }
-        _update_puppet3d(sid, idx, pos, yaw);
-        rpc("_recv_state", sid, pos, yaw, idx);
+        _update_puppet3d(sid, idx, pos, yaw, hp);
+        rpc("_recv_state", sid, pos, yaw, idx, hp);
     }
     void _relay_state2d(Vector2 pos, float rot, int idx) {
         int sid = get_multiplayer()->get_remote_sender_id();
@@ -1597,12 +1673,12 @@ public:
         rpc("_recv_state2d", sid, pos, rot, idx);
     }
     // Servidor -> clientes: estado autoritativo de "who".
-    void _recv_state(int who, Vector3 pos, float yaw, int idx) {
+    void _recv_state(int who, Vector3 pos, float yaw, int idx, float hp) {
         Ref<MultiplayerAPI> m = _mp();
         int myid = (m.is_valid() && m->has_multiplayer_peer()) ? m->get_unique_id() : 0;
         if (who == myid) return;              // ese soy yo
         if (_diag_tick()) { gl_mp_log(String("RX estado de ") + String::num_int64(who) + " pos=" + String(pos)); diag_timer = 1.0; }
-        _update_puppet3d(who, idx, pos, yaw);
+        _update_puppet3d(who, idx, pos, yaw, hp);
     }
     void _recv_state2d(int who, Vector2 pos, float rot, int idx) {
         Ref<MultiplayerAPI> m = _mp();
@@ -1947,6 +2023,12 @@ public:
                 phys_auto_timer += dt;
                 if (phys_auto_timer >= 0.5) { phys_auto_timer = 0.0; _phys_auto_tick(); }
             }
+            // Salud autoritativa del servidor (1.14.11): ~4Hz, solo manda si un
+            // ServerScript cambió la salud de alguien.
+            if (is_server()) {
+                health_auth_timer += dt;
+                if (health_auth_timer >= 0.25) { health_auth_timer = 0.0; _health_authority_tick(); }
+            }
             // Purga de RemoteFunction huérfanos (1.14.9.1): una respuesta que llega
             // cuando ya nadie la espera, o un pendiente que nunca se cerró, se
             // quedaba en el mapa PARA SIEMPRE. Nadie los espera pasado un minuto.
@@ -2176,6 +2258,7 @@ public:
         static_ids_done = false;   // al reconectar hay que volver a registrar el place (1.14.10)
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
         peer_ping_ms.clear(); ping_ms = -1.0;
+        peer_net_health.clear(); health_auth_timer = 0.0;
         // RemoteFunction en vuelo: depositar el fallo (NO limpiar las respuestas,
         // que es justo lo que el invocador tiene que recoger para re-lanzarlo).
         _rf_fail_pending(0, "RemoteFunction invoke cancelled: left the game");

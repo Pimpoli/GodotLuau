@@ -567,11 +567,14 @@ public:
         connect("body_exited",  Callable(this, "_on_body_exited"));
     }
 
+    // Si el que entra es un personaje se reporta su HumanoidRootPart, no el
+    // personaje entero: en Roblox Touched entrega una PARTE y los scripts hacen
+    // `hit.Parent:FindFirstChild("Humanoid")` (1.14.11).
     void _on_body_entered(Node* body) {
-        if (body && body != this && can_touch) emit_signal("Touched", body);
+        if (body && body != this && can_touch) emit_signal("Touched", gl_touch_reported_node(body));
     }
     void _on_body_exited(Node* body) {
-        if (body && body != this && can_touch) emit_signal("TouchEnded", body);
+        if (body && body != this && can_touch) emit_signal("TouchEnded", gl_touch_reported_node(body));
     }
 
     void _on_luau_part_touched(Node* p_hit, int p_ref, int64_t ptr_L) {
