@@ -2229,6 +2229,12 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key, "StreamingEnabled")          == 0) { lua_pushboolean(L, ws->get_streaming_enabled());           return 1; }
         if (strcmp(key, "AirDensity")                == 0) { lua_pushnumber(L, ws->get_air_density());                  return 1; }
         if (strcmp(key, "TouchesUseCollisionGroups") == 0) { lua_pushboolean(L, ws->get_touches_use_collision_groups());return 1; }
+        // Reloj sincronizado (1.14.8)
+        if (strcmp(key, "DistributedGameTime")       == 0) { lua_pushnumber(L, gl_distributed_game_time());            return 1; }
+        if (strcmp(key, "GetServerTimeNow") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnumber(pL, gl_server_time_now()); return 1; }, "GetServerTimeNow");
+            return 1;
+        }
     }
 
     // ── RemoteEventNode ───────────────────────────────────────────────────

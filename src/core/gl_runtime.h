@@ -125,6 +125,20 @@ inline uint64_t& gl_net_service_id() { static uint64_t id = 0; return id; }
 //  usa 1 (single-player). El servidor lo pone en start_server; un cliente lo
 //  recibe por RPC (_gl_peer_uid) al conectarse.
 inline int64_t& gl_local_user_id() { static int64_t v = 0; return v; }
+
+//  Reloj sincronizado (1.14.8). El servidor es la referencia; el cliente estima
+//  su desfase por round-trip (NetworkService._time_req/_time_res). En servidor y
+//  single-player los offsets son 0 → devuelven el reloj local.
+inline double& gl_server_unix_offset() { static double v = 0.0; return v; }   // Δ a sumar al unix local para = unix del server
+inline double& gl_dgt_offset()         { static double v = 0.0; return v; }   // Δ para DistributedGameTime
+//  GetServerTimeNow(): hora unix (epoch) del servidor, en segundos con decimales.
+inline double gl_server_time_now() {
+    return Time::get_singleton()->get_unix_time_from_system() + gl_server_unix_offset();
+}
+//  DistributedGameTime: segundos que lleva corriendo el servidor, sincronizado.
+inline double gl_distributed_game_time() {
+    return (double)Time::get_singleton()->get_ticks_usec() / 1000000.0 + gl_dgt_offset();
+}
 //  Hook para APLICAR una propiedad replicada en el cliente reentrando al
 //  __newindex real. Lo define luau_api.h (que ve godot_object_newindex/wrap_node/
 //  gl_net_decode) y lo instala el setup por-VM; el NetworkService (que no puede

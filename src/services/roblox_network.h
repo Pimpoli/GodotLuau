@@ -353,6 +353,9 @@ class NetworkService : public Node {
     // Ping (medido cliente→servidor→cliente, en milisegundos)
     double ping_ms = -1.0;
     double ping_timer = 0.0;
+    // Reloj sincronizado (1.14.8): el cliente sincroniza su offset con el servidor.
+    double time_sync_timer = 0.0;
+    bool   time_synced = false;
 
     // Vista de Servidor (cámara libre) — comandada desde el panel Game del
     // editor vía res://.gl_view_cmd ("server|N" / "client|N")
@@ -591,6 +594,8 @@ class NetworkService : public Node {
         rpc_config("_phys_state",         u);   // física en red (1.14.7): estado (no confiable, último gana)
         rpc_config("_phys_owned",         u);   // física: estado del cliente-dueño al servidor
         rpc_config("_phys_owner",         r);   // física: cambio de dueño (confiable)
+        rpc_config("_time_req",           u);   // reloj sincronizado (1.14.8)
+        rpc_config("_time_res",           u);
     }
 
     // Dispara los callbacks Luau (cada uno en su propio hilo)
@@ -850,6 +855,8 @@ protected:
         ClassDB::bind_method(D_METHOD("_recv_chat", "from", "name", "text"),        &NetworkService::_recv_chat);
         ClassDB::bind_method(D_METHOD("_ping_req", "t"),                            &NetworkService::_ping_req);
         ClassDB::bind_method(D_METHOD("_ping_res", "t"),                            &NetworkService::_ping_res);
+        ClassDB::bind_method(D_METHOD("_time_req", "c_unix", "c_dgt"),              &NetworkService::_time_req);
+        ClassDB::bind_method(D_METHOD("_time_res", "c_unix", "c_dgt", "s_unix", "s_dgt"), &NetworkService::_time_res);
         ClassDB::bind_method(D_METHOD("get_ping_ms"),                               &NetworkService::get_ping_ms);
         ClassDB::bind_method(D_METHOD("get_player_count"),                          &NetworkService::get_player_count);
         ClassDB::bind_method(D_METHOD("get_player_index"),                          &NetworkService::get_player_index);
@@ -1476,6 +1483,31 @@ public:
     void _ping_res(double t) {
         ping_ms = (double)Time::get_singleton()->get_ticks_msec() - t;
     }
+    // Reloj sincronizado (1.14.8). El cliente manda su reloj; el servidor responde
+    // con el suyo (unix + DGT). El cliente estima el desfase con media vuelta.
+    void _time_req(double c_unix, double c_dgt) {
+        int sid = get_multiplayer()->get_remote_sender_id();
+        rpc_id(sid, "_time_res", c_unix, c_dgt,
+               Time::get_singleton()->get_unix_time_from_system(),
+               (double)Time::get_singleton()->get_ticks_usec() / 1000000.0);
+    }
+    void _time_res(double c_unix, double c_dgt, double s_unix, double s_dgt) {
+        if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo del servidor
+        double now_unix = Time::get_singleton()->get_unix_time_from_system();
+        double now_dgt  = (double)Time::get_singleton()->get_ticks_usec() / 1000000.0;
+        double half = (now_unix - c_unix) * 0.5;   // rtt/2 en segundos
+        if (half < 0.0) half = 0.0;
+        double new_unix_off = (s_unix + half) - now_unix;
+        double new_dgt_off  = (s_dgt + half) - now_dgt;
+        if (!time_synced) {                          // 1er sync: snap
+            gl_server_unix_offset() = new_unix_off;
+            gl_dgt_offset() = new_dgt_off;
+            time_synced = true;
+        } else {                                     // suavizar (evita saltos del reloj)
+            gl_server_unix_offset() += (new_unix_off - gl_server_unix_offset()) * 0.25;
+            gl_dgt_offset()         += (new_dgt_off  - gl_dgt_offset())         * 0.25;
+        }
+    }
     double get_ping_ms() {
         if (mode == 1) return 0.0;                      // el servidor/host: 0
         if (mode == 2 && net_connected) return ping_ms; // cliente conectado
@@ -1627,6 +1659,14 @@ public:
                     if (ping_timer >= 1.0) {
                         ping_timer = 0.0;
                         rpc_id(1, "_ping_req", (double)Time::get_singleton()->get_ticks_msec());
+                    }
+                    // Reloj sincronizado (1.14.8): rápido hasta el 1er sync, luego cada ~2.5s
+                    time_sync_timer += dt;
+                    if (time_sync_timer >= (time_synced ? 2.5 : 0.4)) {
+                        time_sync_timer = 0.0;
+                        rpc_id(1, "_time_req",
+                               Time::get_singleton()->get_unix_time_from_system(),
+                               (double)Time::get_singleton()->get_ticks_usec() / 1000000.0);
                     }
                 }
             }
@@ -1849,6 +1889,7 @@ public:
         gl_net_role() = 0;   // replicación off
         net_instances.clear();
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
+        gl_server_unix_offset() = 0.0; gl_dgt_offset() = 0.0; time_synced = false;   // reloj: volver al local
         net_connected = false;
         target_address = "";
     }
