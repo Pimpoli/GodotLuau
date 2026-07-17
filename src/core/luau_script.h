@@ -2148,16 +2148,36 @@ public:
 
         // `require` en LUA: corre el cuerpo del módulo con pcall (yieldable), así
         // WaitForChild/task.wait DENTRO de un módulo ceden como corrutina normal.
+        // El `script` del módulo va en su ENTORNO, no en una global (1.14.15).
+        // Antes se ponía la global `script`, se corría el cuerpo y se restauraba:
+        // si el módulo CEDÍA (WaitForChild/task.wait dentro), otra corrutina la
+        // pisaba y el módulo despertaba con el `script` de OTRO.
+        // Y `_loading` arregla algo peor: un módulo que cede podía ser pedido a la
+        // vez por otra corrutina y, como la caché se escribe al TERMINAR, su cuerpo
+        // corría DOS veces → dos estados distintos del mismo módulo. Ahora el
+        // segundo espera al primero, y pedirse a sí mismo es error, como Roblox.
         static const char* GL_REQUIRE_LUA =
             "local _load, _store, _err = __gl_req_load, __gl_req_store, __gl_req_err\n"
             "__gl_req_load, __gl_req_store, __gl_req_err = nil, nil, nil\n"
+            "local _loading = {}\n"
             "function require(target)\n"
             "  local cached, fn, key, mod = _load(target)\n"
             "  if cached then return fn end\n"
-            "  local prev = script\n"
-            "  script = mod\n"
+            "  local owner = _loading[key]\n"
+            "  if owner ~= nil then\n"
+            "    if owner == (coroutine.running() or 'main') then\n"
+            "      error('Requested module was required recursively', 0)\n"
+            "    end\n"
+            "    while _loading[key] ~= nil do task.wait() end\n"
+            "    local c2, f2 = _load(target)\n"
+            "    if c2 then return f2 end\n"
+            "    error('Requested module experienced an error while loading', 0)\n"
+            "  end\n"
+            "  _loading[key] = coroutine.running() or 'main'\n"
+            "  local g = getfenv(0)\n"
+            "  setfenv(fn, setmetatable({ script = mod }, { __index = g, __newindex = g }))\n"
             "  local ok, result = pcall(fn)\n"
-            "  script = prev\n"
+            "  _loading[key] = nil\n"
             "  if not ok then _err(tostring(result)) error('Requested module experienced an error while loading', 0) end\n"
             "  if result == nil then error('Module code did not return exactly one value', 0) end\n"
             "  _store(key, result)\n"

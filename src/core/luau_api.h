@@ -201,6 +201,8 @@ static inline void _gl_push_inert_signal(lua_State* L) {
 // método _gl_disconnect(ref) de la clase, que desactiva ese callback.
 static void _gl_push_connection(lua_State* L, Node* node, int ref) {
     lua_newtable(L);
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "_gl_conn");   // estado real (mutable) de la conexión
     lua_pushlightuserdata(L, (void*)(uintptr_t)(node ? (uint64_t)node->get_instance_id() : 0));
     lua_pushinteger(L, ref);
     lua_pushcclosure(L, [](lua_State* dL) -> int {
@@ -208,11 +210,22 @@ static void _gl_push_connection(lua_State* L, Node* node, int ref) {
         int r = (int)lua_tointeger(dL, lua_upvalueindex(2));
         Node* n = Object::cast_to<Node>(ObjectDB::get_instance(id));
         if (n && n->has_method("_gl_disconnect")) n->call("_gl_disconnect", r);
+        if (lua_istable(dL, 1)) { lua_pushboolean(dL, 0); lua_setfield(dL, 1, "_gl_conn"); }
         return 0;
     }, "Disconnect", 2);
     lua_setfield(L, -2, "Disconnect");
-    lua_pushboolean(L, 1);
-    lua_setfield(L, -2, "Connected");
+    // Connected DINÁMICO (1.14.15): antes era un booleano fijo en true, así que
+    // seguía diciendo true después de Disconnect(). Va por __index para que se
+    // lea del estado real; solo salta si la clave no está en la tabla.
+    lua_newtable(L);
+    lua_pushcfunction(L, [](lua_State* mL) -> int {
+        const char* k = lua_tostring(mL, 2);
+        if (k && strcmp(k, "Connected") == 0) { lua_getfield(mL, 1, "_gl_conn"); return 1; }
+        lua_pushnil(mL);
+        return 1;
+    }, "__index");
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
 }
 
 // ── ClassName / IsA estilo Roblox ────────────────────────────────────────────
