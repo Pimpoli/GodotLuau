@@ -95,3 +95,18 @@ jobs:
           files: |
             Windows GodotLuau ${{ steps.ver.outputs.ver }}.zip
             Linux GodotLuau ${{ steps.ver.outputs.ver }}.zip
+
+      # Solo debe quedar el Release de la version mas nueva: se borran los demas
+      # (y su tag). Se hace DESPUES de publicar, asi que si el publicado fallara
+      # no nos quedariamos sin ninguno.
+      - name: Borrar Releases antiguos (dejar solo el actual)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ steps.ver.outputs.tag }}
+        run: |
+          for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+            if [ "$tag" != "$KEEP" ]; then
+              echo "borrando release y tag: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || echo "  (no se pudo borrar $tag)"
+            fi
+          done
