@@ -889,8 +889,9 @@ public:
         lua_State* main_L;
         int        ref;
         int64_t    call_id;
-        double     timeout;   // s antes de rendirse (devuelve nil)
+        double     timeout;   // s antes de rendirse; <=0 = esperar siempre (como Roblox)
         double     elapsed;
+        bool       warned = false;   // "Infinite yield possible" ya avisado
     };
 
 private:
@@ -911,7 +912,7 @@ public:
     // Registrar un hilo que cede esperando la respuesta de un InvokeServer/Client
     // por red (mismo mecanismo de suspensión que WaitForChild).
     void add_waiting_invoke(lua_State* th, lua_State* mL, int ref, int64_t call_id, double timeout) {
-        waiting_invokes.push_back({th, mL, ref, call_id, timeout, 0.0});
+        waiting_invokes.push_back({th, mL, ref, call_id, timeout, 0.0, false});
         if (th == L_thread) {
             is_external_wait = true;
         } else {
@@ -939,7 +940,18 @@ public:
     // Resume a coroutine externally (Signal:Wait / WaitForChild resolved).
     // Updates spawned_threads timer or main-thread flags based on new yield.
     void resume_external_thread(lua_State* th, int nargs) {
-        int status = lua_resume(th, nullptr, nargs);
+        _after_resume(th, lua_resume(th, nullptr, nargs));
+    }
+
+    // Reanudar un hilo LANZANDO un error dentro de él. Roblox re-lanza en el
+    // invocador el error del handler remoto de un RemoteFunction; antes aquí se
+    // devolvía nil y el mensaje se perdía.
+    void resume_external_thread_error(lua_State* th, const String& msg) {
+        lua_pushstring(th, msg.utf8().get_data());
+        _after_resume(th, lua_resumeerror(th, nullptr));
+    }
+
+    void _after_resume(lua_State* th, int status) {
         bool is_main = (th == L_thread);
 
         if (is_main) {
@@ -1727,8 +1739,10 @@ public:
 
         // ── time — game execution time (seconds) ─────────────────────────────
         //// ── time — tiempo de ejecución del juego (segundos) ───────────────────
+        // En Roblox time() ES workspace.DistributedGameTime: el reloj del SERVIDOR,
+        // sincronizado (1.14.8), no el uptime local de esta ventana.
         lua_pushcfunction(L_main, [](lua_State* L) -> int {
-            lua_pushnumber(L, (double)Time::get_singleton()->get_ticks_msec() / 1000.0);
+            lua_pushnumber(L, gl_distributed_game_time());
             return 1;
         }, "time");
         lua_setglobal(L_main, "time");
@@ -2157,7 +2171,21 @@ public:
             bool    ok = lua_toboolean(L, 3) != 0;
             Array rets;
             int top = lua_gettop(L);
-            for (int i = 4; i <= top; i++) rets.push_back(gl_net_encode(L, i));
+            for (int i = 4; i <= top; i++) {
+                gl_net_encode_err() = String();
+                Variant rv = gl_net_encode(L, i);
+                if (!gl_net_encode_err().is_empty()) {
+                    // El handler devolvió algo no serializable: en vez de mandar nil
+                    // en silencio, el invocador recibe el error.
+                    String what = gl_net_encode_err();
+                    gl_net_encode_err() = String();
+                    ok = false;
+                    rets = Array();
+                    rets.push_back(String("RemoteFunction handler returned a value that cannot be sent over the network (" + what + ")"));
+                    break;
+                }
+                rets.push_back(rv);
+            }
             if (Node* ns = Object::cast_to<Node>(ObjectDB::get_instance(gl_net_service_id())))
                 ns->call("net_rf_respond", reply_peer, (int)call_id, ok, rets);
             return 0;
@@ -2325,29 +2353,36 @@ public:
             auto& resp = gl_net_responses();
             Node* nsctx = gl_net_service_id() ? Object::cast_to<Node>(ObjectDB::get_instance(gl_net_service_id())) : nullptr;
             for (int i = (int)waiting_invokes.size()-1; i >= 0; --i) {
-                WaitingInvoke& wi = waiting_invokes[i];
-                wi.elapsed += delta;
-                auto it = resp.find(wi.call_id);
-                if (it != resp.end() && it->second.ready) {
-                    if (it->second.ok) {
-                        int n = gl_net_decode_args(wi.thread, it->second.rets, nsctx);
-                        resp.erase(it);
-                        if (wi.main_L) lua_unref(wi.main_L, wi.ref);
-                        resume_external_thread(wi.thread, n);
-                    } else {
-                        // El handler remoto falló: InvokeServer/Client devuelve nil
-                        // (v1: el error no se propaga como error; se avisó del lado remoto).
-                        resp.erase(it);
-                        if (wi.main_L) lua_unref(wi.main_L, wi.ref);
-                        lua_pushnil(wi.thread);
-                        resume_external_thread(wi.thread, 1);
+                waiting_invokes[i].elapsed += delta;
+                auto it = resp.find(waiting_invokes[i].call_id);
+                bool ready = (it != resp.end() && it->second.ready);
+                bool timed = (waiting_invokes[i].timeout > 0 && waiting_invokes[i].elapsed >= waiting_invokes[i].timeout);
+                if (!ready && !timed) {
+                    // Roblox no tiene timeout: se espera indefinidamente y solo se
+                    // avisa. Si el receptor se cae, el NetworkService deposita el
+                    // fallo (no hace falta rendirse por tiempo).
+                    if (!waiting_invokes[i].warned && waiting_invokes[i].elapsed >= 10.0) {
+                        waiting_invokes[i].warned = true;
+                        UtilityFunctions::push_warning("Infinite yield possible on RemoteFunction invoke");
                     }
-                    waiting_invokes.erase(waiting_invokes.begin() + i);
-                } else if (wi.timeout > 0 && wi.elapsed >= wi.timeout) {
-                    if (wi.main_L) lua_unref(wi.main_L, wi.ref);
-                    lua_pushnil(wi.thread);
-                    resume_external_thread(wi.thread, 1);
-                    waiting_invokes.erase(waiting_invokes.begin() + i);
+                    continue;
+                }
+                // Sacar el registro ANTES de reanudar: el hilo reanudado puede volver
+                // a invocar y hacer push_back, invalidando la referencia y el índice.
+                WaitingInvoke wi = waiting_invokes[i];
+                waiting_invokes.erase(waiting_invokes.begin() + i);
+                bool  ok = true;
+                Array rets;
+                if (ready) { ok = it->second.ok; rets = it->second.rets; resp.erase(it); }
+                else       { ok = false; rets.push_back(String("RemoteFunction invoke timed out")); }
+                if (wi.main_L) lua_unref(wi.main_L, wi.ref);
+                if (ok) {
+                    int n = gl_net_decode_args(wi.thread, rets, nsctx);
+                    resume_external_thread(wi.thread, n);
+                } else {
+                    // El error del handler remoto se RE-LANZA aquí (como Roblox).
+                    String msg = rets.size() > 0 ? String(rets[0]) : String("RemoteFunction invocation failed");
+                    resume_external_thread_error(wi.thread, msg);
                 }
             }
         }

@@ -2347,7 +2347,7 @@ static int godot_object_index(lua_State* L) {
                     Array args = gl_net_encode_args(pL, 2, nargs);
                     ns->call("net_invoke_server", String(rfn->get_path()), (int)call_id, args);
                     lua_pushthread(pL); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
-                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 10.0);
+                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 0.0);   // 0 = esperar como Roblox (el fallo llega si el receptor se cae)
                     lua_pushstring(pL, "__WAIT_INVOKE__");
                     return lua_yield(pL, 1);
                 }
@@ -2381,7 +2381,7 @@ static int godot_object_index(lua_State* L) {
                     Array args = gl_net_encode_args(pL, 3, nargs);
                     ns->call("net_invoke_client", peer, String(rfn->get_path()), (int)call_id, args);
                     lua_pushthread(pL); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
-                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 10.0);
+                    gl_add_invoke_wait_hook()(sn, pL, main_L, ref, call_id, 0.0);   // 0 = esperar como Roblox (el fallo llega si el receptor se cae)
                     lua_pushstring(pL, "__WAIT_INVOKE__");
                     return lua_yield(pL, 1);
                 }

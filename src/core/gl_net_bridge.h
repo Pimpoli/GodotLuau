@@ -41,6 +41,20 @@
 
 using namespace godot;
 
+// ── Slot de error de serialización (1.14.9.1) ────────────────────────────
+// gl_net_encode NO puede lanzar el error de Lua a media construcción de
+// Variants (el throw se llevaría por delante la tabla a medio armar), así que
+// anota AQUÍ qué no se pudo serializar y el borde (gl_net_encode_args /
+// __gl_rf_respond) lo lanza. Antes se mandaba nil en silencio; Roblox lanza
+// error, y perder datos sin avisar es el peor modo de fallo para depurar.
+// Solo se guarda el PRIMER fallo. Ojo: los caminos que NO son borde (la
+// replicación de propiedades en luau_api.h) simplemente lo ignoran, por eso
+// cada borde limpia el slot antes de codificar.
+static inline String& gl_net_encode_err() { static String s; return s; }
+static inline void gl_net_enc_fail(const String& what) {
+    if (gl_net_encode_err().is_empty()) gl_net_encode_err() = what;
+}
+
 // Empuja un nodo (o nil) como GodotObject en el estado L.
 static inline void gl_net_push_node(lua_State* L, Node* node) {
     if (!node) { lua_pushnil(L); return; }
@@ -53,7 +67,7 @@ static inline void gl_net_push_node(lua_State* L, Node* node) {
 // ── Codificar un valor Luau (en idx) a Variant ────────────────────────────
 static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
     if (idx < 0) idx = lua_gettop(L) + idx + 1;
-    if (!lua_checkstack(L, 6)) return Variant();   // reserva pila para metatables/claves de este nivel
+    if (!lua_checkstack(L, 6)) { gl_net_enc_fail("value is too complex"); return Variant(); }   // reserva pila para metatables/claves de este nivel
     int t = lua_type(L, idx);
     switch (t) {
         case LUA_TNIL:     return Variant();
@@ -101,10 +115,13 @@ static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
                 return Variant(Color(f[0], f[1], f[2]));
             }
             lua_pop(L, 1);  // metatable original
-            return Variant();  // userdata desconocido → nil
+            gl_net_enc_fail("userdata");   // userdata desconocido: no serializable
+            return Variant();
         }
         case LUA_TTABLE: {
-            if (depth >= 8) return Variant();
+            // Tope de anidamiento igual al del decodificador (16). Pasarse casi
+            // siempre significa tabla CÍCLICA, que Roblox también rechaza.
+            if (depth >= 16) { gl_net_enc_fail("table is cyclic or nested too deeply"); return Variant(); }
             // ¿tabla tipada (CFrame/UDim2/…) con metatable.__type?
             String type_name;
             if (lua_getmetatable(L, idx)) {
@@ -142,7 +159,7 @@ static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
                     double kn = lua_tonumber(L, -2);   // preservar claves no enteras como FLOAT (no truncar)
                     key = (kn == (double)(int64_t)kn) ? Variant((int64_t)kn) : Variant(kn);
                 }
-                else { lua_pop(L, 1); continue; }
+                else { gl_net_enc_fail("table key of type " + String(lua_typename(L, kt))); lua_pop(L, 1); continue; }
                 d[key] = gl_net_encode(L, -1, depth + 1);
                 lua_pop(L, 1);
             }
@@ -161,7 +178,9 @@ static Variant gl_net_encode(lua_State* L, int idx, int depth = 0) {
             }
             return d;
         }
-        default: return Variant();
+        default:
+            gl_net_enc_fail(String(lua_typename(L, t)));   // function, thread, vector…
+            return Variant();
     }
 }
 
@@ -264,9 +283,21 @@ static void gl_net_decode(lua_State* L, const Variant& v, Node* ctx, int depth =
 }
 
 // Codifica un rango de argumentos [base, base+n) de la pila a un Array.
+// Si algo no es serializable, LANZA error de Lua con el nº de argumento (como
+// Roblox) en vez de mandar nil en silencio.
 static inline Array gl_net_encode_args(lua_State* L, int base, int n) {
     Array a;
-    for (int i = base; i < base + n; i++) a.push_back(gl_net_encode(L, i));
+    for (int i = base; i < base + n; i++) {
+        gl_net_encode_err() = String();
+        Variant v = gl_net_encode(L, i);
+        if (!gl_net_encode_err().is_empty()) {
+            String msg = "argument " + String::num_int64(i - base + 1) + ": " + gl_net_encode_err()
+                       + " cannot be sent over the network";
+            gl_net_encode_err() = String();
+            luaL_error(L, "%s", msg.utf8().get_data());   // Luau: luaL_error devuelve void y no retorna
+        }
+        a.push_back(v);
+    }
     return a;
 }
 

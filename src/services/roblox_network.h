@@ -335,6 +335,15 @@ class NetworkService : public Node {
     std::map<int, int64_t> peer_seq_uid;   // peerId -> UserId asignado
     int64_t next_seq_uid = 2;              // servidor: siguiente UserId (host toma el 1)
 
+    // ── RemoteFunction en vuelo (1.14.9.1) ──────────────────────────────
+    // call_id -> a quién le pedimos la respuesta. Sirve para tres cosas: validar
+    // que la respuesta viene del peer al que invocamos (si no, cualquier cliente
+    // podría falsificar la respuesta de otro), fallar al invocador en el acto si
+    // ese peer se cae, y purgar por edad lo que quede huérfano.
+    struct RFPending { int peer; double age; };
+    std::map<int64_t, RFPending> rf_expect;
+    double rf_gc_timer = 0.0;
+
     // ── Replicación automática (1.14.5) ─────────────────────────────────
     // netId (asignado por el servidor) -> ObjectID del nodo replicado. En el
     // servidor se llena al replicar; en el cliente al recibir _rep_new.
@@ -970,6 +979,8 @@ public:
                 }
             }
         }
+        // RemoteFunction en vuelo hacia ese peer: nunca va a contestar (1.14.9.1).
+        _rf_fail_pending(id, "InvokeClient: the player left the game");
         _remove_peer_player(id);
         _fire(pd_cbs, true, id);
     }
@@ -977,6 +988,7 @@ public:
     void _on_connect_failed()          { mode = 0; if (retry_left > 0) return; _fire(fail_cbs, false, 0); }
     void _on_server_disconnected() {
         net_connected = false;
+        _rf_fail_pending(0, "InvokeServer: lost connection to the server");
         _clear_puppets();
         // Cliente local: si el host (editor) se detiene, cerrar esta ventana para
         // que no queden ventanas huérfanas conectándose a la nada.
@@ -1035,16 +1047,32 @@ public:
     // para mandar la petición; corre el handler remoto con soporte de yield vía
     // el wrapper Lua __gl_rf_serve y devuelve el resultado con _rf_return, que el
     // ScriptNodeBase que cedió recoge de gl_net_responses() en su _process.
+    // Deposita un fallo SIN pasar por la red, para que el invocador lo re-lance
+    // en el acto en vez de quedarse colgado esperando una respuesta imposible.
+    void _rf_fail_local(int64_t call_id, const String& msg) {
+        GLNetResponse& r = gl_net_responses()[call_id];
+        r.rets = Array();
+        r.rets.push_back(msg);
+        r.ok = false;
+        r.ready = true;
+        r.age = 0.0;
+    }
     void net_invoke_server(String path, int call_id, Array args) {
         Ref<MultiplayerAPI> m = _mp();
-        if (m.is_null() || !m->has_multiplayer_peer()) return;
-        if (mode == 2 && !net_connected) return;   // cliente aún conectándose
+        if (m.is_null() || !m->has_multiplayer_peer() || (mode == 2 && !net_connected)) {
+            _rf_fail_local((int64_t)call_id, "InvokeServer: not connected to a server");
+            return;
+        }
+        rf_expect[(int64_t)call_id] = { 1, 0.0 };
         rpc_id(1, "_rf_invoke_server", path, call_id, args);
     }
     void net_invoke_client(int peer, String path, int call_id, Array args) {
         Ref<MultiplayerAPI> m = _mp();
-        if (m.is_null() || !m->has_multiplayer_peer()) return;
-        if (!m->get_peers().has(peer)) return;
+        if (m.is_null() || !m->has_multiplayer_peer() || !m->get_peers().has(peer)) {
+            _rf_fail_local((int64_t)call_id, "InvokeClient: the player has left the game");
+            return;
+        }
+        rf_expect[(int64_t)call_id] = { peer, 0.0 };
         rpc_id(peer, "_rf_invoke_client", path, call_id, args);
     }
     // Enviar la respuesta al invocador (peer 1 = servidor, o un cliente concreto).
@@ -1058,13 +1086,24 @@ public:
     void net_rf_respond(int reply_peer, int call_id, bool ok, Array rets) {
         _rf_send_return(reply_peer, call_id, ok, rets);
     }
+    // Responder al invocador con un error (lo re-lanza allí, como Roblox).
+    void _rf_send_error(int reply_peer, int call_id, const String& msg) {
+        Array a;
+        a.push_back(msg);
+        _rf_send_return(reply_peer, call_id, false, a);
+    }
     // Corre el handler (OnServerInvoke/OnClientInvoke) vía __gl_rf_serve, que lo
     // envuelve en task.spawn (soporta yield) y responde al terminar.
     void _rf_run_handler(lua_State* L, int handler_ref, Node* player, int call_id, int reply_peer, const Array& args, bool is_server) {
-        if (!gl_state_alive(L) || handler_ref == LUA_NOREF) { _rf_send_return(reply_peer, call_id, true, Array()); return; }
+        if (!gl_state_alive(L) || handler_ref == LUA_NOREF) {
+            _rf_send_error(reply_peer, call_id, is_server
+                ? "InvokeServer: OnServerInvoke is not set for this RemoteFunction"
+                : "InvokeClient: OnClientInvoke is not set for this RemoteFunction");
+            return;
+        }
         lua_State* th = lua_newthread(L);
         lua_getglobal(th, "__gl_rf_serve");
-        if (!lua_isfunction(th, -1)) { lua_pop(L, 1); _rf_send_return(reply_peer, call_id, true, Array()); return; }
+        if (!lua_isfunction(th, -1)) { lua_pop(L, 1); _rf_send_error(reply_peer, call_id, "RemoteFunction handler could not be started"); return; }
         lua_rawgeti(th, LUA_REGISTRYINDEX, handler_ref);   // handler
         if (player) _gl_push_node(th, player); else lua_pushnil(th);   // player
         lua_pushnumber(th, (double)call_id);               // callId
@@ -1078,19 +1117,34 @@ public:
         if (!is_server()) return;
         int sender = get_multiplayer()->get_remote_sender_id();
         RemoteFunctionNode* rfn = Object::cast_to<RemoteFunctionNode>(get_node_or_null(NodePath(path)));
-        if (!rfn) { _rf_send_return(sender, call_id, true, Array()); return; }
+        if (!rfn) { _rf_send_error(sender, call_id, "InvokeServer: RemoteFunction not found on the server (" + path + ")"); return; }
         Node* player = _ensure_peer_player(sender);   // como OnServerEvent: Player válido
         _rf_run_handler(rfn->server_invoke_L, rfn->server_invoke_ref, player, call_id, sender, args, true);
     }
     void _rf_invoke_client(String path, int call_id, Array args) {
         if (get_multiplayer()->get_remote_sender_id() != 1) return;   // solo el servidor invoca al cliente
         RemoteFunctionNode* rfn = Object::cast_to<RemoteFunctionNode>(get_node_or_null(NodePath(path)));
-        if (!rfn) { _rf_send_return(1, call_id, true, Array()); return; }
+        if (!rfn) { _rf_send_error(1, call_id, "InvokeClient: RemoteFunction not found on the client (" + path + ")"); return; }
         _rf_run_handler(rfn->client_invoke_L, rfn->client_invoke_ref, nullptr, call_id, 1, args, false);
     }
     void _rf_return(int call_id, bool ok, Array rets) {
+        // Solo vale la respuesta del peer al que realmente invocamos: si no,
+        // cualquier cliente podría falsificar el retorno de una llamada ajena.
+        int sender = get_multiplayer()->get_remote_sender_id();
+        auto it = rf_expect.find((int64_t)call_id);
+        if (it == rf_expect.end() || it->second.peer != sender) return;
+        rf_expect.erase(it);
         GLNetResponse& r = gl_net_responses()[(int64_t)call_id];
         r.rets = rets; r.ok = ok; r.ready = true; r.age = 0.0;
+    }
+    // Falla las llamadas en vuelo hacia un peer que ya no está (o hacia todos).
+    void _rf_fail_pending(int peer, const String& msg) {
+        for (auto it = rf_expect.begin(); it != rf_expect.end(); ) {
+            if (peer == 0 || it->second.peer == peer) {
+                _rf_fail_local(it->first, msg);
+                it = rf_expect.erase(it);
+            } else ++it;
+        }
     }
 
     // ── Replicación automática de instancias/propiedades (1.14.5) ─────────
@@ -1684,6 +1738,22 @@ public:
                 phys_auto_timer += dt;
                 if (phys_auto_timer >= 0.5) { phys_auto_timer = 0.0; _phys_auto_tick(); }
             }
+            // Purga de RemoteFunction huérfanos (1.14.9.1): una respuesta que llega
+            // cuando ya nadie la espera, o un pendiente que nunca se cerró, se
+            // quedaba en el mapa PARA SIEMPRE. Nadie los espera pasado un minuto.
+            rf_gc_timer += dt;
+            if (rf_gc_timer >= 5.0) {
+                rf_gc_timer = 0.0;
+                for (auto it = rf_expect.begin(); it != rf_expect.end(); ) {
+                    it->second.age += 5.0;
+                    if (it->second.age > 60.0) it = rf_expect.erase(it); else ++it;
+                }
+                auto& rs = gl_net_responses();
+                for (auto it = rs.begin(); it != rs.end(); ) {
+                    it->second.age += 5.0;
+                    if (it->second.age > 60.0) it = rs.erase(it); else ++it;
+                }
+            }
         }
     }
 
@@ -1893,6 +1963,10 @@ public:
         gl_net_role() = 0;   // replicación off
         net_instances.clear();
         peer_seq_uid.clear(); next_seq_uid = 2; gl_local_user_id() = 0;   // UserId: reset al salir
+        // RemoteFunction en vuelo: depositar el fallo (NO limpiar las respuestas,
+        // que es justo lo que el invocador tiene que recoger para re-lanzarlo).
+        _rf_fail_pending(0, "RemoteFunction invoke cancelled: left the game");
+        rf_gc_timer = 0.0;
         gl_server_unix_offset() = 0.0; gl_dgt_offset() = 0.0; time_synced = false;   // reloj: volver al local
         net_connected = false;
         target_address = "";
