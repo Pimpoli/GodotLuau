@@ -18,6 +18,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 #include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/time.hpp>
@@ -270,6 +271,87 @@ static inline void gl_run_deferred_server_scripts() {
         Object* o = ObjectDB::get_instance(oid);
         if (Node* n = Object::cast_to<Node>(o)) n->call("iniciar_corrutina");
     }
+}
+
+// ── Contenedores PLANTILLA (1.15) ────────────────────────────────────────────
+//  En Roblox los Starter* no son contenedores de ejecución: son MOLDES. Lo que
+//  hay dentro no corre nunca; corre el CLON que se copia al jugador o al
+//  personaje al spawnear. Aquí el original vive en el árbol, así que corría el
+//  original Y el clon: todo por duplicado (el PlayerModule del usuario llevaba
+//  ejecutándose dos veces desde siempre). Se mira por CLASE, no por nombre: un
+//  Folder llamado "StarterGui" dentro del Workspace es un Folder normal y sus
+//  scripts deben correr.
+inline bool gl_is_template_container(const Node* n) {
+    if (!n) return false;
+    return n->is_class("StarterPlayer") || n->is_class("StarterPlayerScripts") ||
+           n->is_class("StarterCharacterScripts") || n->is_class("StarterGui") ||
+           n->is_class("StarterPack");
+}
+//  Un script es plantilla si CUALQUIER ancestro es un contenedor plantilla (no
+//  vale mirar solo al padre: un Folder dentro de StarterGui con un LocalScript
+//  dentro sigue siendo plantilla).
+inline bool gl_in_template_container(const Node* n) {
+    for (const Node* a = n ? n->get_parent() : nullptr; a; a = a->get_parent())
+        if (gl_is_template_container(a)) return true;
+    return false;
+}
+
+// ── Mover el HumanoidRootPart mueve el PERSONAJE (1.15) ──────────────────────
+//  En Roblox el HRP es la raíz del ensamblaje: las demás partes van soldadas a
+//  él, así que "hrp.CFrame = x" teletransporta al personaje entero. Aquí el HRP
+//  es un hijo más del personaje, así que movía solo esa pieza y el jugador se
+//  quedaba donde estaba, sin decir nada. Es un idioma muy común (teletransportes,
+//  spawns), así que se redirige al personaje conservando el offset del HRP.
+//  Devuelve la raíz del personaje si n es su HumanoidRootPart; si no, nullptr.
+inline Node3D* gl_character_root_of_hrp(Node* n) {
+    if (!n || n->get_name() != StringName("HumanoidRootPart")) return nullptr;
+    Node* p = n->get_parent();
+    if (!p || !p->get_node_or_null(NodePath("Humanoid"))) return nullptr;
+    return Object::cast_to<Node3D>(p);
+}
+inline void gl_set_part_global_transform(Node3D* n3d, const Transform3D& t) {
+    if (!n3d) return;
+    Node3D* root = gl_character_root_of_hrp(n3d);
+    if (root && root->is_inside_tree() && n3d->is_inside_tree()) {
+        // Queremos que el HRP acabe en t. Si L es su transform relativo a la
+        // raíz (raiz_global * L = hrp_global), entonces raiz_global = t * L⁻¹.
+        Transform3D L = root->get_global_transform().affine_inverse() * n3d->get_global_transform();
+        root->set_global_transform(t * L.affine_inverse());
+        return;
+    }
+    if (n3d->is_inside_tree()) n3d->set_global_transform(t);
+    else n3d->set_transform(t);
+}
+inline void gl_set_part_global_position(Node3D* n3d, const Vector3& p) {
+    if (!n3d) return;
+    Node3D* root = gl_character_root_of_hrp(n3d);
+    if (root && root->is_inside_tree() && n3d->is_inside_tree()) {
+        root->set_global_position(root->get_global_position() + (p - n3d->get_global_position()));
+        return;
+    }
+    if (n3d->is_inside_tree()) n3d->set_global_position(p);
+    else n3d->set_position(p);
+}
+
+// ── Instancias HUERFANAS de Instance.new (1.15) ──────────────────────────────
+//  Instance.new("Part") crea el nodo SIN padre: en Roblox lo sujeta el script y
+//  el recolector lo tira cuando se pierde la referencia. Aqui, si el script nunca
+//  lo cuelga del arbol, no lo libera nadie -> "ObjectDB instances were leaked at
+//  exit" en cada ejecucion. Se apuntan al crearlos y al cerrar se liberan los que
+//  sigan sin padre (los que si se colgaron ya son del arbol, que los destruye el).
+inline std::vector<uint64_t>& gl_orphan_instances() { static std::vector<uint64_t> v; return v; }
+inline void gl_track_orphan(Node* n) {
+    if (n) gl_orphan_instances().push_back((uint64_t)n->get_instance_id());
+}
+static inline void gl_free_orphan_instances() {
+    std::vector<uint64_t>& v = gl_orphan_instances();
+    for (uint64_t id : v) {
+        Node* n = Object::cast_to<Node>(ObjectDB::get_instance(id));
+        // Sin padre y no encolado ya para borrar: si estuviera encolado, borrarlo
+        // aqui seria un doble free.
+        if (n && !n->get_parent() && !n->is_queued_for_deletion()) memdelete(n);
+    }
+    v.clear();
 }
 
 // ── BindToClose: callbacks a ejecutar al cerrar el juego (guardar datos, etc.) ─

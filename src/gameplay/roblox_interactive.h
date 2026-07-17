@@ -309,7 +309,11 @@ class SpawnLocation : public Node3D {
     bool    enabled          = true;
     float   duration         = 10.0f;
     bool    allow_team_change = false;
-    String  team_color       = "Bright red";
+    // Nombre de BrickColor del equipo que puede usar este spawn (1.15). El campo
+    // ya existía pero estaba MUERTO: sin getter, sin setter y sin ADD_PROPERTY,
+    // así que no había forma de leerlo ni escribirlo — por eso los spawns
+    // ignoraban los equipos por completo.
+    String  team_color       = "Medium stone grey";
     bool    neutral          = true;
 
 protected:
@@ -322,7 +326,10 @@ protected:
         ClassDB::bind_method(D_METHOD("get_neutral"),                  &SpawnLocation::get_neutral);
         ClassDB::bind_method(D_METHOD("set_allow_team_change", "v"),  &SpawnLocation::set_allow_team_change);
         ClassDB::bind_method(D_METHOD("get_allow_team_change"),        &SpawnLocation::get_allow_team_change);
+        ClassDB::bind_method(D_METHOD("set_team_color", "v"),         &SpawnLocation::set_team_color);
+        ClassDB::bind_method(D_METHOD("get_team_color"),                &SpawnLocation::get_team_color);
 
+        ADD_PROPERTY(PropertyInfo(Variant::STRING, "TeamColor"),       "set_team_color",        "get_team_color");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Enabled"),          "set_enabled",           "get_enabled");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Duration",
                                   PROPERTY_HINT_RANGE, "0,60,0.1"),    "set_duration",          "get_duration");
@@ -377,6 +384,8 @@ public:
     bool get_neutral() const           { return neutral; }
     void set_allow_team_change(bool v) { allow_team_change = v; }
     bool get_allow_team_change() const { return allow_team_change; }
+    void   set_team_color(String v)    { team_color = v; }
+    String get_team_color() const      { return team_color; }
 
     Vector3 get_spawn_position() const { return get_global_position() + Vector3(0, 3.0f, 0); }
 };

@@ -73,6 +73,31 @@ static inline Node* _gl_find_network_service(Node* from) {
     return rec((Node*)from->get_tree()->get_root());
 }
 
+// Busca un Team por su TeamColor (nombre de BrickColor) dentro de Teams (1.15).
+// Es como Roblox casa un jugador o un SpawnLocation con su equipo.
+static inline Node* _gl_find_teams_service(Node* from) {
+    if (!from || !from->is_inside_tree()) return nullptr;
+    std::function<Node*(Node*)> rec = [&](Node* n) -> Node* {
+        if (!n) return nullptr;
+        if (n->is_class("Teams")) return n;
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* r = rec(n->get_child(i));
+            if (r) return r;
+        }
+        return nullptr;
+    };
+    return rec((Node*)from->get_tree()->get_root());
+}
+static inline Node* _gl_find_team_by_color(Node* from, const String& color_name) {
+    Node* teams = _gl_find_teams_service(from);
+    if (!teams || color_name.is_empty()) return nullptr;
+    for (int i = 0; i < teams->get_child_count(); i++) {
+        Node* t = teams->get_child(i);
+        if (t && t->is_class("Team") && String(t->get("TeamColor")) == color_name) return t;
+    }
+    return nullptr;
+}
+
 // Extrae el Node* envuelto en un argumento Luau (GodotObject) o nullptr.
 static inline Node* _gl_node_from_lua(lua_State* L, int idx) {
     if (lua_type(L, idx) != LUA_TUSERDATA) return nullptr;

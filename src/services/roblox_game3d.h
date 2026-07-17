@@ -88,6 +88,12 @@ protected:
                 _crear_entorno_3d();
             }
         }
+        // Al cerrar el juego, liberar las instancias de Instance.new que nunca
+        // llegaron a colgarse del árbol (1.15): son las que se reportaban como
+        // "ObjectDB instances were leaked at exit".
+        else if (p_what == NOTIFICATION_EXIT_TREE && !Engine::get_singleton()->is_editor_hint()) {
+            gl_free_orphan_instances();
+        }
     }
 
     void _crear_entorno_3d() {

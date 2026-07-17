@@ -43,6 +43,13 @@ class RobloxTerrain : public Node3D {
         return c;
     }
 
+public:
+    // Vaciarlo al descargar la extensión (1.15): si no, los materiales viven
+    // hasta la descarga de la DLL, cuando el RenderingServer ya no existe → sus
+    // RID se reportan como fugados y el destructor de BaseMaterial3D peta.
+    static void _gl_clear_material_cache() { _terrain_mat_cache().clear(); }
+private:
+
     // Color intrínseco por material de terreno (Roblox: la grama es verde, la
     // arena tostada, etc. — sin necesidad de que el usuario ponga Color).
     static Color _terrain_color(int mat) {

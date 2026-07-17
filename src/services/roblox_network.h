@@ -2041,7 +2041,13 @@ public:
         Node* tn = Object::cast_to<Node>(team_node);
         int target = peer_for_player_node(pn);
         int64_t tid = (tn && tn->has_meta("_gl_netid")) ? (int64_t)tn->get_meta("_gl_netid") : 0;
-        _apply_team(target, tid);
+        // Aplicar AQUI con el nodo real, no por netid (1.15). Antes esto llamaba a
+        // _apply_team(target, tid) y, si el Team todavia no estaba replicado, no
+        // tenia _gl_netid -> tid=0 -> _apply_team resolvia nullptr y ponia
+        // team_id=0: el equipo recien asignado se borraba a si mismo una linea
+        // despues. Por eso "player.Team = equipo" nunca se quedaba puesto.
+        if (PlayerObject* po = Object::cast_to<PlayerObject>(pn))
+            po->team_id = tn ? (uint64_t)tn->get_instance_id() : 0;
         if (is_server()) rpc("_set_team", target, tid);
     }
     void _apply_team(int peer, int64_t team_netid) {

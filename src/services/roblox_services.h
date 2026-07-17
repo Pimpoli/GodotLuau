@@ -131,7 +131,7 @@ public:
     int64_t  user_id = 0;
     String   display_name;
     uint64_t character_id = 0;    // ObjectID del personaje/muñeco (sin puntero colgante)
-    int      team_color = 0;
+    String   team_color = "Medium stone grey";   // nombre de BrickColor si no hay Team (1.15)
     int64_t  account_age = 0;
     bool     is_local = false;
     bool     added_fired = false; // PlayerAdded ya disparado (una sola vez por Player)
@@ -228,7 +228,18 @@ public:
 protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("_gl_disconnect", "ref"), &PlayerObject::_gl_disconnect);
+        ClassDB::bind_method(D_METHOD("_gl_team_color_name"), &PlayerObject::_gl_team_color_name);
+        ClassDB::bind_method(D_METHOD("_gl_is_local"),        &PlayerObject::_gl_is_local);
     }
+
+public:
+    // Color efectivo del jugador: el de su Team si lo tiene, si no el propio.
+    // Lo usa el Workspace para elegir SpawnLocation (1.15).
+    String _gl_team_color_name() const {
+        Node* t = get_team();
+        return t ? String(t->get("TeamColor")) : team_color;
+    }
+    bool _gl_is_local() const { return is_local; }
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -462,6 +473,14 @@ public:
     bool   _gl_local_added_fired = false;
     double _gl_ready_time = 0.0;
 
+    // ── Auto-respawn (1.15) ──────────────────────────────────────────────
+    // Hasta ahora el Humanoid emitía Died y ahí se acababa todo: nadie volvía a
+    // levantar al jugador. Como Roblox: al morir se espera RespawnTime y se
+    // reconstruye el personaje, salvo que CharacterAutoLoads esté en false.
+    bool   character_auto_loads = true;
+    double respawn_time = 5.0;
+    double _death_timer = -1.0;   // <0 = nadie muerto esperando
+
 protected:
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) _enforce_game_parent(this);
@@ -479,17 +498,37 @@ protected:
                                   PROPERTY_HINT_NODE_TYPE, "Node"),
                      "", "get_local_player");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "MaxPlayers"), "set_max_players", "get_max_players");
+        ClassDB::bind_method(D_METHOD("set_character_auto_loads", "v"), &Players::set_character_auto_loads);
+        ClassDB::bind_method(D_METHOD("get_character_auto_loads"),      &Players::get_character_auto_loads);
+        ClassDB::bind_method(D_METHOD("set_respawn_time", "v"),         &Players::set_respawn_time);
+        ClassDB::bind_method(D_METHOD("get_respawn_time"),              &Players::get_respawn_time);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "CharacterAutoLoads"), "set_character_auto_loads", "get_character_auto_loads");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "RespawnTime"),        "set_respawn_time",         "get_respawn_time");
     }
 
 public:
     void _process(double delta) override {
-        if (_gl_local_added_fired) { set_process(false); return; }
+        _tick_player_added(delta);
+        _tick_respawn(delta);
+    }
+
+    bool get_character_auto_loads() const { return character_auto_loads; }
+    void set_character_auto_loads(bool v) { character_auto_loads = v; if (!v) _death_timer = -1.0; }
+    double get_respawn_time() const { return respawn_time; }
+    void set_respawn_time(double v)  { respawn_time = Math::max(v, 0.0); }
+
+    int  get_max_players() const { return max_players; }
+    void set_max_players(int v)  { max_players = v; }
+
+private:
+    // PlayerAdded del jugador local: una sola vez, cuando el personaje ya existe.
+    void _tick_player_added(double delta) {
+        if (_gl_local_added_fired) return;
         Node* character = _find_local_character();
         if (!character) { _gl_ready_time = 0.0; return; }  // esperar al personaje
         _gl_ready_time += delta;
         if (_gl_ready_time < 0.25) return;                 // margen para PlayerAdded:Connect
         _gl_local_added_fired = true;
-        set_process(false);
         PlayerObject* po = ensure_local_player_obj();      // Player con .Character ya asignado (silencioso)
         if (po) {
             fire_player_added(po);        // PlayerAdded PRIMERO (como Roblox)
@@ -497,8 +536,27 @@ public:
         }
     }
 
-    int  get_max_players() const { return max_players; }
-    void set_max_players(int v)  { max_players = v; }
+    // Muerte → esperar RespawnTime → reconstruir el personaje (como Roblox).
+    // Se vigila por sondeo en vez de conectarse a Died: el personaje se destruye
+    // y se rehace en cada respawn, así que una conexión habría que rehacerla
+    // cada vez (y se pierde si alguien mata al Humanoid sin pasar por Died).
+    void _tick_respawn(double delta) {
+        if (!character_auto_loads) return;
+        if (_death_timer >= 0.0) {
+            _death_timer += delta;
+            if (_death_timer >= respawn_time) {
+                _death_timer = -1.0;
+                load_local_character();
+            }
+            return;
+        }
+        Node* ch  = _find_local_character();
+        Node* hum = ch ? ch->get_node_or_null(NodePath("Humanoid")) : nullptr;
+        if (!hum || !hum->has_method("get_health")) return;
+        if ((double)hum->call("get_health") <= 0.0) _death_timer = 0.0;
+    }
+
+public:
 
     void add_player_added_cb(lua_State* L, int ref, bool once = false)    { player_added_cbs.push_back({L,ref,true,once}); }
     void add_player_removing_cb(lua_State* L, int ref, bool once = false) { player_removing_cbs.push_back({L,ref,true,once}); }
@@ -627,6 +685,10 @@ public:
             // del orden de includes con RobloxMouse).
             if (Node* mo = po->get_node_or_null(NodePath("Mouse")))
                 if (mo->has_method("_gl_set_character")) mo->call("_gl_set_character", fresh);
+            // El personaje es NUEVO: hay que reaplicarle los ajustes que vivían en
+            // el Player, o se pierden al morir (LockFirstPerson, 1.15).
+            if (fresh->has_method("set_lock_first_person"))
+                fresh->call("set_lock_first_person", po->camera_mode == 1);
             po->fire_character_added();
         }
     }
@@ -701,11 +763,16 @@ private:
 class Team : public Node {
     GDCLASS(Team, Node);
 public:
-    int  team_color = 1;            // BrickColor (número)
+    // TeamColor se guarda por NOMBRE de BrickColor (1.15). Antes era un int suelto
+    // que no casaba con nada: ni con el String del SpawnLocation ni con el Color
+    // del RobloxPlayer, y no había forma de sacar el color para pintar UI. El
+    // nombre es la identidad del BrickColor en Roblox y es con lo que se comparan
+    // los SpawnLocation.
+    String team_color = "Medium stone grey";
     bool auto_assignable = true;
 
-    int  get_team_color() const      { return team_color; }
-    void set_team_color(int v)       { team_color = v; }
+    String get_team_color() const      { return team_color; }
+    void   set_team_color(String v)    { team_color = v; }
     bool get_auto_assignable() const { return auto_assignable; }
     void set_auto_assignable(bool v) { auto_assignable = v; }
 
@@ -715,7 +782,7 @@ protected:
         ClassDB::bind_method(D_METHOD("set_team_color", "v"),     &Team::set_team_color);
         ClassDB::bind_method(D_METHOD("get_auto_assignable"),     &Team::get_auto_assignable);
         ClassDB::bind_method(D_METHOD("set_auto_assignable", "v"), &Team::set_auto_assignable);
-        ADD_PROPERTY(PropertyInfo(Variant::INT,  "TeamColor"),      "set_team_color",      "get_team_color");
+        ADD_PROPERTY(PropertyInfo(Variant::STRING, "TeamColor"),    "set_team_color",      "get_team_color");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL, "AutoAssignable"), "set_auto_assignable", "get_auto_assignable");
     }
 };

@@ -117,6 +117,49 @@ static LuauColor3* push_color3(lua_State* L, float r, float g, float b) {
     return c;
 }
 
+// ── BrickColor (1.15) ────────────────────────────────────────────────────────
+//  La paleta vive en el stdlib de Luau, así que el puente no la duplica: llama
+//  al BrickColor.new de allí. En C++ un TeamColor se guarda como el NOMBRE del
+//  BrickColor, que es su identidad en Roblox.
+static void push_brickcolor(lua_State* L, const String& name) {
+    lua_getglobal(L, "BrickColor");
+    if (!lua_istable(L, -1)) {   // sin stdlib cargado: al menos no romper
+        lua_pop(L, 1);
+        lua_pushstring(L, name.utf8().get_data());
+        return;
+    }
+    lua_getfield(L, -1, "new");
+    lua_remove(L, -2);
+    lua_pushstring(L, name.utf8().get_data());
+    lua_call(L, 1, 1);
+}
+//  Acepta lo mismo que Roblox: un BrickColor, un nombre o un número.
+static String read_brickcolor_name(lua_State* L, int idx) {
+    if (idx < 0) idx = lua_gettop(L) + 1 + idx;
+    if (lua_istable(L, idx)) {
+        lua_getfield(L, idx, "Name");
+        String s = lua_isstring(L, -1) ? String(lua_tostring(L, -1)) : String();
+        lua_pop(L, 1);
+        return s;
+    }
+    if (lua_isstring(L, idx)) return String(lua_tostring(L, idx));
+    if (lua_isnumber(L, idx)) {   // número → nombre, vía la paleta de Luau
+        lua_getglobal(L, "BrickColor");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "new");
+            lua_remove(L, -2);
+            lua_pushvalue(L, idx);
+            lua_call(L, 1, 1);
+            lua_getfield(L, -1, "Name");
+            String s = lua_isstring(L, -1) ? String(lua_tostring(L, -1)) : String();
+            lua_pop(L, 2);
+            return s;
+        }
+        lua_pop(L, 1);
+    }
+    return String();
+}
+
 // ── Comprobación de tipo segura: solo devuelve el puntero si el userdata
 //    tiene EXACTAMENTE la metatable esperada. Evita reinterpretar un tipo
 //    por otro (p.ej. pasar un Color3 donde se espera un Vector3, o un nodo
@@ -725,7 +768,7 @@ static int godot_object_index(lua_State* L) {
             if (strcmp(key, "Neutral") == 0)     { lua_pushboolean(L, plr->get_team() ? 0 : 1); return 1; }
             if (strcmp(key, "TeamColor") == 0) {
                 Node* t = plr->get_team();
-                lua_pushnumber(L, t ? (double)(int)t->get("TeamColor") : (double)plr->team_color);
+                push_brickcolor(L, t ? String(t->get("TeamColor")) : plr->team_color);
                 return 1;
             }
             if (strcmp(key, "FollowUserId") == 0){ lua_pushnumber(L, 0); return 1; }
@@ -1102,6 +1145,10 @@ static int godot_object_index(lua_State* L) {
             wrap_node(L, players_svc->get_local_player()); return 1;
         }
         if (strcmp(key, "MaxPlayers") == 0) { lua_pushnumber(L, players_svc->get_max_players()); return 1; }
+        // Respawn automatico (1.15): antes ninguna de las dos existia, asi que al
+        // morir el jugador se quedaba tirado en el suelo para siempre.
+        if (strcmp(key, "RespawnTime") == 0) { lua_pushnumber(L, players_svc->get_respawn_time()); return 1; }
+        if (strcmp(key, "CharacterAutoLoads") == 0) { lua_pushboolean(L, players_svc->get_character_auto_loads() ? 1 : 0); return 1; }
         if (strcmp(key, "NumPlayers") == 0) {
             TypedArray<Node> pl = players_svc->get_players();
             lua_pushnumber(L, pl.size()); return 1;
@@ -3180,6 +3227,13 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key,"Enabled")  == 0) { lua_pushboolean(L, spwn->get_enabled()); return 1; }
         if (strcmp(key,"Duration") == 0) { lua_pushnumber(L, spwn->get_duration()); return 1; }
         if (strcmp(key,"Neutral")  == 0) { lua_pushboolean(L, spwn->get_neutral()); return 1; }
+        if (strcmp(key,"TeamColor") == 0) { push_brickcolor(L, spwn->get_team_color()); return 1; }
+        if (strcmp(key,"AllowTeamChangeOnTouch") == 0) { lua_pushboolean(L, spwn->get_allow_team_change()); return 1; }
+    }
+
+    // ── Team (1.15): TeamColor es un BrickColor, no un número ─────────
+    if (n->is_class("Team")) {
+        if (strcmp(key,"TeamColor") == 0) { push_brickcolor(L, String(n->get("TeamColor"))); return 1; }
     }
 
     // ── BillboardGui ──────────────────────────────────────────────────
@@ -3460,10 +3514,15 @@ static int godot_object_newindex_impl(lua_State* L) {
     // ahora LocalPlayer es el Player. Se aceptan aquí para no romper scripts
     // (p.ej. el CameraModule incluido hace LocalPlayer.CameraMode = mode).
     if (PlayerObject* plr = Object::cast_to<PlayerObject>(n)) {
+        // Enum.CameraMode: 0 Classic, 1 LockFirstPerson. Antes esto se reenviaba a
+        // RobloxPlayer::set_camera_mode, que NO es lo mismo: ahi camera_mode es el
+        // estilo de seguimiento (Fija/Suave/Combinada) y ademas clampa a 1..3, asi
+        // que Classic(0) se convertia en 1 y LockFirstPerson no bloqueaba nada.
         if (strcmp(key, "CameraMode") == 0) {
             plr->camera_mode = (int)luaL_checknumber(L, 3);
             Node* ch = plr->get_character();
-            if (ch && ch->has_method("set_camera_mode")) ch->call("set_camera_mode", plr->camera_mode);
+            if (ch && ch->has_method("set_lock_first_person"))
+                ch->call("set_lock_first_person", plr->camera_mode == 1);
             return 0;
         }
         if (strcmp(key, "DisplayName") == 0) { plr->display_name = String(luaL_checkstring(L, 3)); return 0; }
@@ -3485,7 +3544,19 @@ static int godot_object_newindex_impl(lua_State* L) {
             }
             return 0;
         }
-        if (strcmp(key, "TeamColor") == 0) { plr->team_color = (int)luaL_checknumber(L, 3); return 0; }
+        // player.TeamColor = BrickColor.new("Bright red") mete al jugador en el
+        // Team de ese color, como Roblox (antes solo guardaba un int en un campo
+        // que no leía nadie). Si no hay Team con ese color, se queda el color.
+        if (strcmp(key, "TeamColor") == 0) {
+            String name = read_brickcolor_name(L, 3);
+            if (name.is_empty()) return 0;
+            plr->team_color = name;
+            Node* t = _gl_find_team_by_color(plr, name);
+            plr->team_id = t ? (uint64_t)t->get_instance_id() : 0;
+            if (Node* ns = _gl_find_network_service(plr))
+                ns->call("net_set_team", (Object*)plr, (Object*)t);
+            return 0;
+        }
         if (strcmp(key, "CameraMinZoomDistance") == 0 || strcmp(key, "CameraMaxZoomDistance") == 0 ||
             strcmp(key, "AutoJumpEnabled") == 0 || strcmp(key, "DevComputerMovementMode") == 0 ||
             strcmp(key, "DevTouchMovementMode") == 0 || strcmp(key, "DevCameraOcclusionMode") == 0 ||
@@ -3520,10 +3591,8 @@ static int godot_object_newindex_impl(lua_State* L) {
     if (strcmp(key, "Position") == 0) {
         LuauVector3* vec = check_vector3(L, 3);
         Node3D* n3d = Object::cast_to<Node3D>(n);
-        if (vec && n3d) {
-            if (n3d->is_inside_tree()) n3d->set_global_position(Vector3(vec->x, vec->y, vec->z));
-            else n3d->set_position(Vector3(vec->x, vec->y, vec->z));
-        }
+        // Si es el HumanoidRootPart, mueve al personaje entero (como Roblox).
+        if (vec && n3d) gl_set_part_global_position(n3d, Vector3(vec->x, vec->y, vec->z));
         return 0;
     }
 
@@ -3557,8 +3626,8 @@ static int godot_object_newindex_impl(lua_State* L) {
             t.basis.rows[0] = Vector3(m00, m01, m02);
             t.basis.rows[1] = Vector3(m10, m11, m12);
             t.basis.rows[2] = Vector3(m20, m21, m22);
-            if (n3d_cf->is_inside_tree()) n3d_cf->set_global_transform(t);
-            else n3d_cf->set_transform(t);
+            // Si es el HumanoidRootPart, mueve al personaje entero (como Roblox).
+            gl_set_part_global_transform(n3d_cf, t);
         }
         return 0;
     }
@@ -3656,7 +3725,7 @@ static int godot_object_newindex_impl(lua_State* L) {
         }
         if (strcmp(key, "Position") == 0) {
             LuauVector3* v = check_vector3(L, 3);
-            if (v) part->set_global_position(Vector3(v->x, v->y, v->z));
+            if (v) gl_set_part_global_position(part, Vector3(v->x, v->y, v->z));
             return 0;
         }
         if (strcmp(key, "Orientation") == 0) {
@@ -3997,6 +4066,28 @@ static int godot_object_newindex_impl(lua_State* L) {
         if (strcmp(key,"Enabled")  == 0) { spwn_w->set_enabled(lua_toboolean(L,3)!=0);           return 0; }
         if (strcmp(key,"Duration") == 0) { spwn_w->set_duration((float)luaL_checknumber(L,3));    return 0; }
         if (strcmp(key,"Neutral")  == 0) { spwn_w->set_neutral(lua_toboolean(L,3)!=0);            return 0; }
+        if (strcmp(key,"AllowTeamChangeOnTouch") == 0) { spwn_w->set_allow_team_change(lua_toboolean(L,3)!=0); return 0; }
+        if (strcmp(key,"TeamColor") == 0) {
+            String name = read_brickcolor_name(L, 3);
+            if (!name.is_empty()) spwn_w->set_team_color(name);
+            return 0;
+        }
+    }
+
+    // ── Team (1.15): acepta BrickColor / nombre / número ───────────────
+    if (n->is_class("Team")) {
+        if (strcmp(key,"TeamColor") == 0) {
+            String name = read_brickcolor_name(L, 3);
+            if (!name.is_empty()) n->set("TeamColor", name);
+            return 0;
+        }
+    }
+
+    // ── Players (1.15): ajustes del respawn automático ─────────────────
+    if (Players* players_w = Object::cast_to<Players>(n)) {
+        if (strcmp(key,"RespawnTime") == 0) { players_w->set_respawn_time(luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key,"CharacterAutoLoads") == 0) { players_w->set_character_auto_loads(lua_toboolean(L,3)!=0); return 0; }
+        if (strcmp(key,"MaxPlayers") == 0) { players_w->set_max_players((int)luaL_checknumber(L,3)); return 0; }
     }
 
     // ── BillboardGui newindex ─────────────────────────────────────────
@@ -4242,6 +4333,7 @@ static int godot_instance_new(lua_State* L) {
     if (nn) {
         nn->set_name(cls);
         wrap_node(L, nn);
+        gl_track_orphan(nn);   // si nunca se le pone padre, se libera al cerrar
 
         if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
             GodotObjectWrapper* p_wrap = (GodotObjectWrapper*)lua_touserdata(L, 2);

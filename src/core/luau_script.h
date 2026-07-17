@@ -1300,6 +1300,13 @@ public:
     void iniciar_corrutina() {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (get_class() == "ModuleScript") return;
+        // Plantillas (1.15): lo que vive dentro de un Starter* NO se ejecuta, solo
+        // su clon. Sin esto corrían los dos: original + clon.
+        if (gl_in_template_container(this)) {
+            GL_DEBUG_PRINT("[GodotLuau] Script '", get_name(), "' no ejecutado: es una PLANTILLA (dentro de ",
+                           get_parent() ? String(get_parent()->get_name()) : String("?"), "). Corre su clon.");
+            return;
+        }
         // Modelo server-authoritative (1.14.5): un ServerScript solo corre cuando
         // esta ventana es CONFIRMADAMENTE el servidor (gl_net_role()==1). En una
         // sesión de red (cliente O servidor cuyo rol aún se está fijando) se
@@ -2133,6 +2140,7 @@ public:
             Node* node  = Object::cast_to<Node>(obj);
             if (!node) { if (obj) memdelete(obj); lua_pushnil(L); return 1; }
             wrap_node(L, node);
+            gl_track_orphan(node);   // sin padre = lo libera el cierre (1.15)
             return 1;
         }, "_InstanceNew");
         lua_setglobal(L_main, "_InstanceNew");

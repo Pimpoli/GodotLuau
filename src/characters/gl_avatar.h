@@ -95,7 +95,12 @@ public:
         idle_t += (float)dt;
 
         walk_amp = Math::lerp(walk_amp, moving ? (float)(0.9 * Math::max(in_speed, 0.5)) : 0.0f, k);
-        air_amp  = Math::lerp(air_amp,  in_air ? 1.0f : 0.0f, k);
+        // Salto (1.15): el gesto entra rapido y SALE rapido al aterrizar. Antes
+        // subida y bajada compartian la misma constante (~0.16 s), asi que los
+        // brazos seguian arriba casi medio segundo despues de tocar el suelo: el
+        // salto no dura mas, lo que dura de mas es la postura.
+        float air_k = 1.0f - Math::exp(-(in_air ? 22.0f : 16.0f) * (float)dt);
+        air_amp  = Math::lerp(air_amp, in_air ? 1.0f : 0.0f, air_k);
 
         float swing = Math::sin(phase) * walk_amp;
         float idle_sway = Math::sin(idle_t * 1.6f) * 0.025f;   // respiracion sutil

@@ -283,6 +283,47 @@ public:
         return nullptr;
     }
 
+    void _collect_spawns_r(Node* n, std::vector<SpawnLocation*>& out) {
+        if (!n) return;
+        if (SpawnLocation* s = Object::cast_to<SpawnLocation>(n)) { out.push_back(s); return; }
+        for (int i = 0; i < n->get_child_count(); i++) _collect_spawns_r(n->get_child(i), out);
+    }
+
+    // Elige el spawn del jugador según su equipo (1.15). Antes se cogía SIEMPRE
+    // el primer SpawnLocation del árbol, así que en un juego por equipos todos
+    // aparecían en el mismo sitio y había que recolocarlos a mano. Regla de
+    // Roblox: un spawn con Neutral=true acepta a cualquiera; con Neutral=false
+    // solo a quien tenga su TeamColor. Entre los válidos se elige al azar.
+    SpawnLocation* _pick_spawn_for_local_player() {
+        std::vector<SpawnLocation*> all;
+        _collect_spawns_r(this, all);
+        if (all.empty()) return nullptr;
+
+        String team_color;
+        if (Node* dm = get_parent()) {
+            if (Node* players = dm->get_node_or_null("Players")) {
+                for (int i = 0; i < players->get_child_count(); i++) {
+                    Node* po = players->get_child(i);
+                    if (!po || !po->is_class("PlayerObject")) continue;
+                    if (!po->has_method("_gl_is_local") || !(bool)po->call("_gl_is_local")) continue;
+                    team_color = String(po->call("_gl_team_color_name"));
+                    break;
+                }
+            }
+        }
+
+        std::vector<SpawnLocation*> ok;
+        for (SpawnLocation* s : all) {
+            if (!s->get_enabled()) continue;
+            if (s->get_neutral() || (!team_color.is_empty() && s->get_team_color() == team_color))
+                ok.push_back(s);
+        }
+        // Sin spawn válido para su equipo: mejor aparecer en cualquiera que caer
+        // al vacío en (0,5,0) sin explicación.
+        std::vector<SpawnLocation*>& pool = ok.empty() ? all : ok;
+        return pool[(int)(UtilityFunctions::randi() % pool.size())];
+    }
+
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
 
@@ -371,9 +412,9 @@ public:
         //// ── 2. Crear el personaje del jugador ────────────────────────────────────
         RobloxPlayer* p = memnew(RobloxPlayer);
         p->set_name("LocalPlayer");
-        // Spawnear sobre el primer SpawnLocation del Workspace (como Roblox)
+        // Spawnear en un SpawnLocation acorde a su equipo (como Roblox)
         Vector3 spawn_pos(0, 5, 0);
-        if (SpawnLocation* sl = _find_spawn_r(this)) spawn_pos = sl->get_spawn_position();
+        if (SpawnLocation* sl = _pick_spawn_for_local_player()) spawn_pos = sl->get_spawn_position();
         p->set_position(spawn_pos);
         add_child(p);
 

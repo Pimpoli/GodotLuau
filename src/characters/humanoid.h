@@ -460,6 +460,13 @@ public:
                 move_dir.y = 0;
             }
 
+            // Primera persona (1.15): el cuerpo mira SIEMPRE hacia donde apunta
+            // la camara, tambien parado y andando hacia atras. Antes giraba hacia
+            // la direccion del movimiento tambien aqui, asi que pulsar S te daba
+            // la vuelta en vez de andar de espaldas.
+            bool first_person = body->has_method("_gl_is_first_person")
+                             && (bool)body->call("_gl_is_first_person");
+
             // Velocidad horizontal OBJETIVO (0 si no hay input).
             Vector3 target_h(0.0f, 0.0f, 0.0f);
             if (move_dir.length_squared() > 0.01f) {
@@ -474,7 +481,7 @@ public:
                 // como Roblox. Suavizado exponencial: independiente de los FPS y
                 // SIN sobre-girar (el factor nunca pasa de 1). Antes usaba
                 // 16*delta, que con FPS bajos podia pasar de 1 y "latigar".
-                if (auto_rotate) {
+                if (auto_rotate && !first_person) {
                     float target_angle = (float)Math::atan2((double)-move_dir.x, (double)-move_dir.z);
                     Vector3 cur_rot = body->get_rotation();
                     float t = 1.0f - Math::exp(-turn_speed * (float)delta);
@@ -482,6 +489,14 @@ public:
                         (double)cur_rot.y, (double)target_angle, (double)t);
                     body->set_rotation(cur_rot);
                 }
+            }
+
+            // En primera persona el giro es INSTANTANEO y va pegado a la camara
+            // (Roblox lo bloquea ahi); suavizarlo se sentiria como un retraso.
+            if (auto_rotate && first_person && body->has_method("_gl_camera_yaw")) {
+                Vector3 cur_rot = body->get_rotation();
+                cur_rot.y = (float)(double)body->call("_gl_camera_yaw");
+                body->set_rotation(cur_rot);
             }
 
             // Aceleracion/desaceleracion suave hacia la velocidad objetivo, estilo

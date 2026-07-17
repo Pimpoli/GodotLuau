@@ -126,6 +126,7 @@ private:
     // ── Camera mode ────────────────────────────────────────────────
     //// ── Modo de cámara ──────────────────────────────────────────────
     int camera_mode = 1;
+    bool lock_first_person = false;   // Enum.CameraMode.LockFirstPerson (1.15)
 
     // For mode 3: detect if the player is moving
     //// Para el modo 3: detectar si el jugador se está moviendo
@@ -168,6 +169,10 @@ protected:
         ClassDB::bind_method(D_METHOD("get_camera_mode"),         &RobloxPlayer::get_camera_mode);
         ClassDB::bind_method(D_METHOD("set_mouse_sensitivity", "s"), &RobloxPlayer::set_mouse_sensitivity);
         ClassDB::bind_method(D_METHOD("get_mouse_sensitivity"),      &RobloxPlayer::get_mouse_sensitivity);
+        ClassDB::bind_method(D_METHOD("_gl_is_first_person"),        &RobloxPlayer::_gl_is_first_person);
+        ClassDB::bind_method(D_METHOD("_gl_camera_yaw"),             &RobloxPlayer::_gl_camera_yaw);
+        ClassDB::bind_method(D_METHOD("set_lock_first_person","v"),  &RobloxPlayer::set_lock_first_person);
+        ClassDB::bind_method(D_METHOD("get_lock_first_person"),      &RobloxPlayer::get_lock_first_person);
 
         ADD_GROUP("Camara","");
         ADD_PROPERTY(PropertyInfo(Variant::INT,"CameraMode",PROPERTY_HINT_ENUM,
@@ -217,6 +222,19 @@ public:
     int   get_camera_mode() const      { return camera_mode; }
     void  set_mouse_sensitivity(float s){ mouse_sensitivity = s; }
     float get_mouse_sensitivity() const{ return mouse_sensitivity; }
+    // Para el Humanoid (1.15): en primera persona el cuerpo se pega al yaw de la
+    // camara en vez de girar hacia el movimiento. OJO: camera_mode de esta clase
+    // es el estilo de seguimiento (Fija/Suave/Combinada), NO el Enum.CameraMode
+    // de Roblox; ese llega por set_lock_first_person.
+    bool  _gl_is_first_person() const { return target_zoom < 0.6f || lock_first_person; }
+    double _gl_camera_yaw() const { return pivot_h ? (double)pivot_h->get_rotation().y : 0.0; }
+    // Enum.CameraMode.LockFirstPerson: fuerza y mantiene la primera persona.
+    void set_lock_first_person(bool v) {
+        lock_first_person = v;
+        if (v) target_zoom = 0.5f;
+        else if (target_zoom < 0.6f) target_zoom = 10.0f;
+    }
+    bool get_lock_first_person() const { return lock_first_person; }
 
     // ── Player identity ────────────────────────────────────────────
     void   set_user_id(int id)                  { user_id = id; }

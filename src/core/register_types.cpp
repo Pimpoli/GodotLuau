@@ -281,10 +281,25 @@ void uninitialize_luau_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
         if (Engine::get_singleton()->has_meta("_godotluau_wm"))
             Engine::get_singleton()->remove_meta("_godotluau_wm");
-        if (luau_loader.is_valid())
+        // Caches estaticos de materiales: se sueltan AQUI, mientras el
+        // RenderingServer sigue vivo. Al vivir en un static local, si no se
+        // vacian se destruyen al descargar la DLL, cuando el servidor ya no
+        // esta: sus RID quedan fugados y ~BaseMaterial3D suelta errores.
+        gl_shared_materials().clear();
+        RobloxTerrain::_gl_clear_material_cache();
+        // Quitarlos del ResourceLoader/Saver NO basta: estos Ref son ESTATICOS y
+        // seguian sujetando su referencia, asi que los dos objetos vivian hasta la
+        // descarga de la DLL — despues de que Godot cuente los objetos vivos. De
+        // ahi el "2 ObjectDB instances were leaked at exit" de cada ejecucion.
+        // Soltarlos aqui los destruye a tiempo.
+        if (luau_loader.is_valid()) {
             ResourceLoader::get_singleton()->remove_resource_format_loader(luau_loader);
-        if (luau_saver.is_valid())
+            luau_loader.unref();
+        }
+        if (luau_saver.is_valid()) {
             ResourceSaver::get_singleton()->remove_resource_format_saver(luau_saver);
+            luau_saver.unref();
+        }
     }
     if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
         if (luau_lang) {

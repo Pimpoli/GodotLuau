@@ -124,7 +124,9 @@ Enum = {
     ZIndexBehavior = { Global = 0, Sibling = 1 },
     SoundPriority = { Ambient = 0, Music = 1, Sfx = 2, Voice = 3 },
     RollOffMode = { Linear = 0, Inverse = 1, LinearSquare = 2, InverseTapered = 3 },
-    TeamColor = { BrightRed = 0, BrightBlue = 1, BrightYellow = 2, BrightGreen = 3, White = 4, Black = 5 },
+    -- Enum.TeamColor NO existe en Roblox: era inventado y sus valores (0..5) no
+    -- son numeros de BrickColor, asi que ahora caerian en gris en silencio.
+    -- Se usa BrickColor.new("Bright red"), como en Roblox.
     ForceLimitMode = { Magnitude = 0, PerAxis = 1 },
     FormFactor = { Symmetric = 0, Brick = 1, Plate = 2, Custom = 3 },
     MessageType = { MessageOutput = 0, MessageInfo = 1, MessageWarning = 2, MessageError = 3 },
@@ -1849,40 +1851,116 @@ end
 -- ══════════════════════════════════════════════════════════════════════
 BrickColor = {}
 BrickColor.__index = BrickColor
-local _bc_palette = {
-    White=Color3.new(0.94,0.94,0.94), LightGrey=Color3.new(0.78,0.78,0.78),
-    Grey=Color3.new(0.63,0.65,0.64),  DarkGrey=Color3.new(0.42,0.42,0.42),
-    Black=Color3.new(0.10,0.10,0.10), Red=Color3.new(0.77,0.16,0.11),
-    DarkRed=Color3.new(0.47,0.08,0.05), BrightRed=Color3.new(0.77,0.16,0.11),
-    Orange=Color3.new(0.86,0.52,0.13), BrightOrange=Color3.new(0.86,0.52,0.13),
-    Yellow=Color3.new(0.99,0.86,0.00), BrightYellow=Color3.new(0.99,0.86,0.00),
-    Lime=Color3.new(0.62,0.95,0.13), BrightGreen=Color3.new(0.29,0.59,0.29),
-    Green=Color3.new(0.29,0.59,0.29), DarkGreen=Color3.new(0.16,0.40,0.16),
-    Cyan=Color3.new(0.01,0.80,0.80), BrightCyan=Color3.new(0.01,0.80,0.80),
-    Blue=Color3.new(0.16,0.27,0.66), BrightBlue=Color3.new(0.05,0.41,0.67),
-    DarkBlue=Color3.new(0.07,0.13,0.47), Magenta=Color3.new(0.64,0.31,0.63),
-    Pink=Color3.new(0.91,0.62,0.74), Tan=Color3.new(0.84,0.77,0.62),
-    Brown=Color3.new(0.49,0.35,0.24), Sand=Color3.new(0.75,0.72,0.60),
+-- Paleta con los nombres y numeros REALES de Roblox. Antes las claves eran
+-- "BrightRed" (sin espacio) y Number siempre 0, asi que BrickColor.new("Bright red")
+-- -- el nombre que usa Roblox de verdad -- caia al gris por defecto y dos colores
+-- distintos comparaban iguales. Es un SUBCONJUNTO (los ~1500 de Roblox no estan):
+-- los de equipo y los de uso comun. Un nombre desconocido cae a Medium stone grey
+-- como en Roblox. {Nombre, Numero, R, G, B}
+local _bc_list = {
+    {"White",1,242,243,243}, {"Grey",2,161,165,162}, {"Light yellow",3,249,233,153},
+    {"Brick yellow",5,215,197,154}, {"Light green (Mint)",6,194,218,184},
+    {"Light reddish violet",9,232,186,200}, {"Pastel Blue",11,128,187,219},
+    {"Nougat",18,204,142,105}, {"Bright red",21,196,40,28}, {"Bright blue",23,13,105,172},
+    {"Bright yellow",24,245,205,48}, {"Earth orange",25,124,92,70}, {"Black",26,27,42,53},
+    {"Dark grey",27,109,110,108}, {"Dark green",28,40,127,71}, {"Medium green",29,161,196,140},
+    {"Bright green",37,75,151,75}, {"Dark orange",38,160,95,53}, {"Light bluish violet",39,193,202,222},
+    {"Light blue",45,180,210,228}, {"Light red",100,238,196,182}, {"Medium red",101,218,134,122},
+    {"Medium blue",102,110,153,202}, {"Light grey",103,199,193,183}, {"Bright violet",104,107,50,124},
+    {"Bright orange",106,218,133,65}, {"Bright bluish green",107,0,143,156},
+    {"Earth yellow",108,104,92,67}, {"Bright bluish violet",110,67,84,147},
+    {"Medium bluish violet",112,104,116,172}, {"Med. yellowish green",115,199,210,60},
+    {"Med. bluish green",116,85,165,175}, {"Light bluish green",118,183,215,213},
+    {"Br. yellowish green",119,164,189,71}, {"Lig. yellowish green",120,217,228,167},
+    {"Light orange",125,234,184,146}, {"Gold",127,220,188,129}, {"Silver",131,156,163,168},
+    {"Neon orange",133,213,115,61}, {"Neon green",134,216,221,86}, {"Sand blue",135,116,134,157},
+    {"Medium orange",137,224,152,100}, {"Sand yellow",138,149,138,115}, {"Earth blue",140,32,58,86},
+    {"Earth green",141,39,70,45}, {"Sand green",151,120,144,130}, {"Sand red",153,149,121,119},
+    {"Dark red",154,123,46,47}, {"Reddish brown",192,105,64,40}, {"Medium stone grey",194,163,162,165},
+    {"Royal blue",195,70,103,164}, {"Dark stone grey",199,99,95,98}, {"Light stone grey",208,229,228,223},
+    {"Brown",217,124,92,70}, {"Bright purple",221,196,112,160}, {"Light purple",222,229,173,200},
+    {"Light pink",223,224,178,208}, {"Cool yellow",226,253,234,141}, {"Slime green",301,80,109,84},
+    {"Smoky grey",302,91,93,105}, {"Dark blue",303,0,16,176}, {"Parsley green",304,44,101,29},
+    {"Sea green",309,52,142,64}, {"Shamrock",310,91,154,76}, {"Forest green",313,31,128,29},
+    {"Electric blue",315,9,137,207}, {"Moss",317,124,156,107}, {"Crimson",327,151,0,0},
+    {"Mint",328,177,229,166}, {"Baby blue",329,152,194,219}, {"Carnation pink",330,255,152,220},
+    {"Persimmon",331,255,89,89}, {"Maroon",332,117,0,0}, {"Gold",333,239,184,56},
+    {"Daisy orange",334,248,217,109}, {"Pearl",335,231,231,236}, {"Fog",336,199,212,228},
+    {"Salmon",337,255,148,148}, {"Terra Cotta",338,190,104,98}, {"Cocoa",339,86,36,36},
+    {"Wheat",340,241,231,199}, {"Buttermilk",341,254,243,187}, {"Mauve",342,224,178,208},
+    {"Sunrise",343,212,144,189}, {"Tawny",344,150,85,85}, {"Rust",345,143,76,42},
+    {"Cashmere",346,211,190,150}, {"Khaki",347,226,220,188}, {"Lily white",348,237,234,234},
+    {"Seashell",349,233,218,218}, {"Burgundy",350,136,62,62}, {"Cork",351,188,155,93},
+    {"Burlap",352,199,172,120}, {"Beige",353,202,191,163}, {"Oyster",354,187,179,178},
+    {"Pine Cone",355,108,88,75}, {"Fawn brown",356,160,132,79}, {"Hurricane grey",357,149,137,136},
+    {"Cloudy grey",358,171,168,158}, {"Linen",359,175,148,131}, {"Copper",360,150,103,102},
+    {"Dirt brown",361,86,66,54}, {"Bronze",362,126,104,63}, {"Flint",363,109,110,108},
+    {"Dark taupe",364,90,76,66}, {"Burnt Sienna",365,106,57,9},
+    {"Institutional white",1001,248,248,248}, {"Mid gray",1002,205,205,205},
+    {"Really black",1003,17,17,17}, {"Really red",1004,255,0,0}, {"Deep orange",1005,255,176,0},
+    {"Alder",1006,180,128,255}, {"Dusty Rose",1007,163,75,75}, {"Olive",1008,193,190,66},
+    {"New Yeller",1009,255,255,0}, {"Really blue",1010,0,0,255}, {"Navy blue",1011,0,32,96},
+    {"Deep blue",1012,33,84,185}, {"Cyan",1013,4,175,236}, {"CGA brown",1014,170,85,0},
+    {"Magenta",1015,170,0,170}, {"Pink",1016,255,102,204}, {"Teal",1018,18,238,212},
+    {"Toothpaste",1019,0,255,255}, {"Lime green",1020,0,255,0}, {"Camo",1021,58,125,21},
+    {"Grime",1022,127,142,100}, {"Lavender",1023,140,91,159}, {"Pastel light blue",1024,175,221,255},
+    {"Pastel orange",1025,255,201,201}, {"Pastel violet",1026,177,167,255},
+    {"Pastel blue-green",1027,159,243,233}, {"Pastel green",1028,204,255,204},
+    {"Pastel yellow",1029,255,255,204}, {"Pastel brown",1030,255,204,153},
+    {"Royal purple",1031,98,37,209}, {"Hot pink",1032,255,0,191},
 }
-function BrickColor.new(v)
-    local color
-    if type(v) == "string" then
-        color = _bc_palette[v] or Color3.new(0.63,0.65,0.64)
-        return setmetatable({ Name=v, Color=color, Number=0 }, BrickColor)
-    elseif type(v) == "number" then
-        return setmetatable({ Name="Color"..v, Color=Color3.new(0.63,0.65,0.64), Number=v }, BrickColor)
+local _bc_by_name, _bc_by_num = {}, {}
+for _, e in ipairs(_bc_list) do
+    local entry = { name = e[1], num = e[2], color = Color3.fromRGB(e[3], e[4], e[5]) }
+    if not _bc_by_name[e[1]] then _bc_by_name[e[1]] = entry end
+    if not _bc_by_num[e[2]]  then _bc_by_num[e[2]]  = entry end
+    -- Alias en CamelCase ("Bright red" -> "BrightRed"): es como se llamaban antes
+    -- las claves, asi que el codigo ya escrito contra la paleta vieja sigue
+    -- funcionando. Se pasa a mayuscula la inicial de cada palabra, no basta con
+    -- quitar el espacio (eso daria "Brightred").
+    local squashed = e[1]:gsub("[%.%(%)%-]", ""):gsub("%s+(%a)", string.upper):gsub("%s", "")
+    if not _bc_by_name[squashed] then _bc_by_name[squashed] = entry end
+end
+local function _bc_make(entry)
+    local c = entry.color
+    return setmetatable({ Name = entry.name, Number = entry.num, Color = c,
+                          r = c.R, g = c.G, b = c.B }, BrickColor)
+end
+function BrickColor.new(v, g, b)
+    if type(v) == "number" and type(g) == "number" and type(b) == "number" then
+        return BrickColor.new(Color3.new(v, g, b))
     end
-    return setmetatable({ Name="Medium stone grey", Color=Color3.new(0.63,0.65,0.64), Number=0 }, BrickColor)
+    if type(v) == "string" then
+        return _bc_make(_bc_by_name[v] or _bc_by_name["Medium stone grey"])
+    elseif type(v) == "number" then
+        return _bc_make(_bc_by_num[v] or _bc_by_name["Medium stone grey"])
+    elseif typeof(v) == "Color3" then
+        -- Color3 -> el BrickColor mas cercano de la paleta (como Roblox).
+        local best, bd = nil, math.huge
+        for _, e in ipairs(_bc_list) do
+            local dr, dg, db = v.R - (e[3]/255), v.G - (e[4]/255), v.B - (e[5]/255)
+            local d = dr*dr + dg*dg + db*db
+            if d < bd then bd, best = d, e end
+        end
+        return _bc_make(_bc_by_name[best[1]])
+    end
+    return _bc_make(_bc_by_name["Medium stone grey"])
 end
-function BrickColor.random()
-    local names={}; for k in pairs(_bc_palette) do table.insert(names,k) end
-    return BrickColor.new(names[math.random(1,#names)])
-end
-function BrickColor.palette(index)
-    local names={}; for k in pairs(_bc_palette) do table.insert(names,k) end
-    return BrickColor.new(names[((index or 1)-1)%#names+1])
-end
+function BrickColor.random() return _bc_make(_bc_by_name[_bc_list[math.random(1, #_bc_list)][1]]) end
+function BrickColor.palette(index) return _bc_make(_bc_by_name[_bc_list[((index or 1) - 1) % #_bc_list + 1][1]]) end
 function BrickColor:__tostring() return self.Name end
+-- Sin esto dos BrickColor del mismo color comparaban distinto (son tablas), que
+-- es justo la comparacion que hace falta para casar un SpawnLocation con un Team.
+function BrickColor.__eq(a, b) return a.Number == b.Number and a.Name == b.Name end
+-- Constructores con nombre de Roblox: BrickColor.Red(), BrickColor.Blue()...
+BrickColor.White  = function() return BrickColor.new("White")  end
+BrickColor.Gray   = function() return BrickColor.new("Medium stone grey") end
+BrickColor.Black  = function() return BrickColor.new("Black")  end
+BrickColor.Red    = function() return BrickColor.new("Bright red")    end
+BrickColor.Yellow = function() return BrickColor.new("Bright yellow") end
+BrickColor.Green  = function() return BrickColor.new("Dark green")    end
+BrickColor.Blue   = function() return BrickColor.new("Bright blue")   end
+BrickColor.DarkGray = function() return BrickColor.new("Dark stone grey") end
 
 )LUAU"
 R"LUAU(
