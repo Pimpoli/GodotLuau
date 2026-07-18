@@ -23,6 +23,7 @@ ModuleScript = "res://GodotLuau/icons/ModuleScript.svg"
 RobloxPlayer = "res://GodotLuau/icons/RobloxPlayer.svg"
 RobloxPlayer2D = "res://GodotLuau/icons/RobloxPlayer2D.svg"
 RobloxPart = "res://GodotLuau/icons/RobloxPart.svg"
+Part = "res://GodotLuau/icons/RobloxPart.svg"
 Humanoid = "res://GodotLuau/icons/Humanoid.svg"
 Humanoid2D = "res://GodotLuau/icons/Humanoid2D.svg"
 

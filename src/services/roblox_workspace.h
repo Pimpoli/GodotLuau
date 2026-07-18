@@ -1,6 +1,7 @@
 #ifndef ROBLOX_WORKSPACE_H
 #define ROBLOX_WORKSPACE_H
 
+#include <vector>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include "roblox_network.h"
@@ -51,6 +52,18 @@ private:
     bool  streaming_enabled            = false;
     float air_density                  = 0.0f;
     bool  touches_use_collision_groups = false;
+
+    // ── Muerte por vacío (1.15) ──────────────────────────────────────────
+    // Antes caer no hacía nada: el jugador atravesaba el suelo y seguía cayendo
+    // para siempre. En Roblox FallenPartsDestroyHeight destruye lo que cae por
+    // debajo (y mata al personaje cuyo HRP baja de ahí). Aquí, además, se puede
+    // AUTODETECTAR: tomar la Y del objeto ANCLADO más bajo del mundo y restarle
+    // un margen — así funciona en cualquier mapa sin calcular la altura a mano.
+    // Configurable: apagar el auto y usar el límite fijo, o cambiar el margen.
+    bool  auto_fall_height     = true;    // true = calcular desde el mapa
+    float fall_height_margin   = 150.0f;  // se resta a la Y anclada más baja
+    double _fall_scan_timer     = 0.0;    // recomputar el suelo cada ~1s, no por frame
+    float  _fall_effective      = -500.0f; // umbral vigente (cache)
 
     void _apply_gravity() {
         if (!is_inside_tree()) return;
@@ -134,6 +147,10 @@ protected:
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
         ClassDB::bind_method(D_METHOD("get_fallen_parts_destroy_height"),      &RobloxWorkspace::get_fallen_parts_destroy_height);
+        ClassDB::bind_method(D_METHOD("set_auto_fall_height","b"),             &RobloxWorkspace::set_auto_fall_height);
+        ClassDB::bind_method(D_METHOD("get_auto_fall_height"),                 &RobloxWorkspace::get_auto_fall_height);
+        ClassDB::bind_method(D_METHOD("set_fall_height_margin","m"),           &RobloxWorkspace::set_fall_height_margin);
+        ClassDB::bind_method(D_METHOD("get_fall_height_margin"),               &RobloxWorkspace::get_fall_height_margin);
         ClassDB::bind_method(D_METHOD("set_streaming_enabled","b"),            &RobloxWorkspace::set_streaming_enabled);
         ClassDB::bind_method(D_METHOD("get_streaming_enabled"),                &RobloxWorkspace::get_streaming_enabled);
         ClassDB::bind_method(D_METHOD("set_air_density","d"),                  &RobloxWorkspace::set_air_density);
@@ -146,6 +163,10 @@ protected:
             "set_gravity","get_gravity");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"FallenPartsDestroyHeight",PROPERTY_HINT_RANGE,"-10000,0,1"),
             "set_fallen_parts_destroy_height","get_fallen_parts_destroy_height");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"AutoFallHeight"),
+            "set_auto_fall_height","get_auto_fall_height");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"FallHeightMargin",PROPERTY_HINT_RANGE,"0,5000,1"),
+            "set_fall_height_margin","get_fall_height_margin");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"StreamingEnabled"),
             "set_streaming_enabled","get_streaming_enabled");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"AirDensity",PROPERTY_HINT_RANGE,"0,10,0.01"),
@@ -266,8 +287,24 @@ public:
     // ── Getters / Setters (properties match Roblox Workspace API) ─
     void  set_gravity(float g)                     { gravity = Math::max(g, 0.0f); _apply_gravity(); }
     float get_gravity() const                      { return gravity; }
-    void  set_fallen_parts_destroy_height(float h) { fallen_parts_destroy_height = h; }
+    // Fijar la altura a mano = quiero un límite FIJO (apaga el auto), como pedir
+    // explícitamente ese valor. Durante la carga de escena el nodo aún no está
+    // "ready" y solo se restaura el valor guardado (sin intención del usuario),
+    // así que ahí NO se toca el auto; tras ready, un setter sí es intención.
+    void  set_fallen_parts_destroy_height(float h) {
+        fallen_parts_destroy_height = h;
+        _fall_effective = h;
+        if (is_node_ready()) auto_fall_height = false;
+    }
     float get_fallen_parts_destroy_height() const  { return fallen_parts_destroy_height; }
+    void  set_auto_fall_height(bool b)   { auto_fall_height = b; }
+    bool  get_auto_fall_height() const   { return auto_fall_height; }
+    // Umbral VIGENTE (lo que ve un script): en auto es el calculado del mapa, no
+    // el -500 guardado. El getter de arriba se queda con el valor guardado para
+    // que la escena conserve el ajuste fijo del usuario.
+    float get_effective_fall_height() const { return auto_fall_height ? _fall_effective : fallen_parts_destroy_height; }
+    void  set_fall_height_margin(float m){ fall_height_margin = Math::max(m, 0.0f); }
+    float get_fall_height_margin() const { return fall_height_margin; }
     void  set_streaming_enabled(bool b)            { streaming_enabled = b; }
     bool  get_streaming_enabled() const            { return streaming_enabled; }
     void  set_air_density(float d)                 { air_density = Math::max(d, 0.0f); }
@@ -395,6 +432,90 @@ public:
         }
 
         build_local_character();
+        set_process(true);   // muerte por vacío (1.15)
+    }
+
+    // ── Muerte por vacío (1.15) ──────────────────────────────────────────
+    void _process(double delta) override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+
+        // Recalcular el umbral cada ~1s (no por frame: escanear el mapa entero
+        // sale caro y el suelo casi nunca cambia).
+        _fall_scan_timer -= delta;
+        if (_fall_scan_timer <= 0.0) {
+            _fall_scan_timer = 1.0;
+            if (auto_fall_height) {
+                bool found = false;
+                float lowest = 0.0f;
+                _scan_lowest_anchored(this, lowest, found);
+                // Sin geometría anclada (mapa solo de terreno o dinámico): mantener
+                // el fijo por defecto, para no matar a todos en +infinito.
+                _fall_effective = found ? (lowest - fall_height_margin) : fallen_parts_destroy_height;
+            } else {
+                _fall_effective = fallen_parts_destroy_height;
+            }
+        }
+
+        // Matar al personaje LOCAL si su HRP cae por debajo. Los muñecos remotos
+        // no se tocan aquí (los mata su propia máquina). El auto-respawn (F1.2)
+        // lo revive tras RespawnTime.
+        for (int i = 0; i < get_child_count(); i++) {
+            Node* ch = get_child(i);
+            if (!ch || !(ch->is_class("RobloxPlayer") || ch->is_class("RobloxPlayer2D"))) continue;
+            Node3D* ref = Object::cast_to<Node3D>(ch->get_node_or_null(NodePath("HumanoidRootPart")));
+            Node3D* body = ref ? ref : Object::cast_to<Node3D>(ch);
+            if (!body) continue;
+            if (body->get_global_position().y >= _fall_effective) continue;
+            Node* hum = ch->get_node_or_null(NodePath("Humanoid"));
+            if (hum && hum->has_method("get_health") && (double)hum->call("get_health") > 0.0)
+                hum->call("set_health", 0.0);
+        }
+
+        // Destruir Parts sueltas (no ancladas, fuera de un personaje) que caen por
+        // debajo — es lo que dice el nombre FallenPartsDestroyHeight en Roblox.
+        _destroy_fallen_parts(this);
+    }
+
+private:
+    void _scan_lowest_anchored(Node* n, float& lowest, bool& found) {
+        if (!n) return;
+        if (n->is_class("RobloxPart")) {
+            Variant anc = n->get("Anchored");
+            if (anc.get_type() == Variant::BOOL && (bool)anc) {
+                if (Node3D* p = Object::cast_to<Node3D>(n)) {
+                    float y = p->get_global_position().y;
+                    if (!found || y < lowest) { lowest = y; found = true; }
+                }
+            }
+        }
+        for (int i = 0; i < n->get_child_count(); i++) _scan_lowest_anchored(n->get_child(i), lowest, found);
+    }
+
+    // ¿este nodo está dentro de un personaje? (tiene un Humanoid por ancestro)
+    static bool _under_character(Node* n) {
+        for (Node* a = n ? n->get_parent() : nullptr; a; a = a->get_parent())
+            if (a->get_node_or_null(NodePath("Humanoid"))) return true;
+        return false;
+    }
+    void _destroy_fallen_parts(Node* n) {
+        if (!n) return;
+        // Copiar la lista: se van a liberar hijos mientras se itera.
+        std::vector<Node*> kids;
+        for (int i = 0; i < n->get_child_count(); i++) kids.push_back(n->get_child(i));
+        for (Node* c : kids) {
+            if (!c) continue;
+            if (c->is_class("RobloxPart")) {
+                Variant anc = c->get("Anchored");
+                bool anchored = anc.get_type() == Variant::BOOL && (bool)anc;
+                Node3D* p = Object::cast_to<Node3D>(c);
+                if (!anchored && p && !_under_character(c) &&
+                    p->get_global_position().y < _fall_effective) {
+                    c->queue_free();
+                    continue;
+                }
+            }
+            _destroy_fallen_parts(c);
+        }
     }
 
 public:

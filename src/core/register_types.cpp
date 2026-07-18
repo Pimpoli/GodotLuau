@@ -101,7 +101,10 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<Humanoid>();
         ClassDB::register_class<RobloxWorkspace>();
         ClassDB::register_class<RobloxPlayer>();
-        ClassDB::register_class<RobloxPart>();
+        // RobloxPart INTERNA (oculta del "Add Node", pero cargable: las escenas
+        // viejas type="RobloxPart" siguen abriendo). El usuario usa "Part" (1.15).
+        ClassDB::register_internal_class<RobloxPart>();
+        ClassDB::register_class<Part>();
         ClassDB::register_class<RobloxTerrain>();   // Workspace.Terrain
 
         // 2D characters and physics

@@ -133,6 +133,23 @@ static void push_brickcolor(lua_State* L, const String& name) {
     lua_pushstring(L, name.utf8().get_data());
     lua_call(L, 1, 1);
 }
+//  Vector2 real (usa el global de Luau) para AbsolutePosition/AbsoluteSize etc.
+static void push_vector2(lua_State* L, float x, float y) {
+    lua_getglobal(L, "Vector2");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "new");
+        lua_remove(L, -2);
+        lua_pushnumber(L, x);
+        lua_pushnumber(L, y);
+        lua_call(L, 2, 1);
+        return;
+    }
+    lua_pop(L, 1);            // sin stdlib: tabla plana {X,Y}
+    lua_newtable(L);
+    lua_pushnumber(L, x); lua_setfield(L, -2, "X");
+    lua_pushnumber(L, y); lua_setfield(L, -2, "Y");
+}
+
 //  Acepta lo mismo que Roblox: un BrickColor, un nombre o un número.
 static String read_brickcolor_name(lua_State* L, int idx) {
     if (idx < 0) idx = lua_gettop(L) + 1 + idx;
@@ -1059,6 +1076,19 @@ static int godot_object_index(lua_State* L) {
     if (strcmp(key, "SetAttribute")     == 0) { lua_pushcfunction(L, method_setattribute,             "SetAttribute");            return 1; }
     if (strcmp(key, "GetAttribute")     == 0) { lua_pushcfunction(L, method_getattribute,             "GetAttribute");            return 1; }
     if (strcmp(key, "GetService")       == 0) { lua_pushcfunction(L, method_getservice,               "GetService");              return 1; }
+
+    // game:UpdateStructure() — actualizador incremental (1.15): rellena lo que
+    // falte y migra nodos sin borrar ni pisar la config. Mismo efecto que la
+    // opción "Actualizar estructura" del inspector; útil para scripts de build.
+    if (strcmp(key, "UpdateStructure") == 0 && n->has_method("_gl_update_structure")) {
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
+            if (nd && nd->has_method("_gl_update_structure")) nd->call("_gl_update_structure");
+            return 0;
+        }, "UpdateStructure", 1);
+        return 1;
+    }
 
     // ── Universal instance signals ────────────────────────────────
     //// ── Señales de instancia universales ─────────────────────────
@@ -2523,7 +2553,9 @@ static int godot_object_index(lua_State* L) {
     RobloxWorkspace* ws = Object::cast_to<RobloxWorkspace>(n);
     if (ws) {
         if (strcmp(key, "Gravity")                  == 0) { lua_pushnumber(L, ws->get_gravity());                      return 1; }
-        if (strcmp(key, "FallenPartsDestroyHeight")  == 0) { lua_pushnumber(L, ws->get_fallen_parts_destroy_height());  return 1; }
+        if (strcmp(key, "FallenPartsDestroyHeight")  == 0) { lua_pushnumber(L, ws->get_effective_fall_height());        return 1; }
+        if (strcmp(key, "AutoFallHeight")            == 0) { lua_pushboolean(L, ws->get_auto_fall_height() ? 1 : 0);    return 1; }
+        if (strcmp(key, "FallHeightMargin")          == 0) { lua_pushnumber(L, ws->get_fall_height_margin());           return 1; }
         if (strcmp(key, "StreamingEnabled")          == 0) { lua_pushboolean(L, ws->get_streaming_enabled());           return 1; }
         if (strcmp(key, "AirDensity")                == 0) { lua_pushnumber(L, ws->get_air_density());                  return 1; }
         if (strcmp(key, "TouchesUseCollisionGroups") == 0) { lua_pushboolean(L, ws->get_touches_use_collision_groups());return 1; }
@@ -2813,6 +2845,14 @@ static int godot_object_index(lua_State* L) {
     };
 
     // Propiedades comunes de GUI (Frame, Label, Button, TextBox, ImageLabel, ScrollingFrame)
+    // AbsolutePosition / AbsoluteSize (1.15): el rect en PÍXELES ya calculado,
+    // común a todo GuiObject. Sirve tanto para leerlo desde scripts como para
+    // medir el layout de verdad. Va antes de los bloques por clase (genérico).
+    if (Control* ctrl = Object::cast_to<Control>(n)) {
+        if (strcmp(key,"AbsolutePosition") == 0) { Vector2 p = ctrl->get_global_position(); push_vector2(L, p.x, p.y); return 1; }
+        if (strcmp(key,"AbsoluteSize")     == 0) { Vector2 s = ctrl->get_size();            push_vector2(L, s.x, s.y); return 1; }
+    }
+
     RobloxFrame* rframe = Object::cast_to<RobloxFrame>(n);
     if (rframe) {
         if (strcmp(key,"Size")     == 0) { push_udim2_table(rframe->get_udim2_size()); return 1; }
@@ -3588,7 +3628,12 @@ static int godot_object_newindex_impl(lua_State* L) {
         return 0;
     }
 
-    if (strcmp(key, "Position") == 0) {
+    // OJO: estos handlers 3D solo deben CONSUMIR la escritura si el nodo es un
+    // Node3D. Antes hacían `return 0` incondicional, así que una GUI (Control 2D)
+    // que hacía `label.Position = UDim2(...)` entraba aquí, no hacía nada y se
+    // TRAGABA la escritura: la GUI se quedaba en (0,0) — el clásico "todo
+    // amontonado arriba-izquierda". Si no es Node3D, se cae al bloque de GUI.
+    if (strcmp(key, "Position") == 0 && Object::cast_to<Node3D>(n)) {
         LuauVector3* vec = check_vector3(L, 3);
         Node3D* n3d = Object::cast_to<Node3D>(n);
         // Si es el HumanoidRootPart, mueve al personaje entero (como Roblox).
@@ -3596,7 +3641,7 @@ static int godot_object_newindex_impl(lua_State* L) {
         return 0;
     }
 
-    if (strcmp(key, "Rotation") == 0) {
+    if (strcmp(key, "Rotation") == 0 && Object::cast_to<Node3D>(n)) {
         LuauVector3* vec = check_vector3(L, 3);
         Node3D* n3d = Object::cast_to<Node3D>(n);
         if (vec && n3d) {
@@ -3606,7 +3651,7 @@ static int godot_object_newindex_impl(lua_State* L) {
         return 0;
     }
 
-    if (strcmp(key, "CFrame") == 0 && lua_istable(L, 3)) {
+    if (strcmp(key, "CFrame") == 0 && lua_istable(L, 3) && Object::cast_to<Node3D>(n)) {
         Node3D* n3d_cf = Object::cast_to<Node3D>(n);
         if (n3d_cf) {
             lua_getfield(L, 3, "X"); float tx = (float)lua_tonumber(L,-1); lua_pop(L,1);
@@ -3750,6 +3795,8 @@ static int godot_object_newindex_impl(lua_State* L) {
     if (ws) {
         if (strcmp(key, "Gravity")                   == 0) { ws->set_gravity((float)luaL_checknumber(L,3));                      return 0; }
         if (strcmp(key, "FallenPartsDestroyHeight")  == 0) { ws->set_fallen_parts_destroy_height((float)luaL_checknumber(L,3));  return 0; }
+        if (strcmp(key, "AutoFallHeight")            == 0) { ws->set_auto_fall_height(lua_toboolean(L,3)!=0);                    return 0; }
+        if (strcmp(key, "FallHeightMargin")          == 0) { ws->set_fall_height_margin((float)luaL_checknumber(L,3));          return 0; }
         if (strcmp(key, "StreamingEnabled")          == 0) { ws->set_streaming_enabled(lua_toboolean(L,3)!=0);                   return 0; }
         if (strcmp(key, "AirDensity")                == 0) { ws->set_air_density((float)luaL_checknumber(L,3));                  return 0; }
         if (strcmp(key, "TouchesUseCollisionGroups") == 0) { ws->set_touches_use_collision_groups(lua_toboolean(L,3)!=0);        return 0; }
@@ -4153,6 +4200,33 @@ static int godot_object_newindex_impl(lua_State* L) {
         if (strcmp(key,"AnimationId") == 0) { aobj_w->set_animation_id(String(luaL_checkstring(L,3))); return 0; }
     }
 
+    // ── UIGradient.Color = ColorSequence (1.15) ────────────────────────
+    // El bridge genérico no sabe convertir un ColorSequence; se leen el primer y
+    // el último keypoint y se pasan como los dos colores del gradiente.
+    if (n->is_class("UIGradient") && strcmp(key, "Color") == 0) {
+        Color a(1,1,1), b(1,1,1);
+        if (lua_istable(L, 3)) {
+            lua_getfield(L, 3, "Keypoints");
+            if (lua_istable(L, -1)) {
+                int nkp = (int)lua_objlen(L, -1);
+                auto read_kp = [&](int idx, Color& out) {
+                    lua_rawgeti(L, -1, idx);
+                    if (lua_istable(L, -1)) {
+                        lua_getfield(L, -1, "Color");
+                        if (LuauColor3* c = check_color3(L, -1)) out = Color(c->r, c->g, c->b);
+                        lua_pop(L, 1);
+                    }
+                    lua_pop(L, 1);
+                };
+                if (nkp >= 1) read_kp(1, a);
+                if (nkp >= 2) read_kp(nkp, b); else b = a;
+            }
+            lua_pop(L, 1);
+        }
+        n->call("set_gl_colors", a, b);
+        return 0;
+    }
+
     // ── Puente genérico de escritura (solo clases nuevas con meta _gl_bridge) ──
     if (n->has_meta("_gl_bridge")) {
         Variant gv;
@@ -4293,13 +4367,15 @@ static int godot_instance_new(lua_State* L) {
     Node* nn = nullptr;
 
     // Primary Roblox class names → Godot nodes
+    // "Part" crea un Part (nombre sin "Roblox", 1.15); las demás variantes que aún
+    // no tienen clase propia caen a Part también (IS-A RobloxPart, mismo comportamiento).
     if      (strcmp(cls, "Part")              == 0 ||
              strcmp(cls, "BasePart")          == 0 ||
              strcmp(cls, "MeshPart")          == 0 ||
              strcmp(cls, "WedgePart")         == 0 ||
              strcmp(cls, "CornerWedgePart")   == 0 ||
              strcmp(cls, "TrussPart")         == 0 ||
-             strcmp(cls, "UnionOperation")    == 0) nn = memnew(RobloxPart);
+             strcmp(cls, "UnionOperation")    == 0) nn = memnew(Part);
     else if (strcmp(cls, "Folder")            == 0 ||
              strcmp(cls, "Configuration")     == 0) nn = memnew(Folder);
     else if (strcmp(cls, "StringValue")       == 0 ||

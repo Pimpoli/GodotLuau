@@ -81,8 +81,47 @@ static void _gui_apply_layout(Control* ctrl, const GuiUDim2& pos, const GuiUDim2
     float h = ps.y * sz.ys + sz.yo;
     float x = ps.x * pos.xs + pos.xo - w * ax;
     float y = ps.y * pos.ys + pos.yo - h * ay;
-    ctrl->set_position(Vector2(x, y));
-    ctrl->set_size(Vector2(w, h));
+    // Anclas arriba-izquierda + offsets directos: el tamaño UDim2 manda. Antes con
+    // set_position/set_size el motor clampaba al mínimo de contenido (el texto de
+    // un Label/Button), así que el tamaño real no era el pedido y el anchor lo
+    // calculaba mal. custom_minimum_size(0,0) + clip (en las clases con texto)
+    // quita ese mínimo.
+    ctrl->set_custom_minimum_size(Vector2(0, 0));
+    ctrl->set_anchor(SIDE_LEFT,   0.0f); ctrl->set_anchor(SIDE_TOP,    0.0f);
+    ctrl->set_anchor(SIDE_RIGHT,  0.0f); ctrl->set_anchor(SIDE_BOTTOM, 0.0f);
+    ctrl->set_offset(SIDE_LEFT,   x);     ctrl->set_offset(SIDE_TOP,    y);
+    ctrl->set_offset(SIDE_RIGHT,  x + w); ctrl->set_offset(SIDE_BOTTOM, y + h);
+}
+
+// Re-aplica los modificadores hijos (UICorner/UIStroke/UIGradient…) tras
+// reconstruir el StyleBox del control: como _apply_style crea una caja nueva,
+// el redondeo/borde se perdía en cuanto el fondo cambiaba (1.15). Los
+// modificadores exponen `_apply` (roblox_behavior.h / roblox_extra.h).
+static void _gl_gui_reapply_modifiers(Control* c) {
+    if (!c) return;
+    for (int i = 0; i < c->get_child_count(); i++) {
+        Node* ch = c->get_child(i);
+        if (ch && ch->has_method("_apply")) ch->call_deferred("_apply");
+    }
+}
+
+// Reconecta el re-layout: al padre si es Control, o al VIEWPORT si es top-level
+// (padre CanvasLayer/ScreenGui). Antes solo se conectaba al padre Control, así
+// que una GUI top-level nunca se re-ajustaba cuando cambiaba el tamaño de la
+// pantalla — se quedaba con el tamaño del viewport que hubiera en ENTER_TREE
+// (a veces aún sin resolver: el clásico "todo amontonado arriba-izquierda").
+// El call_deferred re-aplica cuando el viewport ya tiene su tamaño real.
+static void _gl_gui_wire_relayout(Control* self, const char* method) {
+    if (!self) return;
+    Control* parent_ctrl = Object::cast_to<Control>(self->get_parent());
+    if (parent_ctrl) {
+        if (!parent_ctrl->is_connected("resized", Callable(self, method)))
+            parent_ctrl->connect("resized", Callable(self, method));
+    } else if (Viewport* vp = self->get_viewport()) {
+        if (!vp->is_connected("size_changed", Callable(self, method)))
+            vp->connect("size_changed", Callable(self, method));
+    }
+    self->call_deferred(method);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -194,6 +233,7 @@ class RobloxFrame : public Panel {
         style->set_border_width_all(_border_px);
         style->set_corner_radius_all(0);
         add_theme_stylebox_override("panel", style);
+        _gl_gui_reapply_modifiers(this);
     }
 
     void _notification(int p_what) {
@@ -202,9 +242,7 @@ class RobloxFrame : public Panel {
             _apply_style();
             // Connect to parent to re-layout when parent resizes
             //// Conectar al padre para re-layout cuando el padre cambie de tamaño
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 
@@ -275,13 +313,15 @@ class RobloxTextLabel : public Label {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            // clip_text: sin esto el mínimo del Label es el ancho del texto, que
+            // clampaba el tamaño UDim2 y descuadraba el anchor. Con clip, el box
+            // vale exactamente su Size (el texto que no cabe se recorta).
+            set_clip_text(true);
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             add_theme_color_override("font_color", Color(_txt_r, _txt_g, _txt_b));
             if (_text_scaled) set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 
@@ -353,19 +393,19 @@ class RobloxTextButton : public Button {
         add_theme_stylebox_override("normal",  normal_style);
         add_theme_stylebox_override("hover",   hover_style);
         add_theme_stylebox_override("pressed", pressed_style);
+        _gl_gui_reapply_modifiers(this);
     }
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
+            set_clip_text(true);   // el box vale su Size, no el ancho del texto
             add_theme_color_override("font_color", Color(_txt_r, _txt_g, _txt_b));
             connect("pressed",      Callable(this, "_on_pressed"));
             connect("mouse_entered",Callable(this, "_on_mouse_enter"));
             connect("mouse_exited", Callable(this, "_on_mouse_leave"));
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 
@@ -444,9 +484,7 @@ class RobloxTextBox : public LineEdit {
             connect("focus_exited",  Callable(this, "_on_focus_lost"));
             connect("focus_entered", Callable(this, "_on_focus_gained"));
             connect("text_changed",  Callable(this, "_on_changed"));
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 
@@ -510,9 +548,7 @@ class RobloxImageLabel : public TextureRect {
         if (p_what == NOTIFICATION_ENTER_TREE) {
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 
@@ -579,9 +615,7 @@ class RobloxScrollingFrame : public ScrollContainer {
         if (p_what == NOTIFICATION_ENTER_TREE) {
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
-            Control* parent_ctrl = Object::cast_to<Control>(get_parent());
-            if (parent_ctrl && !parent_ctrl->is_connected("resized", Callable(this, "_on_parent_resized")))
-                parent_ctrl->connect("resized", Callable(this, "_on_parent_resized"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
         }
     }
 

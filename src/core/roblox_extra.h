@@ -33,7 +33,7 @@ using namespace godot;
 // (UICorner, UIListLayout, UIStroke, UIScale, UIAspectRatioConstraint y
 //  UIGridLayout tienen comportamiento real en roblox_behavior.h)
 GL_BRIDGE_NODE(UITableLayout, Node)
-GL_BRIDGE_NODE(UIGradient, Node)
+// UIGradient dejó de ser stub: es funcional en roblox_behavior.h (pinta el fondo).
 GL_BRIDGE_NODE(UITextSizeConstraint, Node)
 GL_BRIDGE_NODE(ViewportFrame, Node)
 GL_BRIDGE_NODE(VideoFrame, Node)
@@ -86,7 +86,7 @@ GL_BRIDGE_NODE(VehicleSeat, Node3D)
 // Registro de todas las clases de este header (llamado desde register_types)
 inline void gl_register_extra_classes() {
     ClassDB::register_class<UITableLayout>();
-    ClassDB::register_class<UIGradient>();
+    // UIGradient se registra en gl_register_behavior_classes (ya no es stub).
     ClassDB::register_class<UITextSizeConstraint>();
     ClassDB::register_class<ViewportFrame>();
     ClassDB::register_class<VideoFrame>();

@@ -32,17 +32,27 @@ protected:
         ClassDB::bind_method(D_METHOD("get_entorno_setup"), &RobloxTemplate::get_entorno_setup);
         ClassDB::bind_method(D_METHOD("generar_entorno", "tipo"), &RobloxTemplate::generar_entorno);
 
+        ClassDB::bind_method(D_METHOD("_gl_update_structure"), &RobloxTemplate::_gl_update_structure);
+
         // El "Seleccionar..." se traduce según el idioma del sistema;
-        // los nombres de las plantillas quedan en inglés a propósito.
+        // los nombres de las plantillas quedan en inglés a propósito. La 3ª opción
+        // (1.15) es el ACTUALIZADOR: rellena lo que falte y migra nodos sin borrar
+        // ni pisar la configuración del usuario.
         String hint = gl_tr3("Select...", "Seleccionar...", "Selecionar...") +
-                      String(",RobloxTemplate Game 3D,RobloxTemplate Game 2D");
+                      String(",Game 3D,Game 2D,") +
+                      gl_tr3("Update structure (keep my setup)",
+                             "Actualizar estructura (mantener mi config)",
+                             "Atualizar estrutura (manter config)");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "Modo_Roblox_Studio", PROPERTY_HINT_ENUM, hint),
                      "set_entorno_setup", "get_entorno_setup");
     }
 
 public:
     void set_entorno_setup(int p_val) {
-        if (p_val > 0) {
+        // 1 = Game 3D, 2 = Game 2D, 3 = Actualizar estructura (1.15)
+        if (p_val == 3) {
+            call_deferred(StringName("_gl_update_structure"));
+        } else if (p_val > 0) {
             call_deferred(StringName("generar_entorno"), p_val);
         }
         entorno_setup = 0;
@@ -50,12 +60,44 @@ public:
 
     int get_entorno_setup() const { return entorno_setup; }
 
+    // Actualizador incremental (1.15): rellena los nodos que falten y aplica las
+    // migraciones SIN borrar el Game ni pisar lo que el usuario tenga dentro.
+    // No está gateado a is_editor_hint para poder verificarlo también en headless;
+    // en el editor lo dispara la opción "Actualizar estructura" del inspector.
+    void _gl_update_structure() {
+        // Detectar 3D vs 2D por la clase del Workspace ya presente.
+        int tipo = 1;
+        if (Node* ws = get_node_or_null(NodePath("Workspace"))) {
+            if (ws->is_class("RobloxWorkspace2D")) tipo = 2;
+        }
+        _ensure_structure(tipo);
+        int migrated = _gl_migrate_tree(this);
+        GL_DEBUG_PRINT("[GodotLuau] Estructura actualizada (tipo=", tipo, "), nodos migrados=", migrated, ".");
+    }
+
     void generar_entorno(int tipo) {
         if (!Engine::get_singleton()->is_editor_hint()) return;
+        _ensure_structure(tipo);
+        GL_DEBUG_PRINT("[GodotLuau] 'Game' environment generated successfully.");
+    }
 
+private:
+    // Devuelve el nodo raíz para set_owner: el de la escena editada (editor) o la
+    // escena en ejecución (runtime), con fallback a this.
+    Node* _owner_root() {
+        SceneTree* st = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
+        if (st) {
+            if (Node* er = st->get_edited_scene_root()) return er;
+            if (Node* cs = st->get_current_scene())     return cs;
+        }
+        return this;
+    }
+
+    // Construye/rellena la estructura de forma IDEMPOTENTE (reutiliza lo que ya
+    // exista). Compartido por la generación inicial y el actualizador.
+    void _ensure_structure(int tipo) {
         set_name("Game");
-        Node* root = get_tree()->get_edited_scene_root();
-        if (!root) root = this;
+        Node* root = _owner_root();
 
         // Helper lambda: creates a service node; reuses it if already present
         //// Lambda helper: crea un nodo de servicio; lo reutiliza si ya existe
@@ -68,7 +110,7 @@ public:
 
             new_node->set_name(p_name);
             p_parent->add_child(new_node);
-            new_node->set_owner(root);
+            if (root) new_node->set_owner(root);
 
             // Inject source code if the node is a script type
             //// Inyectar código fuente si el nodo es un tipo de script
@@ -135,8 +177,96 @@ public:
         create_service("Teams", "Teams");
         create_service("SoundService", "SoundService");
         create_service("TextChatService", "TextChatService");
+    }
 
-        GL_DEBUG_PRINT("[GodotLuau] 'Game' environment generated successfully.");
+    // ── Migración de árbol (1.15) ────────────────────────────────────────
+    // Tabla de renombres de CLASE. La máquina que necesita F5.2: cuando una
+    // clase cambia de nombre entre versiones, los nodos viejos se convierten a la
+    // nueva clase conservando nombre, propiedades e hijos, en vez de romper la
+    // escena. Hoy va vacía; se rellena cuando se renombre algo (ver F5.2).
+    struct ClassRename { const char* from; const char* to; };
+    static const ClassRename* _class_renames(int& count) {
+        static const ClassRename table[] = {
+            { "RobloxPart", "Part" },   // 1.15: migra nodos viejos al nombre limpio
+        };
+        count = (int)(sizeof(table) / sizeof(table[0]));
+        return table;
+    }
+
+    // Cambia la clase de un nodo conservando nombre, hijos, dueño y las
+    // propiedades que ambas clases comparten. Devuelve el nodo nuevo (o el
+    // mismo si no se pudo). Es la primitiva de migración de F5.2.
+    Node* _gl_swap_node_class(Node* old, const String& new_class) {
+        if (!old) return old;
+        Node* parent = old->get_parent();
+        if (!parent) return old;
+        Node* fresh = Object::cast_to<Node>(ClassDB::instantiate(StringName(new_class)));
+        if (!fresh) return old;
+
+        fresh->set_name(old->get_name());
+        // Copiar las propiedades que la clase NUEVA reconoce y no son de solo
+        // lectura (evita perder Size/Color/Anchored/etc. del usuario).
+        TypedArray<Dictionary> props = fresh->get_property_list();
+        for (int i = 0; i < props.size(); i++) {
+            Dictionary pd = props[i];
+            String pname = pd.get("name", "");
+            int usage = (int)pd.get("usage", 0);
+            if (pname.is_empty() || !(usage & PROPERTY_USAGE_STORAGE)) continue;
+            fresh->set(pname, old->get(pname));
+        }
+        int idx = old->get_index();
+        Node* owner = old->get_owner();
+        // Mover SOLO los hijos del usuario (con dueño). Los hijos internos que la
+        // clase auto-crea (p.ej. la malla y la colisión de una Part) no tienen
+        // dueño y la clase nueva los recrea sola — moverlos los duplicaría.
+        TypedArray<Node> kids = old->get_children();
+        for (int i = 0; i < kids.size(); i++) {
+            Node* ch = Object::cast_to<Node>(kids[i]);
+            if (!ch || ch->get_owner() == nullptr) continue;
+            old->remove_child(ch);
+            fresh->add_child(ch);
+        }
+        parent->remove_child(old);
+        parent->add_child(fresh);
+        parent->move_child(fresh, idx);
+        if (owner) {
+            fresh->set_owner(owner);
+            // Re-asignar dueño a los hijos migrados para que se guarden en la escena.
+            _reassign_owner_recursive(fresh, owner);
+        }
+        old->queue_free();
+        return fresh;
+    }
+
+    void _reassign_owner_recursive(Node* n, Node* owner) {
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* c = n->get_child(i);
+            if (!c) continue;
+            c->set_owner(owner);
+            _reassign_owner_recursive(c, owner);
+        }
+    }
+
+    // Recorre el árbol aplicando la tabla de renombres. Devuelve cuántos migró.
+    int _gl_migrate_tree(Node* n) {
+        int count = 0, nrenames = 0;
+        const ClassRename* table = _class_renames(nrenames);
+        // Copiar hijos: _gl_swap_node_class reemplaza nodos mientras iteramos.
+        TypedArray<Node> kids = n->get_children();
+        for (int i = 0; i < kids.size(); i++) {
+            Node* c = Object::cast_to<Node>(kids[i]);
+            if (!c) continue;
+            Node* cur = c;
+            for (int r = 0; r < nrenames; r++) {
+                if (cur->is_class(table[r].from) && !cur->is_class(table[r].to)) {
+                    cur = _gl_swap_node_class(cur, table[r].to);
+                    count++;
+                    break;
+                }
+            }
+            count += _gl_migrate_tree(cur);
+        }
+        return count;
     }
 };
 

@@ -1836,12 +1836,15 @@ end
 
 ColorSequence = {}
 ColorSequence.__index = ColorSequence
-function ColorSequence.new(v)
+function ColorSequence.new(v, c1)
     if type(v) == "table" and v[1] and v[1].Time ~= nil then
         return setmetatable({ Keypoints=v }, ColorSequence)
     end
+    -- Forma de 2 colores: ColorSequence.new(c0, c1) -> degradado c0->c1 (como
+    -- Roblox). Antes el segundo argumento se ignoraba y salían los dos iguales.
     local c = v or Color3.new(1,1,1)
-    return setmetatable({ Keypoints={ColorSequenceKeypoint.new(0,c), ColorSequenceKeypoint.new(1,c)} }, ColorSequence)
+    local last = c1 or c
+    return setmetatable({ Keypoints={ColorSequenceKeypoint.new(0,c), ColorSequenceKeypoint.new(1,last)} }, ColorSequence)
 end
 
 -- ══════════════════════════════════════════════════════════════════════

@@ -333,6 +333,44 @@ inline void gl_set_part_global_position(Node3D* n3d, const Vector3& p) {
     else n3d->set_position(p);
 }
 
+// ── Visibilidad por ancestro (1.15) ──────────────────────────────────────────
+//  En Roblox SOLO se renderiza lo que cuelga de Workspace. Una Part dentro de
+//  ReplicatedStorage / ServerStorage / Lighting / Players / MaterialService…
+//  existe como dato pero NO se ve. Aquí Godot renderiza cualquier VisualInstance
+//  que esté en el árbol, así que una Part metida en uno de esos servicios salía a
+//  la vista. Se mira por NOMBRE (los contenedores virtuales son Node normal) y
+//  por clase, subiendo por TODOS los ancestros: un Folder dentro de Players con
+//  una Part dentro debe seguir sin verse.
+inline bool gl_is_nonrender_container(const Node* n) {
+    if (!n) return false;
+    StringName nm = n->get_name();
+    static const char* NAMES[] = {
+        "ReplicatedStorage", "ServerStorage", "ServerScriptService",
+        "ReplicatedFirst", "Lighting", "MaterialService", "SoundService",
+        "Players", "Teams", "StarterGui", "StarterPack", "StarterPlayer",
+        "StarterPlayerScripts", "StarterCharacterScripts", "TextChatService",
+        "Chat", "LocalizationService", nullptr
+    };
+    for (int i = 0; NAMES[i]; i++) if (nm == StringName(NAMES[i])) return true;
+    return n->is_class("Players") || n->is_class("Teams") || n->is_class("Lighting") ||
+           n->is_class("StarterPlayer") || n->is_class("StarterPlayerScripts") ||
+           n->is_class("StarterCharacterScripts") || n->is_class("StarterGui") ||
+           n->is_class("StarterPack");
+}
+inline bool gl_is_world_root(const Node* n) {
+    return n && (n->is_class("RobloxWorkspace") || n->is_class("RobloxWorkspace2D") ||
+                 n->get_name() == StringName("Workspace"));
+}
+//  ¿este visual debe ocultarse por dónde está? Sube por los ancestros: si llega a
+//  Workspace, se ve; si antes topa con un servicio de datos, se oculta.
+inline bool gl_visual_hidden_by_ancestor(const Node* n) {
+    for (const Node* a = n ? n->get_parent() : nullptr; a; a = a->get_parent()) {
+        if (gl_is_world_root(a)) return false;
+        if (gl_is_nonrender_container(a)) return true;
+    }
+    return false;   // fuera de todo contenedor conocido: no ocultar por las dudas
+}
+
 // ── Instancias HUERFANAS de Instance.new (1.15) ──────────────────────────────
 //  Instance.new("Part") crea el nodo SIN padre: en Roblox lo sujeta el script y
 //  el recolector lo tira cuando se pierde la referencia. Aqui, si el script nunca

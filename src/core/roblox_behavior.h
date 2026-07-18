@@ -12,8 +12,12 @@
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/rigid_body3d.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/style_box_texture.hpp>
+#include <godot_cpp/classes/gradient.hpp>
+#include <godot_cpp/classes/gradient_texture2d.hpp>
 #include <godot_cpp/classes/gpu_particles3d.hpp>
 #include <godot_cpp/classes/particle_process_material.hpp>
 #include <godot_cpp/classes/quad_mesh.hpp>
@@ -239,6 +243,63 @@ public:
     Color get_Color() const { return color; }
     void _ready() override { call_deferred("_apply"); }
     UIStroke() { set_meta("_gl_bridge", true); }
+};
+
+// ── UIGradient ─────────────────────────────────────────────────────────
+// Antes era un stub (GL_BRIDGE_NODE en roblox_extra.h): aceptaba las propiedades
+// pero no pintaba nada. Ahora genera una textura de gradiente y la aplica como
+// fondo del GUI padre. Gradiente de 2 paradas (primer y último keypoint del
+// ColorSequence) con rotación. Nota: como usa StyleBoxTexture, no combina con
+// esquinas redondeadas (UICorner) — el gradiente gana.
+class UIGradient : public Node {
+    GDCLASS(UIGradient, Node);
+    Color c0 = Color(1, 1, 1);
+    Color c1 = Color(0.6f, 0.6f, 0.6f);
+    double rotation = 0.0;   // grados: 0 = horizontal, 90 = vertical
+    bool   enabled  = true;
+
+    void _apply() {
+        Control* p = Object::cast_to<Control>(get_parent());
+        if (!p) return;
+        const char* slot = p->is_class("RobloxFrame") ? "panel" : "normal";
+        if (!enabled) return;   // sin gradiente: se deja el fondo que tenga
+        Ref<Gradient> grad; grad.instantiate();
+        PackedFloat32Array off; off.push_back(0.0f); off.push_back(1.0f);
+        PackedColorArray cols; cols.push_back(c0); cols.push_back(c1);
+        grad->set_offsets(off);
+        grad->set_colors(cols);
+        Ref<GradientTexture2D> tex; tex.instantiate();
+        tex->set_gradient(grad);
+        tex->set_width(128); tex->set_height(128);
+        float rad = (float)Math::deg_to_rad(rotation);
+        tex->set_fill_from(Vector2(0.5f - 0.5f * Math::cos(rad), 0.5f - 0.5f * Math::sin(rad)));
+        tex->set_fill_to(  Vector2(0.5f + 0.5f * Math::cos(rad), 0.5f + 0.5f * Math::sin(rad)));
+        Ref<StyleBoxTexture> sb; sb.instantiate();
+        sb->set_texture(tex);
+        p->add_theme_stylebox_override(slot, sb);
+    }
+
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_Rotation", "r"), &UIGradient::set_Rotation);
+        ClassDB::bind_method(D_METHOD("get_Rotation"),      &UIGradient::get_Rotation);
+        ClassDB::bind_method(D_METHOD("set_Enabled", "e"),  &UIGradient::set_Enabled);
+        ClassDB::bind_method(D_METHOD("get_Enabled"),       &UIGradient::get_Enabled);
+        ClassDB::bind_method(D_METHOD("set_gl_colors", "a", "b"), &UIGradient::set_gl_colors);
+        ClassDB::bind_method(D_METHOD("_apply"),            &UIGradient::_apply);
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Rotation"), "set_Rotation", "get_Rotation");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Enabled"),  "set_Enabled",  "get_Enabled");
+    }
+
+public:
+    void   set_Rotation(double r) { rotation = r; call_deferred("_apply"); }
+    double get_Rotation() const { return rotation; }
+    void   set_Enabled(bool e) { enabled = e; call_deferred("_apply"); }
+    bool   get_Enabled() const { return enabled; }
+    // Llamado desde el puente (ColorSequence → primer/último color).
+    void set_gl_colors(Color a, Color b) { c0 = a; c1 = b; call_deferred("_apply"); }
+    void _ready() override { call_deferred("_apply"); }
+    UIGradient() { set_meta("_gl_bridge", true); }
 };
 
 // ── UIScale ───────────────────────────────────────────────────────────
@@ -686,6 +747,7 @@ inline void gl_register_behavior_classes() {
     ClassDB::register_class<UIPageLayout>();
     ClassDB::register_class<ParticleEmitter>();
     ClassDB::register_class<UIStroke>();
+    ClassDB::register_class<UIGradient>();
     ClassDB::register_class<UIScale>();
     ClassDB::register_class<UIAspectRatioConstraint>();
     ClassDB::register_class<UIGridLayout>();

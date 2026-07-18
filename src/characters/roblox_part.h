@@ -550,7 +550,19 @@ protected:
                 // monitoreo de contactos de Jolt es carisimo. Se activa recien
                 // cuando alguien conecta Touched/TouchEnded (_ensure_touch_monitoring).
             }
+            // Visibilidad por ancestro (1.15): una Part en ReplicatedStorage/
+            // Lighting/Players… no se renderiza. Se re-evalua en CADA ENTER_TREE,
+            // asi un reparent (p.ej. de ReplicatedStorage a Workspace) la muestra.
+            _apply_ancestor_visibility();
         }
+    }
+
+    void _apply_ancestor_visibility() {
+        bool hidden = gl_visual_hidden_by_ancestor(this);
+        set_visible(!hidden);
+        // Fuera del mundo tampoco debe colisionar (en Roblox no está en el espacio
+        // físico). Al volver a Workspace se restaura el CanCollide real.
+        if (collision_shape) collision_shape->set_disabled(hidden ? true : !can_collide);
     }
 
 public:
@@ -706,6 +718,20 @@ public:
     Vector3 get_velocity_roblox() const       { return get_linear_velocity(); }
     void    set_angular_velocity_roblox(Vector3 v) { set_angular_velocity(v); }
     Vector3 get_angular_velocity_roblox() const    { return get_angular_velocity(); }
+};
+
+// ── Part (1.15): el nombre SIN "Roblox" ──────────────────────────────────────
+// El usuario ve y crea "Part", no "RobloxPart". Es una subclase fina: hereda TODO
+// el comportamiento y, al ser Part IS-A RobloxPart, funciona en cada sitio que
+// castea a RobloxPart. La clase base RobloxPart se registra como INTERNA (oculta
+// del "Add Node" del editor) pero sigue siendo cargable, así las escenas viejas
+// con type="RobloxPart" no se rompen; el actualizador las migra a Part.
+class Part : public RobloxPart {
+    GDCLASS(Part, RobloxPart);
+protected:
+    static void _bind_methods() {}
+public:
+    Part() {}
 };
 
 #endif // ROBLOX_PART_H
