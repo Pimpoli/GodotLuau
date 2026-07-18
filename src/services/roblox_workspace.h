@@ -144,6 +144,8 @@ protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("build_local_character"),                &RobloxWorkspace::build_local_character);   // LoadCharacter (1.14.10)
         ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
+        ClassDB::bind_method(D_METHOD("set_graphics_quality","level"),         &RobloxWorkspace::set_graphics_quality);
+        ClassDB::bind_method(D_METHOD("get_graphics_quality"),                 &RobloxWorkspace::get_graphics_quality);
         ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
@@ -444,6 +446,11 @@ public:
     void _gl_apply_quality_deferred() {
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
+
+    // API de calidad gráfica para Lua (1.15): el módulo de ajustes en Modules la
+    // usa. workspace:SetGraphicsQuality(1..10) / workspace:GetGraphicsQuality().
+    void set_graphics_quality(int level) { gl_apply_graphics_quality(level, this); }
+    int  get_graphics_quality() const    { return gl_graphics_level(); }
 
     // ── Muerte por vacío (1.15) ──────────────────────────────────────────
     void _process(double delta) override {

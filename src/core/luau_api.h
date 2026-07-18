@@ -2565,6 +2565,25 @@ static int godot_object_index(lua_State* L) {
             lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnumber(pL, gl_server_time_now()); return 1; }, "GetServerTimeNow");
             return 1;
         }
+        // Calidad gráfica 1..10 (1.15): la usa el módulo de ajustes en Modules.
+        if (strcmp(key, "SetGraphicsQuality") == 0) {
+            lua_pushlightuserdata(L, (void*)ws);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxWorkspace* w = (RobloxWorkspace*)lua_touserdata(pL, lua_upvalueindex(1));
+                if (w) w->set_graphics_quality((int)luaL_checknumber(pL, 2));
+                return 0;
+            }, "SetGraphicsQuality", 1);
+            return 1;
+        }
+        if (strcmp(key, "GetGraphicsQuality") == 0) {
+            lua_pushlightuserdata(L, (void*)ws);
+            lua_pushcclosure(L, [](lua_State* pL) -> int {
+                RobloxWorkspace* w = (RobloxWorkspace*)lua_touserdata(pL, lua_upvalueindex(1));
+                lua_pushnumber(pL, w ? w->get_graphics_quality() : 8);
+                return 1;
+            }, "GetGraphicsQuality", 1);
+            return 1;
+        }
     }
 
     // ── RemoteEventNode ───────────────────────────────────────────────────
@@ -3817,6 +3836,10 @@ static int godot_object_newindex_impl(lua_State* L) {
             if (col) rp_w->set_team_color(Color(col->r, col->g, col->b));
             return 0;
         }
+        // Móvil (1.15): el jugador (o el SettingsModule) puede modificar el joystick.
+        if (strcmp(key, "JoystickDynamic") == 0) { rp_w->set_joystick_dynamic(lua_toboolean(L,3)!=0);   return 0; }
+        if (strcmp(key, "JoystickRadius")  == 0) { rp_w->set_joystick_radius((float)luaL_checknumber(L,3)); return 0; }
+        if (strcmp(key, "JoystickOpacity") == 0) { rp_w->set_joystick_opacity((float)luaL_checknumber(L,3)); return 0; }
     }
 
     Lighting* light = Object::cast_to<Lighting>(n);

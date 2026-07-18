@@ -47,6 +47,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "gl_debug.h"
+#include "gl_graphics.h"
 
 using namespace godot;
 
@@ -63,7 +64,8 @@ class GLSettingsMenu : public CanvasLayer {
     const Color COL_RED     = Color(0.92f, 0.30f, 0.30f);
 
     // ── Estado persistente ────────────────────────────────────────────
-    int    quality   = 2;      // 0 Low, 1 Medium, 2 High
+    int    quality   = 8;      // 1..10 (como Roblox), 1.15
+    bool   cam_lock  = false;  // bloquear cámara: 3ª persona se ve como 1ª (1.15)
     int    fps_idx   = 1;      // default 60
     bool   show_fps  = false;
     bool   show_ping = false;
@@ -189,6 +191,7 @@ protected:
         ClassDB::bind_method(D_METHOD("toggle_menu"),         &GLSettingsMenu::toggle_menu);
         ClassDB::bind_method(D_METHOD("_on_tab", "i"),        &GLSettingsMenu::_on_tab);
         ClassDB::bind_method(D_METHOD("_on_quality", "dir"),  &GLSettingsMenu::_on_quality);
+        ClassDB::bind_method(D_METHOD("_on_cam_lock", "on"),  &GLSettingsMenu::_on_cam_lock);
         ClassDB::bind_method(D_METHOD("_on_fps", "dir"),      &GLSettingsMenu::_on_fps);
         ClassDB::bind_method(D_METHOD("_on_volume", "v"),     &GLSettingsMenu::_on_volume);
         ClassDB::bind_method(D_METHOD("_on_sens", "v"),       &GLSettingsMenu::_on_sens);
@@ -324,6 +327,7 @@ public:
               ping_val->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
               hb->add_child(ping_val); }
             { HBoxContainer* hb = _row(vb, "Graphics Quality"); _selector(hb, &quality_val, "_on_quality"); }
+            { HBoxContainer* hb = _row(vb, "Lock Camera (1st person)"); _toggle(hb, cam_lock, "_on_cam_lock"); }
             { HBoxContainer* hb = _row(vb, "Max FPS");          _selector(hb, &fps_val,     "_on_fps"); }
             { HBoxContainer* hb = _row(vb, "Volume");           _slider(hb, 0, 100, 1, volume, &volume_val, "_on_volume"); }
             { HBoxContainer* hb = _row(vb, "Camera Sensitivity"); _slider(hb, 0.2, 3.0, 0.1, sensitivity, &sens_val, "_on_sens"); }
@@ -513,7 +517,8 @@ public:
     }
 
     // ── Cambios de ajustes ────────────────────────────────────────────
-    void _on_quality(int dir) { quality = Math::clamp(quality + dir, 0, 2); _apply_all(); _refresh_labels(); _save_settings(); }
+    void _on_quality(int dir) { quality = Math::clamp(quality + dir, 1, 10); _apply_all(); _refresh_labels(); _save_settings(); }
+    void _on_cam_lock(bool on) { cam_lock = on; _apply_camera_lock(); _save_settings(); }
     void _on_fps(int dir)     { fps_idx = Math::clamp(fps_idx + dir, 0, FPS_COUNT - 1); _apply_all(); _refresh_labels(); _save_settings(); }
     void _on_volume(double v) { volume = v; _apply_all(); _refresh_labels(); _save_settings(); }
     void _on_sens(double v)   { sensitivity = v; _apply_all(); _refresh_labels(); _save_settings(); }
@@ -523,16 +528,9 @@ public:
     // ── Aplicar ───────────────────────────────────────────────────────
     void _apply_all() {
         Engine::get_singleton()->set_max_fps(FPS_OPTIONS[fps_idx]);
-        Viewport* vp = get_viewport();
-        if (vp) {
-            float s = (quality == 0) ? 0.6f : (quality == 1) ? 0.8f : 1.0f;
-            vp->set_scaling_3d_scale(s);
-        }
-        if (is_inside_tree()) {
-            Node* sun = _find_by_class((Node*)get_tree()->get_root(), "DirectionalLight3D");
-            if (DirectionalLight3D* dl = Object::cast_to<DirectionalLight3D>(sun))
-                dl->set_shadow(quality > 0);
-        }
+        // Calidad 1..10: escala, sombras suaves reales, SSAO, glow… en un sitio (1.15)
+        gl_apply_graphics_quality(quality, this);
+        _apply_camera_lock();
         // Volumen maestro
         AudioServer* as = AudioServer::get_singleton();
         if (as) {
@@ -541,6 +539,11 @@ public:
         }
         _apply_sensitivity();
     }
+    void _apply_camera_lock() {
+        if (!is_inside_tree()) return;
+        Node* p = _find_by_class((Node*)get_tree()->get_root(), "RobloxPlayer");
+        if (p && p->has_method("set_lock_first_person")) p->call("set_lock_first_person", cam_lock);
+    }
     void _apply_sensitivity() {
         if (!is_inside_tree()) return;
         Node* p = _find_by_class((Node*)get_tree()->get_root(), "RobloxPlayer");
@@ -548,8 +551,8 @@ public:
     }
 
     void _refresh_labels() {
-        static const char* QNAMES[3] = { "Low", "Medium", "High" };
-        if (quality_val) quality_val->set_text(QNAMES[quality]);
+        // Calidad 1..10 estilo Roblox: se muestra el número (10 = máxima).
+        if (quality_val) quality_val->set_text(String::num_int64(quality) + "/10");
         if (fps_val) fps_val->set_text(FPS_OPTIONS[fps_idx] == 0 ? String("Unlimited") : String::num_int64(FPS_OPTIONS[fps_idx]));
         if (volume_val) volume_val->set_text(String::num_int64((int64_t)volume) + "%");
         if (sens_val) sens_val->set_text(String::num((double)sensitivity, 1) + "x");
@@ -600,7 +603,8 @@ public:
     void _load_settings() {
         Ref<ConfigFile> cf; cf.instantiate();
         if (cf->load(_cfg_path()) == OK) {
-            quality     = Math::clamp((int)(int64_t)cf->get_value("settings", "quality", 2), 0, 2);
+            quality     = Math::clamp((int)(int64_t)cf->get_value("settings", "quality", 8), 1, 10);
+            cam_lock    = (bool)cf->get_value("settings", "cam_lock", false);
             fps_idx     = Math::clamp((int)(int64_t)cf->get_value("settings", "fps_idx", 1), 0, FPS_COUNT - 1);
             show_fps    = (bool)cf->get_value("settings", "show_fps", false);
             show_ping   = (bool)cf->get_value("settings", "show_ping", false);
@@ -611,6 +615,7 @@ public:
     void _save_settings() {
         Ref<ConfigFile> cf; cf.instantiate();
         cf->set_value("settings", "quality",     quality);
+        cf->set_value("settings", "cam_lock",    cam_lock);
         cf->set_value("settings", "fps_idx",     fps_idx);
         cf->set_value("settings", "show_fps",    show_fps);
         cf->set_value("settings", "show_ping",   show_ping);

@@ -172,6 +172,7 @@ private:
             create_service("ModuleScript", "ConsoleModule", ctrl_module);
             create_service("ModuleScript", "CameraModule",  modules_folder);
             create_service("ModuleScript", "ChatModule",    modules_folder);
+            create_service("ModuleScript", "SettingsModule", modules_folder);  // ajustes editables (1.15)
         }
 
         create_service("Teams", "Teams");

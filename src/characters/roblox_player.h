@@ -148,6 +148,11 @@ private:
     bool         mouse_look_drag = false;   // mouse "tocando" la zona de mirar
     Panel*       joy_base    = nullptr;     // joystick visual (base)
     Panel*       joy_knob    = nullptr;     // joystick visual (perilla)
+    // Móvil (1.15): joystick DINÁMICO tipo Roblox — aparece donde tocas en la
+    // mitad izquierda, en vez de estar fijo abajo. Configurable por el jugador.
+    bool         dynamic_joystick = true;
+    float        joystick_radius  = 80.0f;  // radio en px (mitad del diámetro)
+    float        joystick_opacity = 1.0f;   // 0..1 sobre la opacidad base
 
     // ── Roblox-style player properties ─────────────────────────────
     //// ── Propiedades de jugador tipo Roblox ─────────────────────────
@@ -334,10 +339,44 @@ public:
             joy_knob->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
             joy_base->add_child(joy_knob);
             _center_knob();
+            // Dinámico: oculto hasta que el jugador toque la mitad izquierda.
+            if (dynamic_joystick) joy_base->set_visible(false);
         } else {
             gl_mobile().active = false;
         }
     }
+
+    // Coloca la base del joystick centrada en el punto de toque y la muestra
+    // (modo dinámico, como Roblox). El diámetro sale de joystick_radius.
+    void _show_joystick_at(Vector2 p) {
+        if (!joy_base || !dynamic_joystick) return;
+        float d = joystick_radius * 2.0f;
+        joy_base->set_anchor(SIDE_LEFT, 0.0f); joy_base->set_anchor(SIDE_TOP, 0.0f);
+        joy_base->set_anchor(SIDE_RIGHT, 0.0f); joy_base->set_anchor(SIDE_BOTTOM, 0.0f);
+        joy_base->set_offset(SIDE_LEFT,  p.x - joystick_radius);
+        joy_base->set_offset(SIDE_TOP,   p.y - joystick_radius);
+        joy_base->set_offset(SIDE_RIGHT, p.x + joystick_radius);
+        joy_base->set_offset(SIDE_BOTTOM,p.y + joystick_radius);
+        joy_base->set_size(Vector2(d, d));
+        joy_base->set_modulate(Color(1, 1, 1, joystick_opacity));
+        joy_base->set_visible(true);
+        _center_knob();
+    }
+    void _hide_joystick() {
+        if (joy_base && dynamic_joystick) joy_base->set_visible(false);
+    }
+
+public:
+    // API para el jugador (SettingsModule): tipo de joystick y aspecto (1.15).
+    void set_joystick_dynamic(bool v) {
+        dynamic_joystick = v;
+        if (joy_base) { if (v) joy_base->set_visible(false); else { joy_base->set_visible(true); _center_knob(); } }
+    }
+    bool get_joystick_dynamic() const { return dynamic_joystick; }
+    void set_joystick_radius(float r) { joystick_radius = Math::clamp(r, 40.0f, 200.0f); }
+    float get_joystick_radius() const { return joystick_radius; }
+    void set_joystick_opacity(float o) { joystick_opacity = Math::clamp(o, 0.0f, 1.0f); if (joy_base) joy_base->set_modulate(Color(1,1,1,joystick_opacity)); }
+    float get_joystick_opacity() const { return joystick_opacity; }
 
     // Circulo de UI (StyleBoxFlat con esquinas al maximo)
     void _style_circle(Panel* p, Color c) {
@@ -378,12 +417,13 @@ public:
                 Vector2 p = emb->get_position();
                 if (emb->is_pressed()) {
                     bool in_jump = (p.x > screen.x - 170.0f) && (p.y > screen.y - 170.0f);
-                    if (p.x < screen.x * 0.5f) { mouse_move_drag = true; move_origin = p; }
+                    if (p.x < screen.x * 0.5f) { mouse_move_drag = true; move_origin = p; _show_joystick_at(p); }
                     else if (!in_jump)          mouse_look_drag = true;
                 } else {
                     mouse_move_drag = false; mouse_look_drag = false;
                     gl_mobile().move = Vector2();
                     _center_knob();
+                    _hide_joystick();
                 }
                 return;
             }
@@ -414,12 +454,12 @@ public:
             if (tt->is_pressed()) {
                 bool in_jump = (p.x > screen.x - 170.0f) && (p.y > screen.y - 170.0f);
                 if (p.x < screen.x * 0.5f && move_touch == -1) {
-                    move_touch = idx; move_origin = p;
+                    move_touch = idx; move_origin = p; _show_joystick_at(p);
                 } else if (!in_jump && look_touch == -1) {
                     look_touch = idx;
                 }
             } else {
-                if (idx == move_touch) { move_touch = -1; gl_mobile().move = Vector2(); }
+                if (idx == move_touch) { move_touch = -1; gl_mobile().move = Vector2(); _center_knob(); _hide_joystick(); }
                 if (idx == look_touch) { look_touch = -1; }
             }
             return;
