@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <godot_cpp/classes/node3d.hpp>
+#include "gl_graphics.h"
 #include <godot_cpp/classes/engine.hpp>
 #include "roblox_network.h"
 #include "roblox_terrain.h"
@@ -134,15 +135,15 @@ private:
         if (sun) {
             sun->set_shadow(true);
             sun->set_param(Light3D::PARAM_ENERGY, 1.0f);
-            sun->set_param(Light3D::PARAM_SIZE, 1.5f);              // sombras suaves PCSS (Forward+)
-            sun->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f);
-            sun->set_param(Light3D::PARAM_SHADOW_NORMAL_BIAS, 2.0f);
+            // El resto de params de sombra (tamaño, bias, filtro) los fija
+            // gl_apply_graphics_quality según el nivel — un solo sitio (1.15).
         }
     }
 
 protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("build_local_character"),                &RobloxWorkspace::build_local_character);   // LoadCharacter (1.14.10)
+        ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
         ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
@@ -433,6 +434,15 @@ public:
 
         build_local_character();
         set_process(true);   // muerte por vacío (1.15)
+
+        // Calidad gráfica (1.15): aplica sombras suaves REALES, bias anti-acne,
+        // SSAO/glow y escala según el nivel guardado. Diferido para que el sol y
+        // el WorldEnvironment ya estén en el árbol. Esto arregla las sombras feas.
+        call_deferred("_gl_apply_quality_deferred");
+    }
+
+    void _gl_apply_quality_deferred() {
+        gl_apply_graphics_quality(gl_graphics_level(), this);
     }
 
     // ── Muerte por vacío (1.15) ──────────────────────────────────────────
