@@ -127,11 +127,12 @@ ControlModule:Initialize()
 CameraModule:Apply()
 ChatModule:Initialize()
 
--- Ajustes editables (Modules/SettingsModule): panel tipo Roblox con calidad
--- 1..10 y bloqueo de camara. Con pcall por si un proyecto viejo aun no lo tiene.
+-- Menu de Escape (Modules/Menu): interfaz tipo Roblox EDITABLE con pestanas
+-- (Personas / Config. / Galeria / Denunciar / Ayuda). Submodulos: MenuUi,
+-- Settings, Players. Con pcall por si un proyecto viejo aun no lo tiene.
 pcall(function()
-    local SettingsModule = require(script.Parent.Modules.SettingsModule)
-    SettingsModule.Init(game:GetService("Players").LocalPlayer)
+    local Menu = require(script.Parent.Modules.Menu)
+    Menu.Init(game:GetService("Players").LocalPlayer)
 end)
 
 -- ── Aplicar configuracion al Humanoid ────────────────────────────
@@ -758,6 +759,15 @@ static const char* LUAU_TEMPLATE_MODULE_OOP =
     "\n"
     "return module\n";
 
+// ══════════════════════════════════════════════════════════════════════
+//  Menu modular (1.15) — StarterPlayerScripts/Modules/Menu + submódulos.
+//  Menu (principal) contiene: MenuUi (todas las UIs), Settings (Config),
+//  Players (Personas). TODO editable por el usuario. El PlayerModule hace
+//  require(Menu) y Menu.Init(player). El menú se abre con Escape y se ve
+//  como el de Roblox.
+// ══════════════════════════════════════════════════════════════════════
+#include "menu_templates.h"   // LUAU_TEMPLATE_MENU / _UI / _SETTINGS / _PLAYERS
+
 #include "luau_api.h"
 #include "roblox_part.h"
 #include "humanoid.h"
@@ -791,6 +801,92 @@ static const char* LUAU_TEMPLATE_MODULE_OOP =
 #include <string>
 
 using namespace godot;
+
+// ══════════════════════════════════════════════════════════════════════
+//  Plantillas de fábrica: fuente ÚNICA de la verdad (1.15)
+//  gl_builtin_template() decide qué código "de fábrica" corresponde a un
+//  nodo de script según su NOMBRE y clase. La usan tanto el creador de
+//  archivos (ENTER_TREE, más abajo) como el actualizador incremental
+//  (roblox_datamodel.h), para no duplicar el mapeo en dos sitios.
+// ══════════════════════════════════════════════════════════════════════
+static String gl_builtin_template(const String& node_name, const String& cls) {
+    if (node_name == "Health")         return String(LUAU_TEMPLATE_HEALTH);
+    if (node_name == "Animate")        return String(LUAU_TEMPLATE_ANIMATE);
+    if (node_name == "PlayerModule")   return String(LUAU_TEMPLATE_PLAYER_MODULE);
+    if (node_name == "ControlModule")  return String(LUAU_TEMPLATE_CONTROL_MODULE);
+    if (node_name == "PCModule")       return String(LUAU_TEMPLATE_PC_MODULE);
+    if (node_name == "MobileModule")   return String(LUAU_TEMPLATE_MOBILE_MODULE);
+    if (node_name == "ConsoleModule")  return String(LUAU_TEMPLATE_CONSOLE_MODULE);
+    if (node_name == "CameraModule")   return String(LUAU_TEMPLATE_CAMERA_MODULE);
+    if (node_name == "ChatModule")     return String(LUAU_TEMPLATE_CHAT_MODULE);
+    if (node_name == "GameManager")    return String(LUAU_TEMPLATE_GAME_MANAGER);
+    // Menu modular (1.15): Menu principal + submódulos editables. Los strings
+    // LUAU_TEMPLATE_MENU* se definen justo antes de este helper (ver abajo).
+    if (node_name == "Menu")           return String(LUAU_TEMPLATE_MENU);
+    if (node_name == "MenuUi")         return String(LUAU_TEMPLATE_MENU_UI);
+    if (node_name == "Settings")       return String(LUAU_TEMPLATE_MENU_SETTINGS);
+    if (node_name == "Players")        return String(LUAU_TEMPLATE_MENU_PLAYERS);
+    // Legado (WIP 1.15): módulo único de ajustes, reemplazado por Menu/*.
+    if (node_name == "SettingsModule") return String(LUAU_TEMPLATE_SETTINGS_MODULE);
+    if (cls == "LocalScript")  return String(LUAU_TEMPLATE_LOCAL_SCRIPT);
+    if (cls == "ServerScript") return String(LUAU_TEMPLATE_SERVER_SCRIPT);
+    if (cls == "ModuleScript") return String(LUAU_TEMPLATE_MODULE_OOP);
+    return String(LUAU_TEMPLATE_LOCAL_SCRIPT);
+}
+
+// ¿El nombre corresponde a un script "de fábrica" con plantilla propia? Un
+// LocalScript/ModuleScript del usuario con nombre arbitrario NO lo es (cae en el
+// template genérico) y el actualizador NO lo toca.
+static bool gl_is_managed_template(const String& node_name) {
+    static const char* names[] = {
+        "Health", "Animate", "PlayerModule", "ControlModule", "PCModule",
+        "MobileModule", "ConsoleModule", "CameraModule", "ChatModule",
+        "GameManager", "Menu", "MenuUi", "Settings", "Players"
+    };
+    for (const char* n : names) if (node_name == String(n)) return true;
+    return false;
+}
+
+// ── Sidecar de "hash base" por script (1.15) ──────────────────────────────
+//  Guarda, por script_id, el md5 del ÚLTIMO template de fábrica que ESCRIBIMOS
+//  en su archivo. Permite al actualizador distinguir:
+//    · archivo == base            → el jugador NO lo tocó  → actualizar en sitio
+//    · archivo != base            → el jugador lo tocó     → ofrecer en ScriptUpdate
+//  Formato: líneas "script_id\tmd5" en res://GodotLuau/.gl_tpl_base.cfg
+static const char* GL_TPL_BASE_PATH = "res://GodotLuau/.gl_tpl_base.cfg";
+
+static Dictionary gl_tpl_base_load() {
+    Dictionary d;
+    if (!FileAccess::file_exists(GL_TPL_BASE_PATH)) return d;
+    Ref<FileAccess> f = FileAccess::open(GL_TPL_BASE_PATH, FileAccess::READ);
+    if (f.is_null()) return d;
+    while (!f->eof_reached()) {
+        String line = f->get_line();
+        int tab = line.find("\t");
+        if (tab > 0) d[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+    return d;
+}
+static void gl_tpl_base_save(const Dictionary& d) {
+    Ref<DirAccess> dir = DirAccess::open("res://");
+    if (dir.is_valid() && !dir->dir_exists("res://GodotLuau")) dir->make_dir_recursive("res://GodotLuau");
+    Ref<FileAccess> f = FileAccess::open(GL_TPL_BASE_PATH, FileAccess::WRITE);
+    if (f.is_null()) return;
+    Array keys = d.keys();
+    for (int i = 0; i < keys.size(); i++) {
+        String k = keys[i];
+        f->store_line(k + "\t" + String(d[k]));
+    }
+}
+static String gl_tpl_base_get(const String& id) {
+    Dictionary d = gl_tpl_base_load();
+    return d.has(id) ? String(d[id]) : String();
+}
+static void gl_tpl_base_set(const String& id, const String& md5) {
+    Dictionary d = gl_tpl_base_load();
+    d[id] = md5;
+    gl_tpl_base_save(d);
+}
 
 // ── Helpers for _JSON: Variant ↔ Lua conversion ───────────────────────────
 //// ── Helpers para _JSON: conversión Variant ↔ Lua ──────────────────────────
@@ -1238,8 +1334,11 @@ protected:
 
         ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "codigo_luau", PROPERTY_HINT_RESOURCE_TYPE, "LuauScript"),
                      "set_codigo_luau", "get_codigo_luau");
-        // Como en Roblox Studio: Enabled true por defecto; desmarcado no corre
-        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Enabled"), "set_enabled", "get_enabled");
+        // NOTA: la propiedad "Enabled" NO se añade aquí a propósito. En Roblox
+        // Studio solo Script/LocalScript la tienen; un ModuleScript no. Por eso
+        // cada subclase ejecutable la añade en su propio _bind_methods (ver
+        // ServerScript/LocalScript abajo) y ModuleScript la omite. Los métodos
+        // set_enabled/get_enabled siguen ligados aquí para uso interno.
         // Visible en el inspector pero NO editable por el usuario
         ADD_PROPERTY(PropertyInfo(Variant::STRING, "script_id", PROPERTY_HINT_NONE, "",
                      PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY),
@@ -1362,47 +1461,16 @@ protected:
                     new_script.instantiate();
 
                     // ── Template selection based on node name ─────────────────
-                    // e.g. Health → regen, ControlModule → movement, etc.
+                    // Fuente ÚNICA de la verdad: gl_builtin_template() (arriba).
+                    // La comparte el actualizador incremental (roblox_datamodel.h).
                     //// ── Selección de template según nombre del nodo ────────────
-                    //// Así Health → regen, ControlModule → movimiento, etc.
-                    String template_code;
                     String node_name = get_name();
-
-                    if (node_name == "Health") {
-                        template_code = String(LUAU_TEMPLATE_HEALTH);
-                    } else if (node_name == "Animate") {
-                        template_code = String(LUAU_TEMPLATE_ANIMATE);
-                    } else if (node_name == "PlayerModule") {
-                        template_code = String(LUAU_TEMPLATE_PLAYER_MODULE);
-                    } else if (node_name == "ControlModule") {
-                        template_code = String(LUAU_TEMPLATE_CONTROL_MODULE);
-                    } else if (node_name == "PCModule") {
-                        template_code = String(LUAU_TEMPLATE_PC_MODULE);
-                    } else if (node_name == "MobileModule") {
-                        template_code = String(LUAU_TEMPLATE_MOBILE_MODULE);
-                    } else if (node_name == "ConsoleModule") {
-                        template_code = String(LUAU_TEMPLATE_CONSOLE_MODULE);
-                    } else if (node_name == "CameraModule") {
-                        template_code = String(LUAU_TEMPLATE_CAMERA_MODULE);
-                    } else if (node_name == "SettingsModule") {
-                        template_code = String(LUAU_TEMPLATE_SETTINGS_MODULE);
-                    } else if (node_name == "ChatModule") {
-                        template_code = String(LUAU_TEMPLATE_CHAT_MODULE);
-                    } else if (node_name == "GameManager") {
-                        template_code = String(LUAU_TEMPLATE_GAME_MANAGER);
-                    } else if (cls == "LocalScript") {
-                        template_code = String(LUAU_TEMPLATE_LOCAL_SCRIPT);
-                    } else if (cls == "ServerScript") {
-                        template_code = String(LUAU_TEMPLATE_SERVER_SCRIPT);
-                    } else if (cls == "ModuleScript") {
-                        template_code = String(LUAU_TEMPLATE_MODULE_OOP);
-                    } else {
-                        template_code = String(LUAU_TEMPLATE_LOCAL_SCRIPT);
-                    }
+                    String template_code = gl_builtin_template(node_name, cls);
 
                     // Un duplicado hereda el código EXACTO del original (no un
                     // template): así la copia conserva lo que el usuario escribió.
-                    if (_gl_is_dup && !_gl_dup_source.is_empty())
+                    bool is_dup = (_gl_is_dup && !_gl_dup_source.is_empty());
+                    if (is_dup)
                         template_code = _gl_dup_source;
 
                     // Sustituir el ID único del script en la plantilla (para poder
@@ -1415,6 +1483,11 @@ protected:
                     new_script->take_over_path(file_path);
                     ResourceSaver::get_singleton()->save(new_script, file_path);
                     set_codigo_luau(new_script);
+                    // Registrar el hash "base" de fábrica (1.15): permite al
+                    // actualizador saber luego si el jugador tocó el archivo. Un
+                    // duplicado NO es plantilla de fábrica → no se registra base.
+                    if (!is_dup)
+                        gl_tpl_base_set(script_id, template_code.md5_text());
                     GL_DEBUG_PRINT("[GodotLuau] Script creado: ", file_path);
                     if (_gl_is_dup)
                         GL_DEBUG_PRINT("[GodotLuau] Duplicado con identidad propia: ", script_id);
@@ -2723,15 +2796,23 @@ public:
 class ServerScript : public ScriptNodeBase {
     GDCLASS(ServerScript, ScriptNodeBase);
 protected:
-    static void _bind_methods() {}
+    static void _bind_methods() {
+        // Como en Roblox Studio: Enabled true por defecto; desmarcado no corre.
+        // Solo los scripts ejecutables la exponen (los métodos viven en la base).
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Enabled"), "set_enabled", "get_enabled");
+    }
 };
 
 class LocalScript : public ScriptNodeBase {
     GDCLASS(LocalScript, ScriptNodeBase);
 protected:
-    static void _bind_methods() {}
+    static void _bind_methods() {
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL, "Enabled"), "set_enabled", "get_enabled");
+    }
 };
 
+// ModuleScript NO expone "Enabled" (igual que Roblox Studio): un módulo no se
+// ejecuta por sí mismo, solo se hace require(). Hereda source/script_id de la base.
 class ModuleScript : public ScriptNodeBase {
     GDCLASS(ModuleScript, ScriptNodeBase);
 protected:

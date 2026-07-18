@@ -48,6 +48,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "gl_debug.h"
 #include "gl_graphics.h"
+#include "../core/gl_runtime.h"   // gl_native_menu_enabled() (1.15)
 
 using namespace godot;
 
@@ -92,6 +93,7 @@ class GLSettingsMenu : public CanvasLayer {
     Label*          volume_val  = nullptr;
     Label*          sens_val    = nullptr;
     Button*         leave_btn   = nullptr;
+    Button*         burger      = nullptr;   // botón ☰; se oculta si el menú Lua toma el control (1.15)
     Label*          hud         = nullptr;
     double          hud_timer   = 0.0;
     bool            leave_armed = false;
@@ -217,7 +219,7 @@ public:
         _load_settings();
 
         // ── ☰ flotante arriba-derecha ─────────────────────────────────
-        Button* burger = memnew(Button);
+        burger = memnew(Button);
         burger->set_text(String::utf8("  ☰  "));
         burger->add_theme_font_size_override("font_size", 20);
         burger->add_theme_stylebox_override("normal",  _box(Color(0, 0, 0, 0.35f), 10, 6));
@@ -395,6 +397,7 @@ public:
     // ── Abrir / cerrar con animacion ──────────────────────────────────
     void toggle_menu() {
         if (!panel_root) return;
+        if (!gl_native_menu_enabled()) return;   // el menú Lua (Modules/Menu) toma el control
         if (is_open) { _close_anim(); return; }
         is_open = true;
         panel_root->set_visible(true);
@@ -436,6 +439,7 @@ public:
 
     void _input(const Ref<InputEvent>& e) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
+        if (!gl_native_menu_enabled()) return;   // Escape lo gestiona el menú Lua
         Ref<InputEventKey> k = e;
         if (k.is_valid() && k->is_pressed() && !k->is_echo() && k->get_keycode() == KEY_ESCAPE) toggle_menu();
         Ref<InputEventJoypadButton> j = e;
@@ -566,6 +570,13 @@ public:
     // ── Loop: HUD + confirmacion de salida + reintento sensibilidad ──
     void _process(double dt) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
+        // Si el menú Lua (Modules/Menu) tomó el control, apartarse por completo.
+        if (!gl_native_menu_enabled()) {
+            if (burger) burger->set_visible(false);
+            if (hud)    hud->set_visible(false);
+            if (is_open) _close_anim();
+            return;
+        }
         if (leave_armed) {
             leave_timer -= dt;
             if (leave_timer <= 0.0) {

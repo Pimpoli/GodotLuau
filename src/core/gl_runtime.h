@@ -37,6 +37,16 @@
 
 using namespace godot;
 
+// ── Menú nativo vs. menú Lua (1.15) ──────────────────────────────────────────
+//  El menú de Escape puede ser un módulo Luau EDITABLE (Modules/Menu). Cuando ese
+//  módulo arranca, llama game:SetNativeMenuEnabled(false): el menú nativo del
+//  motor (GLSettingsMenu) se aparta — ignora Escape y oculta su botón — para que
+//  no salgan DOS menús. Si el módulo Lua no existe/no corre, el nativo sigue
+//  funcionando como respaldo.
+static inline bool& gl_native_menu_flag() { static bool v = true; return v; }
+static inline void  gl_set_native_menu_enabled(bool b) { gl_native_menu_flag() = b; }
+static inline bool  gl_native_menu_enabled() { return gl_native_menu_flag(); }
+
 // ── Estado de input cross-device compartido ──────────────────────────────────
 //  La UI tactil (joystick + boton de salto, creada por RobloxPlayer cuando hay
 //  pantalla tactil) ESCRIBE aqui; el Humanoid LEE de aqui para mover el

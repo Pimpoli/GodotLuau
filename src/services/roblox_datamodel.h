@@ -14,9 +14,16 @@
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "gl_debug.h"
+// gl_builtin_template / gl_is_managed_template / gl_tpl_base_* + LuauScript.
+// luau_script.h ya se incluye antes que este header en register_types.cpp (guard
+// evita doble inclusión); lo pedimos explícitamente para el actualizador seguro.
+#include "../core/luau_script.h"
 
 using namespace godot;
 
@@ -72,7 +79,11 @@ public:
         }
         _ensure_structure(tipo);
         int migrated = _gl_migrate_tree(this);
-        GL_DEBUG_PRINT("[GodotLuau] Estructura actualizada (tipo=", tipo, "), nodos migrados=", migrated, ".");
+        // Merge seguro de contenido de scripts de fábrica (1.15): actualiza los
+        // que el jugador no tocó y ofrece en Game/ScriptUpdate los que sí tocó.
+        int synced = _gl_sync_managed_scripts();
+        GL_DEBUG_PRINT("[GodotLuau] Estructura actualizada (tipo=", tipo, "), nodos migrados=",
+                       migrated, ", scripts revisados=", synced, ".");
     }
 
     void generar_entorno(int tipo) {
@@ -172,7 +183,13 @@ private:
             create_service("ModuleScript", "ConsoleModule", ctrl_module);
             create_service("ModuleScript", "CameraModule",  modules_folder);
             create_service("ModuleScript", "ChatModule",    modules_folder);
-            create_service("ModuleScript", "SettingsModule", modules_folder);  // ajustes editables (1.15)
+            // Menu (1.15): menú de Escape modular y EDITABLE. Menu principal con
+            // submódulos MenuUi (todas las UIs), Settings (Config) y Players
+            // (Personas). Reemplaza al antiguo SettingsModule único.
+            Node* menu = create_service("ModuleScript", "Menu", modules_folder);
+            create_service("ModuleScript", "MenuUi",   menu);
+            create_service("ModuleScript", "Settings", menu);
+            create_service("ModuleScript", "Players",  menu);
         }
 
         create_service("Teams", "Teams");
@@ -268,6 +285,111 @@ private:
             count += _gl_migrate_tree(cur);
         }
         return count;
+    }
+
+    // ══ Merge seguro de scripts de fábrica (1.15) ════════════════════════
+    // Objetivo del usuario: al actualizar, NUNCA pisar lo que el jugador tocó.
+    //   · script inexistente          → ya lo crea _ensure_structure (+ su plantilla)
+    //   · archivo == plantilla actual → nada
+    //   · plantilla sin cambios       → nada
+    //   · versión nueva y NO tocado    → se actualiza en sitio
+    //   · versión nueva y SÍ tocado    → se ofrece en Game/ScriptUpdate (apagado)
+    int _gl_sync_managed_scripts() {
+        TypedArray<Node> scripts;
+        _gl_collect_managed(this, scripts);   // recolectar ANTES de mutar el árbol
+        for (int i = 0; i < scripts.size(); i++)
+            _gl_sync_one(Object::cast_to<Node>(scripts[i]));
+        return (int)scripts.size();
+    }
+
+    void _gl_collect_managed(Node* n, TypedArray<Node>& out) {
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* c = n->get_child(i);
+            if (!c) continue;
+            if (c->get_name() == StringName("ScriptUpdate")) continue;   // no re-procesar ofertas
+            if (Object::cast_to<ScriptNodeBase>(c) && gl_is_managed_template(c->get_name()))
+                out.push_back(c);
+            _gl_collect_managed(c, out);
+        }
+    }
+
+    void _gl_sync_one(Node* node) {
+        if (!node) return;
+        String name = node->get_name();
+        String cls  = node->get_class();
+        String sid  = node->get("script_id");
+        if (sid.is_empty()) return;
+        String file_path = "res://GodotLuau/" + cls + "s/" + sid + ".lua";
+        if (!FileAccess::file_exists(file_path)) return;   // solo hacemos merge de archivos EXISTENTES
+
+        // Plantilla de fábrica actual (con el id de ESTE nodo sustituido).
+        String tmpl     = gl_builtin_template(name, cls).replace("%SCRIPT_ID%", sid);
+        String tmpl_md5 = tmpl.md5_text();
+        String base     = gl_tpl_base_get(sid);
+
+        String file_txt;
+        Ref<FileAccess> rf = FileAccess::open(file_path, FileAccess::READ);
+        if (rf.is_valid()) file_txt = rf->get_as_text();
+        String file_md5 = file_txt.md5_text();
+
+        // Ya está en la versión de fábrica actual → nada (adoptamos la base).
+        if (file_md5 == tmpl_md5) {
+            if (base != tmpl_md5) gl_tpl_base_set(sid, tmpl_md5);
+            return;
+        }
+        // La fábrica no cambió respecto a la base → no hay actualización nueva.
+        if (!base.is_empty() && base == tmpl_md5) return;
+
+        // Hay una versión de fábrica NUEVA.
+        bool untouched = (!base.is_empty() && file_md5 == base);
+        if (untouched) {
+            _gl_write_script(node, file_path, tmpl);
+            gl_tpl_base_set(sid, tmpl_md5);
+            GL_DEBUG_PRINT("[GodotLuau] Script actualizado en sitio (intacto): ", name);
+        } else {
+            // Tocado por el jugador (o base desconocida): no pisar; ofrecer aparte.
+            _gl_offer_update(name, cls);
+            GL_DEBUG_PRINT("[GodotLuau] '", name, "' tocado: nueva version en Game/ScriptUpdate (tu archivo intacto).");
+        }
+    }
+
+    void _gl_write_script(Node* node, const String& path, const String& text) {
+        Ref<LuauScript> res = node->get("codigo_luau");
+        if (res.is_valid()) {
+            res->_set_source_code(text);
+            res->take_over_path(path);
+            ResourceSaver::get_singleton()->save(res, path);
+        } else {
+            Ref<FileAccess> wf = FileAccess::open(path, FileAccess::WRITE);
+            if (wf.is_valid()) wf->store_string(text);
+        }
+    }
+
+    // Coloca la versión nueva de <name> en Game/ScriptUpdate. Reutiliza la
+    // carpeta y REEMPLAZA el nodo si ya existía (así dos actualizaciones del
+    // mismo script no generan carpetas/nodos duplicados). El nodo se crea
+    // apagado si es ejecutable, para no interferir con el juego.
+    void _gl_offer_update(const String& name, const String& cls) {
+        Node* root = _owner_root();
+        Node* folder = get_node_or_null(NodePath("ScriptUpdate"));
+        if (!folder) {
+            folder = Object::cast_to<Node>(ClassDB::instantiate(StringName("Folder")));
+            if (!folder) return;
+            folder->set_name("ScriptUpdate");
+            add_child(folder);
+            if (root) folder->set_owner(root);
+        }
+        if (Node* prev = folder->get_node_or_null(NodePath(name))) {
+            folder->remove_child(prev);      // liberar el nombre antes de recrear
+            prev->queue_free();
+        }
+        Node* fresh = Object::cast_to<Node>(ClassDB::instantiate(StringName(cls)));
+        if (!fresh) return;
+        fresh->set_name(name);
+        folder->add_child(fresh);            // ENTER_TREE (editor) le escribe la plantilla ACTUAL
+        if (root) fresh->set_owner(root);
+        if (cls == "LocalScript" || cls == "ServerScript")
+            fresh->set("Enabled", false);    // no debe ejecutarse
     }
 };
 

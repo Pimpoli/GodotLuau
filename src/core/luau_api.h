@@ -25,6 +25,8 @@
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/audio_server.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
 #include <godot_cpp/classes/omni_light3d.hpp>
 #include <godot_cpp/classes/spot_light3d.hpp>
@@ -1087,6 +1089,26 @@ static int godot_object_index(lua_State* L) {
             if (nd && nd->has_method("_gl_update_structure")) nd->call("_gl_update_structure");
             return 0;
         }, "UpdateStructure", 1);
+        return 1;
+    }
+
+    // game:SetNativeMenuEnabled(bool) — el menú Lua editable (Modules/Menu) llama
+    // a esto en su Init para apartar el menú nativo del motor (1.15).
+    if (strcmp(key, "SetNativeMenuEnabled") == 0) {
+        lua_pushcfunction(L, [](lua_State* pL) -> int {
+            gl_set_native_menu_enabled(lua_toboolean(pL, 2) != 0);
+            return 0;
+        }, "SetNativeMenuEnabled");
+        return 1;
+    }
+    // game:Shutdown() — cierra el juego (botón "Salir" del menú).
+    if (strcmp(key, "Shutdown") == 0) {
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
+            if (nd && nd->is_inside_tree() && nd->get_tree()) nd->get_tree()->quit();
+            return 0;
+        }, "Shutdown", 1);
         return 1;
     }
 
@@ -2582,6 +2604,30 @@ static int godot_object_index(lua_State* L) {
                 lua_pushnumber(pL, w ? w->get_graphics_quality() : 8);
                 return 1;
             }, "GetGraphicsQuality", 1);
+            return 1;
+        }
+        // Ajustes globales del motor que el menú (Modules/Menu/Settings) aplica
+        // ahora que el menú es Lua editable (1.15). Son globales → no necesitan
+        // buscar al jugador. Silenciosos si el valor está fuera de rango.
+        if (strcmp(key, "SetMaxFPS") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                int fps = (int)luaL_checknumber(pL, 2);   // 0 = ilimitado
+                Engine::get_singleton()->set_max_fps(fps < 0 ? 0 : fps);
+                return 0;
+            }, "SetMaxFPS");
+            return 1;
+        }
+        if (strcmp(key, "SetMasterVolume") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                double v = luaL_checknumber(pL, 2);        // 0..1
+                if (v < 0.0) v = 0.0; if (v > 1.0) v = 1.0;
+                AudioServer* as = AudioServer::get_singleton();
+                if (as) {
+                    as->set_bus_mute(0, v <= 0.005);
+                    as->set_bus_volume_db(0, (float)UtilityFunctions::linear_to_db(v <= 0.005 ? 0.0001 : v));
+                }
+                return 0;
+            }, "SetMasterVolume");
             return 1;
         }
     }
