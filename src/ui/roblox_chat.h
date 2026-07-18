@@ -21,6 +21,7 @@
 #include <godot_cpp/classes/input_event.hpp>
 #include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -89,20 +90,32 @@ private:
         canvas->set_layer(120);
         add_child(canvas);
 
-        // ── Main panel (bottom-left corner) / Panel principal (esquina inferior izquierda) ──
+        // ── Panel principal ──────────────────────────────────────────────
         main_panel = memnew(Panel);
         main_panel->set_name("ChatPanel");
         main_panel->set_visible(false);
 
-        // Anchor to bottom-left corner / Anclaje a esquina inferior izquierda
-        main_panel->set_anchor(SIDE_LEFT,   0.0f);
-        main_panel->set_anchor(SIDE_RIGHT,  0.0f);
-        main_panel->set_anchor(SIDE_TOP,    1.0f);
-        main_panel->set_anchor(SIDE_BOTTOM, 1.0f);
-        main_panel->set_offset(SIDE_LEFT,   10.0f);
-        main_panel->set_offset(SIDE_RIGHT,  380.0f);
-        main_panel->set_offset(SIDE_TOP,   -220.0f);
-        main_panel->set_offset(SIDE_BOTTOM, -10.0f);
+        // Posición: por defecto ARRIBA-izquierda (como Roblox). El desarrollador
+        // puede volver a abajo-izquierda con el ajuste de proyecto
+        // godot_luau/chat_top = false.
+        bool chat_top = true;
+        if (ProjectSettings::get_singleton()->has_setting("godot_luau/chat_top"))
+            chat_top = (bool)ProjectSettings::get_singleton()->get_setting("godot_luau/chat_top", true);
+        main_panel->set_anchor(SIDE_LEFT,  0.0f);
+        main_panel->set_anchor(SIDE_RIGHT, 0.0f);
+        main_panel->set_offset(SIDE_LEFT,  10.0f);
+        main_panel->set_offset(SIDE_RIGHT, 380.0f);
+        if (chat_top) {
+            main_panel->set_anchor(SIDE_TOP,    0.0f);
+            main_panel->set_anchor(SIDE_BOTTOM, 0.0f);
+            main_panel->set_offset(SIDE_TOP,    62.0f);   // bajo la topbar (logo/chat)
+            main_panel->set_offset(SIDE_BOTTOM, 272.0f);
+        } else {
+            main_panel->set_anchor(SIDE_TOP,    1.0f);
+            main_panel->set_anchor(SIDE_BOTTOM, 1.0f);
+            main_panel->set_offset(SIDE_TOP,   -220.0f);
+            main_panel->set_offset(SIDE_BOTTOM, -10.0f);
+        }
 
         Color panel_bg = Color(0.08f, 0.08f, 0.10f, PANEL_ALPHA);
         main_panel->add_theme_stylebox_override("panel", make_style(panel_bg, 6.0f));

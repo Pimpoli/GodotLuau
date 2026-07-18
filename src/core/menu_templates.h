@@ -406,90 +406,22 @@ return Players
 )LUAU";
 
 // ── Menu: principal ───────────────────────────────────────────────────
+// El menú de Escape (Personas/Config./Galería/Denunciar/Ayuda, con todos los
+// ajustes, el botón-logo arriba-izquierda y el toggle de chat) lo gestiona el
+// MOTOR de forma nativa: siempre funciona y se ve como Roblox. Este módulo queda
+// como punto de extensión FUTURO y por defecto NO hace nada (así no compite con
+// el menú nativo). MenuUi/Settings/Players quedan como ejemplos editables.
 static const char* LUAU_TEMPLATE_MENU = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- Menu.lua — ModuleScript — StarterPlayerScripts/Modules/Menu
--- Menú de Escape modular, estilo Roblox y EDITABLE. Monta el shell (MenuUi) y
--- delega el contenido de cada pestaña a sus submódulos (Settings, Players).
--- El PlayerModule hace require(Menu) y Menu.Init(player).
-
+-- El menú de Escape lo dibuja el MOTOR (nativo, estilo Roblox, con todos los
+-- ajustes y el botón-logo arriba-izquierda). Este módulo es un punto de
+-- extensión: por defecto no hace nada. Pon tu logo en res://gamelogo.png.
 local Menu = {}
-
-local UIS = game:GetService("UserInputService")
-
--- Submódulos (hijos de este ModuleScript). Añade los tuyos aquí.
-local MenuUi     = require(script.MenuUi)
-local Settings   = require(script.Settings)
-local PlayersTab = require(script.Players)
-
-local ui = nil
-
 function Menu.Init(player)
-	if ui then return Menu end
-	ui = MenuUi.new(player)
-
-	-- Este menú reemplaza al menú nativo del motor (silencioso si no aplica).
-	pcall(function() game:SetNativeMenuEnabled(false) end)
-
-	-- ── Pestañas (como en las fotos de Roblox) ───────────────────────
-	local personas  = ui:AddTab("Personas")
-	local config    = ui:AddTab("Config.")
-	local galeria   = ui:AddTab("Galería")
-	local denunciar = ui:AddTab("Denunciar")
-	local ayuda     = ui:AddTab("Ayuda")
-
-	PlayersTab.Build(ui, personas, player)
-	Settings.Build(ui, config, player)
-
-	-- Galería / Denunciar: marcadores por ahora (se ampliarán con más fotos).
-	ui:Section(galeria, "Galería")
-	local g = ui.label(galeria, "Aquí aparecerán tus capturas.", 15, ui.Theme.Dim)
-	g.Size = UDim2.new(1, -8, 0, 28)
-	ui:Section(denunciar, "Denunciar")
-	local d = ui.label(denunciar, "Reporta a un jugador o un problema.", 15, ui.Theme.Dim)
-	d.Size = UDim2.new(1, -8, 0, 28)
-
-	-- ── Ayuda: controles ─────────────────────────────────────────────
-	ui:Section(ayuda, "Controles")
-	local controls = {
-		"W  A  S  D   —   Moverse",
-		"Espacio   —   Saltar",
-		"Botón derecho del ratón   —   Rotar la cámara",
-		"Rueda del ratón   —   Acercar / alejar",
-		"Esc   —   Abrir / cerrar este menú",
-	}
-	for _, c in ipairs(controls) do
-		local l = ui.label(ayuda, c, 15, ui.Theme.Text)
-		l.Size = UDim2.new(1, -8, 0, 26)
-	end
-
-	-- ── Barra inferior: Salir / Regenerar / Reanudar ─────────────────
-	ui:BuildBottom({
-		{ key = "L", text = "Salir", color = ui.Theme.Row, cb = function()
-			pcall(function() game:Shutdown() end)
-		end },
-		{ key = "R", text = "Regenerar", color = ui.Theme.Row, cb = function()
-			pcall(function() player:LoadCharacter() end)
-			ui:Close()
-		end },
-		{ key = "ESC", text = "Reanudar", color = ui.Theme.Accent, cb = function()
-			ui:Close()
-		end },
-	})
-
-	ui:ShowTab("Personas")
-
-	-- ── Abrir / cerrar con Escape ────────────────────────────────────
-	UIS.InputBegan:Connect(function(input, gameProcessed)
-		if gameProcessed then return end
-		if input.KeyCode == Enum.KeyCode.Escape then
-			ui:Toggle()
-		end
-	end)
-
-	return Menu
+	-- Aquí puedes añadir tu propia UI extra si quieres. El menú principal ya
+	-- lo gestiona el motor, así que este Init se deja vacío a propósito.
 end
-
 return Menu
 )LUAU";
 

@@ -44,11 +44,20 @@
 #include <godot_cpp/classes/callback_tweener.hpp>
 #include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/texture_rect.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "gl_debug.h"
 #include "gl_graphics.h"
-#include "../core/gl_runtime.h"   // gl_native_menu_enabled() (1.15)
+#include "../core/gl_runtime.h"
 
 using namespace godot;
 
@@ -67,11 +76,16 @@ class GLSettingsMenu : public CanvasLayer {
     // ── Estado persistente ────────────────────────────────────────────
     int    quality   = 8;      // 1..10 (como Roblox), 1.15
     bool   cam_lock  = false;  // bloquear cámara: 3ª persona se ve como 1ª (1.15)
-    int    fps_idx   = 1;      // default 60
+    int    fps_idx   = 2;      // default 120
     bool   show_fps  = false;
     bool   show_ping = false;
     double volume    = 100.0;  // 0..100
     double sensitivity = 1.0;  // 0.2..3.0 (multiplicador)
+    bool   fullscreen  = false;
+    bool   invert_cam  = false;
+    bool   shift_lock  = false; // "Bloqueo de mayúsculas" (shift lock)
+    int    gfx_mode    = 0;     // 0 = Automático, 1 = Manual
+    double bg_trans    = 0.35;  // transparencia del fondo del menú (0 transparente..1 opaco)
 
     static const int FPS_COUNT = 6;
     const int FPS_OPTIONS[FPS_COUNT] = { 30, 60, 120, 144, 240, 0 };
@@ -79,12 +93,13 @@ class GLSettingsMenu : public CanvasLayer {
     int display_num = 0;
 
     // ── UI ────────────────────────────────────────────────────────────
+    static const int TAB_COUNT = 5;   // Personas / Config / Galería / Denunciar / Ayuda
     ColorRect*      dim = nullptr;
     Control*        panel_root = nullptr;
     PanelContainer* panel = nullptr;
-    Button*         tab_btns[3] = { nullptr, nullptr, nullptr };
-    Control*        tab_pages[3] = { nullptr, nullptr, nullptr };
-    int             tab_active = 1;   // abre en Settings
+    Button*         tab_btns[TAB_COUNT]  = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    Control*        tab_pages[TAB_COUNT] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    int             tab_active = 0;   // abre en Personas (como Roblox)
     VBoxContainer*  players_list = nullptr;
     Label*          players_count = nullptr;
     Label*          ping_val    = nullptr;
@@ -92,8 +107,11 @@ class GLSettingsMenu : public CanvasLayer {
     Label*          fps_val     = nullptr;
     Label*          volume_val  = nullptr;
     Label*          sens_val    = nullptr;
+    Label*          gfx_val     = nullptr;
     Button*         leave_btn   = nullptr;
-    Button*         burger      = nullptr;   // botón ☰; se oculta si el menú Lua toma el control (1.15)
+    Button*         burger      = nullptr;   // botón-logo arriba-izquierda (abre el menú), estilo Roblox
+    Button*         chat_btn    = nullptr;   // botón de chat en la topbar (como Roblox)
+    bool            chat_shown  = true;      // estado del chat (toggle desde la topbar)
     Label*          hud         = nullptr;
     double          hud_timer   = 0.0;
     bool            leave_armed = false;
@@ -188,6 +206,56 @@ class GLSettingsMenu : public CanvasLayer {
         return t;
     }
 
+    // ── Logo del juego (topbar, como el logo de Roblox arriba-izquierda) ──
+    // El desarrollador pone su logo en res://gamelogo.png (o define el ajuste
+    // de proyecto godot_luau/game_logo). Si no hay, usa el icono de GodotLuau.
+    Ref<Texture2D> _try_load_tex(const String& path) {
+        if (path.is_empty()) return Ref<Texture2D>();
+        Ref<Texture2D> t = ResourceLoader::get_singleton()->load(path);
+        if (t.is_valid()) return t;
+        if (FileAccess::file_exists(path)) {
+            Ref<Image> img; img.instantiate();
+            if (img->load(path) == OK) return ImageTexture::create_from_image(img);
+        }
+        return Ref<Texture2D>();
+    }
+    Ref<Texture2D> _load_game_logo() {
+        String setting;
+        if (ProjectSettings::get_singleton()->has_setting("godot_luau/game_logo"))
+            setting = ProjectSettings::get_singleton()->get_setting("godot_luau/game_logo", "");
+        Ref<Texture2D> t = _try_load_tex(setting);
+        if (t.is_valid()) return t;
+        const char* paths[] = { "res://gamelogo.png", "res://GameLogo.png",
+                                "res://GodotLuau/assets/branding/GodotLuau Icon.png" };
+        for (auto p : paths) { t = _try_load_tex(String(p)); if (t.is_valid()) return t; }
+        return Ref<Texture2D>();
+    }
+
+    // ── Chat: mostrar/ocultar desde la topbar (como Roblox) ──────────────
+    Node* _find_chat() {
+        return is_inside_tree() ? _find_by_class((Node*)get_tree()->get_root(), "RobloxChat") : nullptr;
+    }
+    void _set_controls_visible(Node* n, bool v) {
+        for (int i = 0; i < n->get_child_count(); i++) {
+            Node* c = n->get_child(i);
+            if (Control* ct = Object::cast_to<Control>(c)) ct->set_visible(v);
+            else _set_controls_visible(c, v);   // descender por el CanvasLayer del chat
+        }
+    }
+    void _toggle_chat() {
+        chat_shown = !chat_shown;
+        if (Node* chat = _find_chat()) _set_controls_visible(chat, chat_shown);
+    }
+
+    // Encabezado de sección (Audio, Pantalla y gráficos, Vista y controles...)
+    void _section(VBoxContainer* vb, const String& title) {
+        Control* sp = memnew(Control);
+        sp->set_custom_minimum_size(Vector2(0, 8));
+        vb->add_child(sp);
+        Label* l = _mklabel(title, 19, COL_TEXT);
+        vb->add_child(l);
+    }
+
 protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("toggle_menu"),         &GLSettingsMenu::toggle_menu);
@@ -202,6 +270,13 @@ protected:
         ClassDB::bind_method(D_METHOD("_on_resume"),          &GLSettingsMenu::_on_resume);
         ClassDB::bind_method(D_METHOD("_on_leave"),           &GLSettingsMenu::_on_leave);
         ClassDB::bind_method(D_METHOD("_hide_done"),          &GLSettingsMenu::_hide_done);
+        ClassDB::bind_method(D_METHOD("_toggle_chat"),        &GLSettingsMenu::_toggle_chat);
+        ClassDB::bind_method(D_METHOD("_on_fullscreen", "on"),&GLSettingsMenu::_on_fullscreen);
+        ClassDB::bind_method(D_METHOD("_on_invert_cam", "on"),&GLSettingsMenu::_on_invert_cam);
+        ClassDB::bind_method(D_METHOD("_on_shiftlock", "on"), &GLSettingsMenu::_on_shiftlock);
+        ClassDB::bind_method(D_METHOD("_on_gfxmode", "dir"),  &GLSettingsMenu::_on_gfxmode);
+        ClassDB::bind_method(D_METHOD("_on_bgtrans", "v"),    &GLSettingsMenu::_on_bgtrans);
+        ClassDB::bind_method(D_METHOD("_on_perfstats", "on"), &GLSettingsMenu::_on_perfstats);
     }
 
 public:
@@ -218,19 +293,44 @@ public:
 
         _load_settings();
 
-        // ── ☰ flotante arriba-derecha ─────────────────────────────────
-        burger = memnew(Button);
-        burger->set_text(String::utf8("  ☰  "));
-        burger->add_theme_font_size_override("font_size", 20);
-        burger->add_theme_stylebox_override("normal",  _box(Color(0, 0, 0, 0.35f), 10, 6));
-        burger->add_theme_stylebox_override("hover",   _box(Color(0, 0, 0, 0.55f), 10, 6));
-        burger->add_theme_stylebox_override("pressed", _box(Color(0, 0, 0, 0.7f), 10, 6));
-        burger->set_anchor(SIDE_LEFT, 1.0f); burger->set_anchor(SIDE_RIGHT, 1.0f);
-        burger->set_offset(SIDE_LEFT, -56.0f); burger->set_offset(SIDE_RIGHT, -10.0f);
-        burger->set_offset(SIDE_TOP, 8.0f);    burger->set_offset(SIDE_BOTTOM, 46.0f);
-        burger->set_tooltip_text("Game menu (Esc / gamepad Start)");
-        burger->connect("pressed", Callable(this, "toggle_menu"));
-        add_child(burger);
+        // ── Topbar arriba-izquierda (estilo Roblox): [logo del juego] [chat] ──
+        // El logo abre el menú (como el logo de Roblox). Junto va el botón de
+        // chat. El desarrollador pone su logo en res://gamelogo.png.
+        {
+            HBoxContainer* topbar = memnew(HBoxContainer);
+            topbar->add_theme_constant_override("separation", 8);
+            topbar->set_anchor(SIDE_LEFT, 0.0f); topbar->set_anchor(SIDE_RIGHT, 0.0f);
+            topbar->set_offset(SIDE_LEFT, 10.0f); topbar->set_offset(SIDE_TOP, 8.0f);
+            add_child(topbar);
+
+            burger = memnew(Button);
+            burger->set_custom_minimum_size(Vector2(44, 44));
+            burger->add_theme_stylebox_override("normal",  _box(Color(0, 0, 0, 0.40f), 12, 4));
+            burger->add_theme_stylebox_override("hover",   _box(Color(0, 0, 0, 0.60f), 12, 4));
+            burger->add_theme_stylebox_override("pressed", _box(Color(0.20f, 0.55f, 1.0f, 0.55f), 12, 4));
+            Ref<Texture2D> logo = _load_game_logo();
+            if (logo.is_valid()) {
+                burger->set_button_icon(logo);
+                burger->set_expand_icon(true);
+            } else {
+                burger->set_text(String::utf8("☰"));
+                burger->add_theme_font_size_override("font_size", 20);
+            }
+            burger->set_tooltip_text("Menu (Esc)");
+            burger->connect("pressed", Callable(this, "toggle_menu"));
+            topbar->add_child(burger);
+
+            chat_btn = memnew(Button);
+            chat_btn->set_custom_minimum_size(Vector2(44, 44));
+            chat_btn->set_text(String::utf8("💬"));
+            chat_btn->add_theme_font_size_override("font_size", 18);
+            chat_btn->add_theme_stylebox_override("normal",  _box(Color(0, 0, 0, 0.40f), 12, 4));
+            chat_btn->add_theme_stylebox_override("hover",   _box(Color(0, 0, 0, 0.60f), 12, 4));
+            chat_btn->add_theme_stylebox_override("pressed", _box(Color(0, 0, 0, 0.75f), 12, 4));
+            chat_btn->set_tooltip_text("Chat");
+            chat_btn->connect("pressed", Callable(this, "_toggle_chat"));
+            topbar->add_child(chat_btn);
+        }
 
         // ── HUD FPS/ping ──────────────────────────────────────────────
         hud = _mklabel("", 15, Color(0.45f, 1.0f, 0.45f));
@@ -249,12 +349,13 @@ public:
         dim->set_anchors_preset(Control::PRESET_FULL_RECT);
         panel_root->add_child(dim);
 
+        // Panel casi a pantalla completa (como el menú de Roblox), con márgenes.
         panel = memnew(PanelContainer);
-        panel->add_theme_stylebox_override("panel", _box(COL_BG, 14, 18));
-        panel->set_anchor(SIDE_LEFT, 0.5f);  panel->set_anchor(SIDE_RIGHT, 0.5f);
-        panel->set_anchor(SIDE_TOP, 0.5f);   panel->set_anchor(SIDE_BOTTOM, 0.5f);
-        panel->set_offset(SIDE_LEFT, -250.0f); panel->set_offset(SIDE_RIGHT, 250.0f);
-        panel->set_offset(SIDE_TOP, -235.0f);  panel->set_offset(SIDE_BOTTOM, 235.0f);
+        panel->add_theme_stylebox_override("panel", _box(COL_BG, 16, 22));
+        panel->set_anchor(SIDE_LEFT, 0.0f);  panel->set_anchor(SIDE_RIGHT, 1.0f);
+        panel->set_anchor(SIDE_TOP, 0.0f);   panel->set_anchor(SIDE_BOTTOM, 1.0f);
+        panel->set_offset(SIDE_LEFT, 48.0f);  panel->set_offset(SIDE_RIGHT, -48.0f);
+        panel->set_offset(SIDE_TOP, 48.0f);   panel->set_offset(SIDE_BOTTOM, -48.0f);
         panel_root->add_child(panel);
 
         VBoxContainer* main_vb = memnew(VBoxContainer);
@@ -276,15 +377,15 @@ public:
             hb->add_child(x);
         }
 
-        // ── Pestañas ──────────────────────────────────────────────────
+        // ── Pestañas (Roblox: Personas / Config. / Galería / Denunciar / Ayuda) ──
         {
             HBoxContainer* tabs = memnew(HBoxContainer);
             tabs->add_theme_constant_override("separation", 6);
             main_vb->add_child(tabs);
-            const char* names[3] = { "Players", "Settings", "Help" };
-            for (int i = 0; i < 3; i++) {
+            const char* names[TAB_COUNT] = { "Personas", "Config.", "Galería", "Denunciar", "Ayuda" };
+            for (int i = 0; i < TAB_COUNT; i++) {
                 Button* b = memnew(Button);
-                b->set_text(names[i]);
+                b->set_text(String::utf8(names[i]));
                 b->set_h_size_flags(Control::SIZE_EXPAND_FILL);
                 b->add_theme_font_size_override("font_size", 16);
                 b->connect("pressed", Callable(this, "_on_tab").bind(i));
@@ -294,7 +395,7 @@ public:
         }
         main_vb->add_child(memnew(HSeparator));
 
-        // ── Contenido de pestañas (con scroll) ────────────────────────
+        // ── Contenido con scroll (VBox + ScrollContainer = scroll REAL) ─
         ScrollContainer* sc = memnew(ScrollContainer);
         sc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
         sc->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
@@ -304,7 +405,7 @@ public:
         pages->set_v_size_flags(Control::SIZE_EXPAND_FILL);
         sc->add_child(pages);
 
-        // — Pagina 0: PLAYERS —
+        // — Página 0: PERSONAS —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
             vb->set_anchors_preset(Control::PRESET_FULL_RECT);
@@ -317,47 +418,80 @@ public:
             vb->add_child(players_list);
             tab_pages[0] = vb;
         }
-        // — Pagina 1: SETTINGS —
+        // — Página 1: CONFIG. (todos los ajustes por secciones, como Roblox) —
+        {
+            VBoxContainer* vb = memnew(VBoxContainer);
+            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->add_theme_constant_override("separation", 6);
+            pages->add_child(vb);
+
+            _section(vb, String::utf8("Audio"));
+            { HBoxContainer* hb = _row(vb, String::utf8("Volumen")); _slider(hb, 0, 100, 1, volume, &volume_val, "_on_volume"); }
+
+            _section(vb, String::utf8("Pantalla y gráficos"));
+            { HBoxContainer* hb = _row(vb, String::utf8("Pantalla completa")); _toggle(hb, fullscreen, "_on_fullscreen"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Transparencia del fondo")); _slider(hb, 0, 100, 1, bg_trans * 100.0, nullptr, "_on_bgtrans"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Estad. de rendimiento")); _toggle(hb, show_fps, "_on_perfstats"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Modo de gráficos")); _selector(hb, &gfx_val, "_on_gfxmode"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Calidad de gráficos")); _selector(hb, &quality_val, "_on_quality"); }
+
+            _section(vb, String::utf8("Velocidad máxima de fotogramas"));
+            { HBoxContainer* hb = _row(vb, String::utf8("FPS máximo")); _selector(hb, &fps_val, "_on_fps"); }
+
+            _section(vb, String::utf8("Vista y controles"));
+            { HBoxContainer* hb = _row(vb, String::utf8("Modo de cámara")); _toggle(hb, cam_lock, "_on_cam_lock"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Cámara invertida")); _toggle(hb, invert_cam, "_on_invert_cam"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Sensibilidad de la cámara")); _slider(hb, 0.2, 3.0, 0.1, sensitivity, &sens_val, "_on_sens"); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Bloqueo de mayúsculas")); _toggle(hb, shift_lock, "_on_shiftlock"); }
+
+            _section(vb, String::utf8("Red"));
+            { HBoxContainer* hb = _row(vb, "Ping");
+              ping_val = _mklabel("--", 16, COL_DIM);
+              ping_val->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+              hb->add_child(ping_val); }
+            { HBoxContainer* hb = _row(vb, String::utf8("Mostrar ping")); _toggle(hb, show_ping, "_on_show_ping"); }
+
+            tab_pages[1] = vb;
+        }
+        // — Página 2: GALERÍA (marcador; se ampliará) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
             vb->set_anchors_preset(Control::PRESET_FULL_RECT);
             vb->add_theme_constant_override("separation", 8);
             pages->add_child(vb);
-
-            { HBoxContainer* hb = _row(vb, "Ping");
-              ping_val = _mklabel("--", 16, COL_DIM);
-              ping_val->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
-              hb->add_child(ping_val); }
-            { HBoxContainer* hb = _row(vb, "Graphics Quality"); _selector(hb, &quality_val, "_on_quality"); }
-            { HBoxContainer* hb = _row(vb, "Lock Camera (1st person)"); _toggle(hb, cam_lock, "_on_cam_lock"); }
-            { HBoxContainer* hb = _row(vb, "Max FPS");          _selector(hb, &fps_val,     "_on_fps"); }
-            { HBoxContainer* hb = _row(vb, "Volume");           _slider(hb, 0, 100, 1, volume, &volume_val, "_on_volume"); }
-            { HBoxContainer* hb = _row(vb, "Camera Sensitivity"); _slider(hb, 0.2, 3.0, 0.1, sensitivity, &sens_val, "_on_sens"); }
-            { HBoxContainer* hb = _row(vb, "Show FPS");  _toggle(hb, show_fps,  "_on_show_fps"); }
-            { HBoxContainer* hb = _row(vb, "Show Ping"); _toggle(hb, show_ping, "_on_show_ping"); }
-            tab_pages[1] = vb;
+            vb->add_child(_mklabel(String::utf8("Galería"), 20, COL_TEXT));
+            vb->add_child(_mklabel(String::utf8("Aquí aparecerán tus capturas."), 15, COL_DIM));
+            tab_pages[2] = vb;
         }
-        // — Pagina 2: HELP —
+        // — Página 3: DENUNCIAR (marcador; se ampliará) —
+        {
+            VBoxContainer* vb = memnew(VBoxContainer);
+            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->add_theme_constant_override("separation", 8);
+            pages->add_child(vb);
+            vb->add_child(_mklabel(String::utf8("Denunciar"), 20, COL_TEXT));
+            vb->add_child(_mklabel(String::utf8("Reporta a un jugador o un problema."), 15, COL_DIM));
+            tab_pages[3] = vb;
+        }
+        // — Página 4: AYUDA (controles) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
             vb->set_anchors_preset(Control::PRESET_FULL_RECT);
             vb->add_theme_constant_override("separation", 6);
             pages->add_child(vb);
             const char* lines[] = {
-                "W / A / S / D  -  Move",
-                "Space  -  Jump",
-                "Right mouse  -  Rotate camera",
-                "Mouse wheel  -  Zoom",
-                "/  or  Enter  -  Chat",
-                "Esc  -  This menu",
-                "Gamepad: left stick move, A jump, Start menu",
-                "Mobile: joystick to move, drag right side to look",
+                "W / A / S / D  —  Moverse",
+                "Espacio  —  Saltar",
+                "Botón derecho del ratón  —  Rotar la cámara",
+                "Rueda del ratón  —  Acercar / alejar",
+                "/  o  Enter  —  Chat",
+                "Esc  —  Este menú",
+                "Mando: stick izq. mover, A saltar, Start menú",
+                "Móvil: joystick para moverte, arrastra a la derecha para mirar",
             };
-            for (int i = 0; i < 8; i++) {
-                Label* l = _mklabel(String::utf8(lines[i]), 15, i % 2 ? COL_DIM : COL_TEXT);
-                vb->add_child(l);
-            }
-            tab_pages[2] = vb;
+            for (int i = 0; i < 8; i++)
+                vb->add_child(_mklabel(String::utf8(lines[i]), 15, i % 2 ? COL_DIM : COL_TEXT));
+            tab_pages[4] = vb;
         }
 
         // ── Footer: Resume + Leave ────────────────────────────────────
@@ -397,7 +531,6 @@ public:
     // ── Abrir / cerrar con animacion ──────────────────────────────────
     void toggle_menu() {
         if (!panel_root) return;
-        if (!gl_native_menu_enabled()) return;   // el menú Lua (Modules/Menu) toma el control
         if (is_open) { _close_anim(); return; }
         is_open = true;
         panel_root->set_visible(true);
@@ -439,7 +572,6 @@ public:
 
     void _input(const Ref<InputEvent>& e) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
-        if (!gl_native_menu_enabled()) return;   // Escape lo gestiona el menú Lua
         Ref<InputEventKey> k = e;
         if (k.is_valid() && k->is_pressed() && !k->is_echo() && k->get_keycode() == KEY_ESCAPE) toggle_menu();
         Ref<InputEventJoypadButton> j = e;
@@ -449,8 +581,8 @@ public:
     // ── Pestañas ──────────────────────────────────────────────────────
     void _on_tab(int i) { _select_tab(i); }
     void _select_tab(int i) {
-        tab_active = Math::clamp(i, 0, 2);
-        for (int t = 0; t < 3; t++) {
+        tab_active = Math::clamp(i, 0, TAB_COUNT - 1);
+        for (int t = 0; t < TAB_COUNT; t++) {
             bool on = (t == tab_active);
             if (tab_pages[t]) tab_pages[t]->set_visible(on);
             if (tab_btns[t]) {
@@ -528,6 +660,25 @@ public:
     void _on_sens(double v)   { sensitivity = v; _apply_all(); _refresh_labels(); _save_settings(); }
     void _on_show_fps(bool on)  { show_fps = on;  _save_settings(); }
     void _on_show_ping(bool on) { show_ping = on; _save_settings(); }
+    void _on_perfstats(bool on) { show_fps = on;  _save_settings(); }   // "Estad. de rendimiento"
+    void _on_fullscreen(bool on) {
+        fullscreen = on;
+        DisplayServer::get_singleton()->window_set_mode(
+            on ? DisplayServer::WINDOW_MODE_FULLSCREEN : DisplayServer::WINDOW_MODE_WINDOWED);
+        _save_settings();
+    }
+    void _on_invert_cam(bool on) {
+        invert_cam = on;
+        if (is_inside_tree()) {
+            Node* p = _find_by_class((Node*)get_tree()->get_root(), "RobloxPlayer");
+            if (p && p->has_method("set_invert_camera")) p->call("set_invert_camera", on);
+        }
+        _save_settings();
+    }
+    void _on_shiftlock(bool on) { shift_lock = on; _save_settings(); }
+    void _on_gfxmode(int dir)   { gfx_mode = Math::clamp(gfx_mode + dir, 0, 1); _refresh_labels(); _save_settings(); }
+    void _on_bgtrans(double v)  { bg_trans = Math::clamp(v / 100.0, 0.0, 1.0); _apply_bg_trans(); _save_settings(); }
+    void _apply_bg_trans() { if (dim) dim->set_color(Color(0, 0, 0, (float)(0.12 + bg_trans * 0.55))); }
 
     // ── Aplicar ───────────────────────────────────────────────────────
     void _apply_all() {
@@ -542,6 +693,9 @@ public:
             as->set_bus_volume_db(0, (float)UtilityFunctions::linear_to_db(Math::max(volume, 0.5) / 100.0));
         }
         _apply_sensitivity();
+        _apply_bg_trans();
+        if (fullscreen)
+            DisplayServer::get_singleton()->window_set_mode(DisplayServer::WINDOW_MODE_FULLSCREEN);
     }
     void _apply_camera_lock() {
         if (!is_inside_tree()) return;
@@ -557,7 +711,8 @@ public:
     void _refresh_labels() {
         // Calidad 1..10 estilo Roblox: se muestra el número (10 = máxima).
         if (quality_val) quality_val->set_text(String::num_int64(quality) + "/10");
-        if (fps_val) fps_val->set_text(FPS_OPTIONS[fps_idx] == 0 ? String("Unlimited") : String::num_int64(FPS_OPTIONS[fps_idx]));
+        if (gfx_val) gfx_val->set_text(gfx_mode == 0 ? String::utf8("Automático") : String("Manual"));
+        if (fps_val) fps_val->set_text(FPS_OPTIONS[fps_idx] == 0 ? String::utf8("Ilimitado") : (String::num_int64(FPS_OPTIONS[fps_idx]) + " FPS"));
         if (volume_val) volume_val->set_text(String::num_int64((int64_t)volume) + "%");
         if (sens_val) sens_val->set_text(String::num((double)sensitivity, 1) + "x");
         Node* ns = _netservice();
@@ -570,13 +725,6 @@ public:
     // ── Loop: HUD + confirmacion de salida + reintento sensibilidad ──
     void _process(double dt) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
-        // Si el menú Lua (Modules/Menu) tomó el control, apartarse por completo.
-        if (!gl_native_menu_enabled()) {
-            if (burger) burger->set_visible(false);
-            if (hud)    hud->set_visible(false);
-            if (is_open) _close_anim();
-            return;
-        }
         if (leave_armed) {
             leave_timer -= dt;
             if (leave_timer <= 0.0) {
@@ -621,6 +769,11 @@ public:
             show_ping   = (bool)cf->get_value("settings", "show_ping", false);
             volume      = Math::clamp((double)cf->get_value("settings", "volume", 100.0), 0.0, 100.0);
             sensitivity = Math::clamp((double)cf->get_value("settings", "sensitivity", 1.0), 0.2, 3.0);
+            fullscreen  = (bool)cf->get_value("settings", "fullscreen", false);
+            invert_cam  = (bool)cf->get_value("settings", "invert_cam", false);
+            shift_lock  = (bool)cf->get_value("settings", "shift_lock", false);
+            gfx_mode    = Math::clamp((int)(int64_t)cf->get_value("settings", "gfx_mode", 0), 0, 1);
+            bg_trans    = Math::clamp((double)cf->get_value("settings", "bg_trans", 0.35), 0.0, 1.0);
         }
     }
     void _save_settings() {
@@ -632,6 +785,11 @@ public:
         cf->set_value("settings", "show_ping",   show_ping);
         cf->set_value("settings", "volume",      volume);
         cf->set_value("settings", "sensitivity", sensitivity);
+        cf->set_value("settings", "fullscreen",  fullscreen);
+        cf->set_value("settings", "invert_cam",  invert_cam);
+        cf->set_value("settings", "shift_lock",  shift_lock);
+        cf->set_value("settings", "gfx_mode",    gfx_mode);
+        cf->set_value("settings", "bg_trans",    bg_trans);
         cf->save(_cfg_path());
     }
 
