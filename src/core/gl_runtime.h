@@ -69,6 +69,14 @@ struct GLFreecamState {
 };
 inline GLFreecamState& gl_freecam() { static GLFreecamState s; return s; }
 
+// ── Menú abierto (Esc) ───────────────────────────────────────────────────────
+//  Cuando el menú del juego está abierto, el jugador NO se mueve ni la rueda del
+//  ratón hace zoom: así la rueda desplaza el menú (como en Roblox). Lo activan
+//  toggle/open/close del GLSettingsMenu; lo leen RobloxPlayer y Humanoid.
+inline bool& gl_menu_open_ref() { static bool v = false; return v; }
+inline void  gl_set_menu_open(bool b) { gl_menu_open_ref() = b; }
+inline bool  gl_menu_open() { return gl_menu_open_ref(); }
+
 // ── Dispositivo emulado (PC / Mobile / Console / VR) ─────────────────────────
 //  Elegido en la barra "Players" del editor. Llega por --gldevice (ventanas
 //  cliente) o por res://.gl_mp_session "count|device|stamp" (ventana nativa).

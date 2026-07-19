@@ -12,6 +12,7 @@
 #>
 param(
     [string]$Version,
+    [string]$Message,   # mensaje del commit (por defecto = la versión)
     [switch]$NoPush
 )
 
@@ -60,7 +61,8 @@ if ([string]::IsNullOrWhiteSpace($pending)) {
     return
 }
 
-git commit -m $Version
+if (-not $Message) { $Message = $Version }
+git commit -m $Message
 if ($LASTEXITCODE -ne 0) { throw "Fallo el commit" }
 
 if ($NoPush) {

@@ -401,9 +401,9 @@ public:
 
         // ── 2. Jump (teclado + gamepad A + boton tactil) ───────────
         //// ── 2. Salto (teclado + gamepad A + botón táctil) ──────────
-        // Vista de Servidor activa: la cámara libre se queda con el input
-        // (WASD/salto no mueven al personaje, como en Roblox Studio).
-        bool freecam = gl_freecam().active;
+        // Vista de Servidor activa (o menú abierto): el input no mueve al
+        // personaje (WASD/salto congelados, como en Roblox Studio / menú Esc).
+        bool freecam = gl_freecam().active || gl_menu_open();
         bool jump_pressed = !freecam && (input->is_key_pressed(KEY_SPACE)
             || input->is_joy_button_pressed(0, JOY_BUTTON_A)
             || (gl_mobile().active && gl_mobile().jump));

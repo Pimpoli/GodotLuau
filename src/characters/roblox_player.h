@@ -402,6 +402,7 @@ public:
     void _input(const Ref<InputEvent>& p_event) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         if (gl_freecam().active) return;   // Vista de Servidor: la cámara libre maneja el input
+        if (gl_menu_open()) return;        // Menú abierto: la rueda desplaza el menú, no la cámara
         if (!pivot_h || !pivot_v || !spring_arm) return;
 
         Input* input = Input::get_singleton();
