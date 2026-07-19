@@ -18,7 +18,8 @@
 static const char* LUAU_TEMPLATE_HEALTH = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- Health.lua — ServerScript — StarterCharacterScripts
--- Se clona al personaje al spawnear. script.Parent = el jugador (LocalPlayer).
+-- Regenera la vida con el tiempo. Se clona al personaje al nacer (script.Parent = el jugador).
+-- /// Regenerates health over time. Cloned onto the character on spawn (script.Parent = the player).
 
 local RunService = game:GetService("RunService")
 
@@ -30,18 +31,17 @@ end
 
 dprint("[Health] Regeneracion activa: " .. script.Parent.Name)
 
--- ── Configuración ─────────────────────────────────────────────────
--- Igual que Roblox: la regeneracion empieza REGEN_DELAY segundos
--- despues del ULTIMO daño recibido (recibir daño reinicia el contador).
-local REGEN_DELAY = 3.0    -- segundos sin recibir daño para regenerar
-local REGEN_RATE  = 0.01   -- fraccion de MaxHealth por segundo (1% como Roblox)
+-- La regeneración empieza REGEN_DELAY s tras el ÚLTIMO daño (recibir daño reinicia el contador).
+-- /// Regen starts REGEN_DELAY s after the LAST hit (taking damage resets the timer).
+local REGEN_DELAY = 3.0    -- s sin daño para regenerar /// seconds without damage before regen
+local REGEN_RATE  = 0.01   -- fracción de MaxHealth por segundo (1%) /// fraction of MaxHealth per second (1%)
 
 local last_health = humanoid.Health
-local since_damage = REGEN_DELAY  -- permite regenerar desde el inicio
+local since_damage = REGEN_DELAY  -- permite regenerar desde el inicio /// allow regen from the start
 
 humanoid.HealthChanged:Connect(function(newHP)
     if newHP < last_health then
-        since_damage = 0.0  -- recibio daño → reiniciar el contador
+        since_damage = 0.0  -- recibió daño → reinicia el contador /// took damage → reset the timer
     end
     last_health = newHP
 end)
@@ -50,6 +50,8 @@ humanoid.Died:Connect(function()
     dprint("[Health] " .. script.Parent.Name .. " ha muerto.")
 end)
 
+-- Cada frame: si pasó el retardo y falta vida, sube un poco hacia MaxHealth.
+-- /// Each frame: if the delay passed and health is missing, ramp up toward MaxHealth.
 RunService.Heartbeat:Connect(function(dt)
     since_damage = since_damage + dt
     if since_damage < REGEN_DELAY then return end
@@ -65,8 +67,8 @@ end)
 //// Animate.lua — Animaciones del personaje (StarterCharacterScripts)
 static const char* LUAU_TEMPLATE_ANIMATE = R"LUAU(
 -- > GodotLuau — PimpoliDev
--- Animate.lua — Control de animaciones del personaje
--- Se clona al personaje al spawnear. script.Parent = el jugador.
+-- Animate.lua — Animaciones del personaje. Se clona al nacer (script.Parent = el jugador).
+-- /// Character animations. Cloned onto the character on spawn (script.Parent = the player).
 
 local RunService = game:GetService("RunService")
 
@@ -78,8 +80,8 @@ end
 
 dprint("[Animate] Sistema de animacion listo")
 
--- ══ ZONA DE ANIMACIÓN PERSONALIZADA ══════════════════════════════
--- Descomenta para reaccionar a eventos del Humanoid:
+-- ══ TU CÓDIGO DE ANIMACIÓN AQUÍ /// YOUR ANIMATION CODE HERE ══
+-- Descomenta para reaccionar a eventos del Humanoid: /// Uncomment to react to Humanoid events:
 
 -- humanoid.Died:Connect(function()
 --     print("[Animate] El personaje murio!")
@@ -102,12 +104,14 @@ dprint("[Animate] Sistema de animacion listo")
 static const char* LUAU_TEMPLATE_PLAYER_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- PlayerModule.lua — LocalScript — StarterPlayerScripts
--- Se clona al jugador en Play. script.Parent = el jugador (LocalPlayer).
--- Carga todos los modulos de Modules/ y los inicializa.
+-- Cerebro del jugador: carga los módulos de Modules/ y los une. Se clona al
+-- jugador al nacer (script.Parent = el jugador).
+-- /// Player brain: loads the modules in Modules/ and wires them. Cloned onto
+-- /// the player on spawn (script.Parent = the player).
 
 local RunService = game:GetService("RunService")
 
--- script.Parent = el jugador (tiene Humanoid, Modules/, etc.)
+-- El jugador tiene el Humanoid y la carpeta Modules/. /// The player holds the Humanoid and the Modules/ folder.
 local character = script.Parent
 local humanoid  = character:FindFirstChild("Humanoid")
 
@@ -116,53 +120,51 @@ if not humanoid then
     return
 end
 
--- ── Cargar modulos desde Modules/ ────────────────────────────────
--- script.Parent.Modules = carpeta Modules en el jugador
+-- Cargar los módulos (movimiento, cámara, chat) desde Modules/.
+-- /// Load the modules (movement, camera, chat) from Modules/.
 local ControlModule = require(script.Parent.Modules.ControlModule)
 local CameraModule  = require(script.Parent.Modules.CameraModule)
 local ChatModule    = require(script.Parent.Modules.ChatModule)
 
--- ── Inicializar modulos ───────────────────────────────────────────
+-- Arrancar cada módulo. /// Start each module.
 ControlModule:Initialize()
 CameraModule:Apply()
 ChatModule:Initialize()
 
--- Menu de Escape (Modules/Menu): interfaz tipo Roblox EDITABLE con pestanas
--- (Personas / Config. / Galeria / Denunciar / Ayuda). Submodulos: MenuUi,
--- Settings, Players. Con pcall por si un proyecto viejo aun no lo tiene.
+-- El menú de Escape lo dibuja el MOTOR (nativo). Modules/Menu es solo un punto
+-- de extensión opcional; el pcall evita fallar si no existe.
+-- /// The Escape menu is drawn by the ENGINE (native). Modules/Menu is just an
+-- /// optional hook; the pcall avoids errors if it isn't there.
 pcall(function()
     local Menu = require(script.Parent.Modules.Menu)
     Menu.Init(game:GetService("Players").LocalPlayer)
 end)
 
--- ── Aplicar configuracion al Humanoid ────────────────────────────
+-- Pasar la velocidad y el salto del ControlModule al Humanoid.
+-- /// Copy the ControlModule's walk speed and jump power to the Humanoid.
 humanoid.WalkSpeed = ControlModule.WalkSpeed
 humanoid.JumpPower = ControlModule.JumpPower
 
 dprint("[PlayerModule] Jugador listo! Speed=" .. ControlModule.WalkSpeed)
 
--- ── Eventos del personaje ─────────────────────────────────────────
 humanoid.Died:Connect(function()
     dprint("[PlayerModule] El personaje ha muerto.")
 end)
 
--- ── Heartbeat: sprint suave, estamina y velocidad en tiempo real ──
+-- Cada frame: el ControlModule calcula la velocidad (sprint suave) y la aplica.
+-- /// Each frame: ControlModule computes the speed (smooth sprint) and applies it.
 RunService.Heartbeat:Connect(function(dt)
     if humanoid.Health <= 0 then return end
 
-    -- El ControlModule calcula la velocidad (sprint con aceleracion suave)
     ControlModule:Update(dt)
     local speed = ControlModule:GetCurrentSpeed()
     if math.abs(humanoid.WalkSpeed - speed) > 0.01 then
         humanoid.WalkSpeed = speed
     end
 
-    -- ══ ZONA PERSONALIZABLE ═══════════════════════════════════
-    -- Aqui puedes agregar logica por frame del jugador:
-    --
-    -- local x, z = ControlModule:GetMoveVector()      -- direccion teclado
-    -- local st, stMax = ControlModule:GetStamina()    -- estamina actual
-    --
+    -- ══ TU CÓDIGO POR FRAME AQUÍ /// YOUR PER-FRAME CODE HERE ══
+    -- local x, z = ControlModule:GetMoveVector()   -- dirección del teclado /// keyboard direction
+    -- local st, stMax = ControlModule:GetStamina() -- estamina actual /// current stamina
     -- if ChatModule:IsOpen() then ... end
     -- ══════════════════════════════════════════════════════════
 end)
@@ -173,24 +175,21 @@ end)
 static const char* LUAU_TEMPLATE_CONTROL_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- ControlModule.lua — ModuleScript — Modules/
--- Detecta la plataforma y delega al sub-modulo correcto.
--- Sub-modulos: script.PCModule / script.MobileModule / script.ConsoleModule
--- Cambia Platform para forzar una plataforma especifica.
+-- Elige la plataforma y reparte el trabajo al sub-módulo correcto (PC / móvil /
+-- consola). Es el "router" del movimiento.
+-- /// Picks the platform and routes the work to the right sub-module (PC / mobile
+-- /// / console). This is the movement "router".
 
 local ControlModule = {}
 
--- ── Sub-modulos (children de ControlModule en el arbol) ───────────
--- script aqui = ControlModule (gracias al require con contexto correcto)
+-- Sub-módulos (hijos de este módulo en el árbol). /// Sub-modules (children of this module in the tree).
 local PCModule      = require(script.PCModule)
 local MobileModule  = require(script.MobileModule)
 local ConsoleModule = require(script.ConsoleModule)
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  CONFIGURACION  (modifica aqui)                                │
--- │  Platform: "" = auto  "PC" = teclado  "Mobile" = tactil       │
--- │            "Console" = mando                                   │
--- └────────────────────────────────────────────────────────────────┘
-ControlModule.Platform  = "PC"  -- Forzar plataforma (o "" para auto)
+-- CONFIG: Platform "" = auto · "PC" teclado · "Mobile" táctil · "Console" mando.
+-- /// CONFIG: Platform "" = auto · "PC" keyboard · "Mobile" touch · "Console" gamepad.
+ControlModule.Platform  = "PC"  -- fuerza una plataforma (o "" para auto) /// force a platform (or "" for auto)
 ControlModule.WalkSpeed = 16
 ControlModule.JumpPower = 20
 
@@ -205,14 +204,14 @@ function ControlModule:Initialize()
     else
         active = PCModule
     end
-    -- Sincronizar velocidad desde sub-modulo activo
+    -- Copiar velocidad/salto del sub-módulo activo. /// Copy speed/jump from the active sub-module.
     self.WalkSpeed = active.WalkSpeed
     self.JumpPower = active.JumpPower
     if active.Initialize then active:Initialize() end
     dprint("[ControlModule] Plataforma: " .. (p == "" and "Auto(PC)" or p))
 end
 
--- Llamado cada frame por PlayerModule (sprint suave, estamina, etc.)
+-- Lo llama PlayerModule cada frame (sprint suave, estamina…). /// Called by PlayerModule each frame (smooth sprint, stamina…).
 function ControlModule:Update(dt)
     if active and active.Update then
         active:Update(dt)
@@ -248,33 +247,26 @@ return ControlModule
 static const char* LUAU_TEMPLATE_PC_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- PCModule.lua — ModuleScript — Modules/ControlModule/
--- Configuracion de movimiento para PC (teclado + raton).
--- El C++ lee las teclas directamente; aqui defines velocidades y comportamiento.
+-- Movimiento en PC (teclado + ratón). El motor lee las teclas; aquí defines las
+-- velocidades y el comportamiento.
+-- /// PC movement (keyboard + mouse). The engine reads the keys; here you set the
+-- /// speeds and behavior.
 
 local PCModule = {}
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  VELOCIDADES PC                                                │
--- │  WalkSpeed:    unidades/seg (16 = velocidad Roblox estandar)  │
--- │  RunSpeed:     velocidad al mantener LeftShift                 │
--- │  Acceleration: que tan rapido cambia la velocidad (suavidad)  │
--- │  JumpPower:    fuerza de salto                                 │
--- └────────────────────────────────────────────────────────────────┘
-PCModule.WalkSpeed    = 16
-PCModule.RunSpeed     = 24
-PCModule.Acceleration = 8     -- mayor = cambio mas brusco, menor = mas suave
-PCModule.JumpPower    = 20
-PCModule.AutoRotate   = true  -- Girar el personaje hacia la direccion del movimiento
+-- Velocidades. /// Speeds.
+PCModule.WalkSpeed    = 16    -- caminar (16 = estándar) /// walk (16 = standard)
+PCModule.RunSpeed     = 24    -- correr (mantener LeftShift) /// run (hold LeftShift)
+PCModule.Acceleration = 8     -- suavidad: mayor = más brusco /// smoothing: higher = snappier
+PCModule.JumpPower    = 20    -- fuerza de salto /// jump strength
+PCModule.AutoRotate   = true  -- girar hacia el movimiento /// turn toward movement
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  ESTAMINA (opcional) — desactivada por defecto                 │
--- │  Si la activas, correr consume estamina y se regenera al      │
--- │  caminar. Cuando llega a 0 no se puede correr.                │
--- └────────────────────────────────────────────────────────────────┘
+-- Estamina (opcional): correr la gasta, caminar la recupera; a 0 no puedes correr.
+-- /// Stamina (optional): running drains it, walking refills it; at 0 you can't run.
 PCModule.StaminaEnabled = false
 PCModule.StaminaMax     = 100
-PCModule.StaminaDrain   = 20   -- por segundo corriendo
-PCModule.StaminaRegen   = 15   -- por segundo caminando
+PCModule.StaminaDrain   = 20   -- por segundo corriendo /// per second running
+PCModule.StaminaRegen   = 15   -- por segundo caminando /// per second walking
 
 local current_speed = 16
 local stamina       = 100
@@ -285,7 +277,8 @@ function PCModule:Initialize()
     dprint("[PCModule] Modo PC activo: W/A/S/D para mover, Shift para correr")
 end
 
--- Llamado cada frame por ControlModule:Update(dt)
+-- Cada frame (lo llama ControlModule): estamina + acelerar hacia la velocidad objetivo.
+-- /// Each frame (called by ControlModule): stamina + accelerate toward target speed.
 function PCModule:Update(dt)
     local wants_run = UserInputService:IsKeyDown("LeftShift")
 
@@ -298,7 +291,7 @@ function PCModule:Update(dt)
         if stamina <= 0 then wants_run = false end
     end
 
-    -- Aceleracion suave hacia la velocidad objetivo (sin saltos bruscos)
+    -- Acelera suave hacia la velocidad objetivo (sin saltos). /// Ease toward the target speed (no jumps).
     local target = wants_run and self.RunSpeed or self.WalkSpeed
     local t = math.min(1, self.Acceleration * dt)
     current_speed = current_speed + (target - current_speed) * t
@@ -313,8 +306,8 @@ function PCModule:GetStamina()
 end
 
 function PCModule:GetMoveVector()
-    -- Vector de movimiento leido del teclado (el C++ mueve al personaje;
-    -- esto es util para logica propia: animaciones, efectos, etc.)
+    -- Dirección leída del teclado (el motor ya mueve; útil para animaciones/efectos).
+    -- /// Direction read from the keyboard (engine already moves; handy for animations/FX).
     local x, z = 0, 0
     if UserInputService:IsKeyDown("A") then x = x - 1 end
     if UserInputService:IsKeyDown("D") then x = x + 1 end
@@ -331,24 +324,20 @@ return PCModule
 static const char* LUAU_TEMPLATE_MOBILE_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- MobileModule.lua — ModuleScript — Modules/ControlModule/
--- Configuracion de movimiento para movil/tactil.
--- Cambia TouchMode para elegir el tipo de control tactil.
+-- Movimiento en móvil (táctil). Cambia TouchMode para el tipo de control.
+-- /// Mobile movement (touch). Change TouchMode for the control type.
 
 local MobileModule = {}
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  CONFIGURACION MOVIL                                           │
--- │  TouchMode: "Joystick"  = joystick virtual en pantalla        │
--- │             "Console"   = estilo D-Pad (como consola)         │
--- │             "Tap"       = tocar para moverse al punto         │
--- └────────────────────────────────────────────────────────────────┘
+-- CONFIG. TouchMode: "Joystick" (stick virtual) · "Console" (D-Pad) · "Tap" (tocar para ir).
+-- /// CONFIG. TouchMode: "Joystick" (virtual stick) · "Console" (D-Pad) · "Tap" (tap to go).
 MobileModule.WalkSpeed = 16
 MobileModule.JumpPower = 20
 MobileModule.TouchMode = "Joystick"
 
 function MobileModule:Initialize()
     dprint("[MobileModule] Modo Movil activo: " .. self.TouchMode)
-    -- Aqui puedes crear el joystick virtual con ScreenGui / ImageButton
+    -- Aquí puedes crear tu joystick con ScreenGui/ImageButton. /// Build your joystick here with ScreenGui/ImageButton.
 end
 
 function MobileModule:GetCurrentSpeed()
@@ -356,7 +345,7 @@ function MobileModule:GetCurrentSpeed()
 end
 
 function MobileModule:GetMoveVector()
-    return 0, 0  -- Implementar con input tactil (UserInputService.TouchMoved)
+    return 0, 0  -- Impleméntalo con el táctil (UserInputService.TouchMoved). /// Implement with touch (UserInputService.TouchMoved).
 end
 
 return MobileModule
@@ -367,18 +356,15 @@ return MobileModule
 static const char* LUAU_TEMPLATE_CONSOLE_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- ConsoleModule.lua — ModuleScript — Modules/ControlModule/
--- Configuracion de movimiento para mando/gamepad.
--- Compatible con Xbox, PlayStation y mandos genéricos.
+-- Movimiento con mando (Xbox, PlayStation, genéricos).
+-- /// Gamepad movement (Xbox, PlayStation, generic pads).
 
 local ConsoleModule = {}
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  CONFIGURACION MANDO                                           │
--- │  Deadzone: zona muerta del joystick (0.0 a 1.0)               │
--- └────────────────────────────────────────────────────────────────┘
+-- CONFIG. Deadzone = zona muerta del stick (0..1). /// CONFIG. Deadzone = stick dead zone (0..1).
 ConsoleModule.WalkSpeed = 16
 ConsoleModule.JumpPower = 20
-ConsoleModule.Deadzone  = 0.2  -- Ignorar movimientos menores a este valor
+ConsoleModule.Deadzone  = 0.2  -- ignora movimientos menores /// ignore smaller movements
 
 function ConsoleModule:Initialize()
     dprint("[ConsoleModule] Modo Consola activo — Joystick izquierdo para mover")
@@ -389,7 +375,7 @@ function ConsoleModule:GetCurrentSpeed()
 end
 
 function ConsoleModule:GetMoveVector()
-    return 0, 0  -- Implementar con UserInputService gamepad input
+    return 0, 0  -- Impleméntalo con el gamepad de UserInputService. /// Implement with UserInputService gamepad input.
 end
 
 return ConsoleModule
@@ -400,23 +386,25 @@ return ConsoleModule
 static const char* LUAU_TEMPLATE_CHAT_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
 -- ChatModule.lua — ModuleScript — Modules/
--- Sistema de chat completamente en Luau. Modificalo libremente.
+-- Lógica del chat, en Luau. Guarda los mensajes y habla con TextChatService.
+-- Edítalo a tu gusto.
+-- /// Chat logic, in Luau. Keeps the messages and talks to TextChatService.
+-- /// Edit it however you like.
 
 local ChatModule = {}
 
 local TextChatService = game:GetService("TextChatService")
 
--- ┌────────────────────────────────────────────────────────────────┐
--- │  CONFIGURACION DEL CHAT                                        │
--- └────────────────────────────────────────────────────────────────┘
-ChatModule.MaxMessages  = 50     -- Maximo de mensajes visibles
-ChatModule.FadeDelay    = 8.0    -- Segundos hasta desvanecer mensajes
-ChatModule.FilterWords  = true  -- Filtrar palabras inapropiadas
+-- CONFIG del chat. /// Chat CONFIG.
+ChatModule.MaxMessages  = 50    -- máximo de mensajes guardados /// max messages kept
+ChatModule.FadeDelay    = 8.0   -- segundos hasta desvanecer /// seconds until fade out
+ChatModule.FilterWords  = true  -- filtrar palabras inapropiadas /// filter bad words
 
 local messages  = {}
 local chat_open = false
 local initialized = false
 
+-- Prepara el chat y escucha los mensajes que llegan. /// Sets up the chat and listens for incoming messages.
 function ChatModule:Initialize()
     if initialized then return end
     initialized = true
@@ -470,27 +458,26 @@ return ChatModule
 //// CameraModule.lua — Módulo de control de cámara
 static const char* LUAU_TEMPLATE_CAMERA_MODULE = R"LUAU(
 -- > GodotLuau — PimpoliDev
--- CameraModule — Módulo de control de cámara
--- Cambia Mode para modificar el comportamiento de la cámara.
+-- CameraModule.lua — ModuleScript — Modules/
+-- Controla cómo la cámara sigue al jugador. Cambia Mode para el comportamiento.
+-- /// Controls how the camera follows the player. Change Mode for the behavior.
 
 local CameraModule = {}
 
--- ┌───────────────────────────────────────────────────────────────┐
--- │  MODO DE CÁMARA                                               │
--- │  1 = Fija      → Sigue al jugador al instante                │
--- │  2 = Suave     → Sigue con un pequeño retraso elegante       │
--- │  3 = Combinada → Retraso al moverse, centra al detenerse     │
--- └───────────────────────────────────────────────────────────────┘
-CameraModule.Mode = 3   -- ← Cambia aquí el modo de cámara
+-- MODO: 1 = fija (sigue al instante) · 2 = suave (sigue con retraso) ·
+--       3 = combinada (retraso al moverse, centra al parar).
+-- /// MODE: 1 = fixed (instant follow) · 2 = smooth (follows with lag) ·
+-- ///       3 = blended (lag while moving, recenters when stopped).
+CameraModule.Mode = 3   -- ← cambia aquí el modo /// change the mode here
 
--- Aplica el modo de cámara al jugador al iniciar
+-- Aplica el modo al entrar. /// Applies the mode on start.
 function CameraModule:Apply(player)
     if player then
         player.CameraMode = self.Mode
     end
 end
 
--- Cambia el modo de cámara en tiempo real
+-- Cambia el modo en caliente. /// Changes the mode at runtime.
 function CameraModule:SetMode(mode)
     self.Mode = mode
     local Players = game:GetService("Players")

@@ -363,7 +363,7 @@ public:
         panel->add_theme_stylebox_override("panel", _box(COL_BG, 16, 22));
         panel->set_anchor(SIDE_LEFT, 0.5f);  panel->set_anchor(SIDE_RIGHT, 0.5f);
         panel->set_anchor(SIDE_TOP, 0.0f);   panel->set_anchor(SIDE_BOTTOM, 1.0f);
-        panel->set_offset(SIDE_LEFT, -390.0f); panel->set_offset(SIDE_RIGHT, 390.0f);  // 780 de ancho
+        panel->set_offset(SIDE_LEFT, -250.0f); panel->set_offset(SIDE_RIGHT, 250.0f);  // 500 de ancho (más como Roblox)
         panel->set_offset(SIDE_TOP, 44.0f);    panel->set_offset(SIDE_BOTTOM, -44.0f);
         panel_root->add_child(panel);
 
@@ -409,15 +409,17 @@ public:
         sc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
         sc->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
         main_vb->add_child(sc);
-        Control* pages = memnew(Control);
+        // ÚNICO hijo del ScrollContainer = un VBox cuyo alto mínimo es el del
+        // contenido de la pestaña visible → así SÍ se puede desplazar cuando hay
+        // más filas de las que caben (el Control anterior tenía alto 0).
+        VBoxContainer* pages = memnew(VBoxContainer);
         pages->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-        pages->set_v_size_flags(Control::SIZE_EXPAND_FILL);
         sc->add_child(pages);
 
         // — Página 0: PERSONAS —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
-            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
             vb->add_theme_constant_override("separation", 8);
             pages->add_child(vb);
             players_count = _mklabel("", 15, COL_DIM);
@@ -430,7 +432,7 @@ public:
         // — Página 1: CONFIG. (todos los ajustes por secciones, como Roblox) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
-            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
             vb->add_theme_constant_override("separation", 6);
             pages->add_child(vb);
 
@@ -465,7 +467,7 @@ public:
         // — Página 2: GALERÍA (marcador; se ampliará) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
-            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
             vb->add_theme_constant_override("separation", 8);
             pages->add_child(vb);
             vb->add_child(_mklabel("Gallery", 20, COL_TEXT));
@@ -475,7 +477,7 @@ public:
         // — Página 3: DENUNCIAR (marcador; se ampliará) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
-            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
             vb->add_theme_constant_override("separation", 8);
             pages->add_child(vb);
             vb->add_child(_mklabel("Report", 20, COL_TEXT));
@@ -485,7 +487,7 @@ public:
         // — Página 4: AYUDA (controles) —
         {
             VBoxContainer* vb = memnew(VBoxContainer);
-            vb->set_anchors_preset(Control::PRESET_FULL_RECT);
+            vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
             vb->add_theme_constant_override("separation", 6);
             pages->add_child(vb);
             const char* lines[] = {
