@@ -28,6 +28,7 @@ env.Append(CPPPATH=[
     "src/characters",
     "src/gameplay",
     "src/ui",
+    "src/importer",
     "luau/VM/include",
     "luau/Compiler/include",
     "luau/Ast/include",

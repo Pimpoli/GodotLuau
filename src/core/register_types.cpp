@@ -34,6 +34,15 @@
 #include "roblox_billboard.h"
 #include "roblox_input.h"
 #include "roblox_animation.h"
+#include "rbx_instances.h"
+#include "rbx_importer.h"
+
+// El plugin del importador NO va tras #ifdef TOOLS_ENABLED: el proyecto se
+// compila con target=template_debug y esa es la libreria que carga el editor,
+// asi que el guard lo dejaria fuera y el menu nunca apareceria. Registrarlo es
+// inofensivo en runtime porque el nivel EDITOR solo se alcanza en el editor.
+#include "rbx_import_plugin.h"
+#include <godot_cpp/classes/editor_plugin_registration.hpp>
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/os.hpp>
@@ -106,6 +115,18 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_internal_class<RobloxPart>();
         ClassDB::register_class<Part>();
         ClassDB::register_class<RobloxTerrain>();   // Workspace.Terrain
+
+        // Importador de .rbxl (1.16): clases que existen en Roblox pero no
+        // tenian equivalente aqui. RBXInstance es el comodin que evita perder
+        // instancias de clases todavia no soportadas.
+        ClassDB::register_class<RBXInstance>();
+        ClassDB::register_class<RBXModel>();
+        ClassDB::register_class<RBXMeshPart>();
+        ClassDB::register_class<RBXTexture>();
+        ClassDB::register_class<RBXDecal>();
+        ClassDB::register_class<RBXMesh>();
+        ClassDB::register_class<RBXBone>();
+        ClassDB::register_class<RBXImporter>();
 
         // 2D characters and physics
         //// Personajes y físicas 2D
@@ -277,6 +298,13 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
                 String("GodotLuau ") + version + String(" by PimpoliDev | github.com/Pimpoli/GodotLuau")
             );
         }
+    }
+
+    // Nivel EDITOR: el importador de .rbxl anade su entrada en
+    // Proyecto > Herramientas. Solo existe dentro del editor.
+    if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+        ClassDB::register_internal_class<RBXImportPlugin>();
+        EditorPlugins::add_by_type<RBXImportPlugin>();
     }
 }
 

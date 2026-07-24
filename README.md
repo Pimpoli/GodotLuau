@@ -18,6 +18,7 @@
 - [Local multiplayer](#local-multiplayer)
 - [Roblox-style error messages](#roblox-style-error-messages)
 - [In-game settings menu](#in-game-settings-menu)
+- [Importing Roblox places (.rbxl)](#importing-roblox-places-rbxl)
 - [Node and class catalog](#node-and-class-catalog)
 - [Roblox-style lighting](#roblox-style-lighting)
 - [Autocomplete and AI](#autocomplete-and-ai)
@@ -170,6 +171,28 @@ Stack End
 ## In-game settings menu
 
 Press **Esc** (or the mobile button / gamepad Start) for the Roblox-style menu: **Players** list with ping, **Settings** (graphics quality, max FPS, Show FPS / Show Ping overlays, volume, camera sensitivity) and **Help**. Settings persist **per player** (`user://gl_settings_player<N>.cfg`), and leaving asks for confirmation.
+
+## Importing Roblox places (.rbxl)
+
+GodotLuau reads Roblox's **binary place format** directly, so you can open a place you saved from Studio and get its whole tree back in Godot.
+
+**How to use it:** in Godot, **Project → Tools → "Importar lugar de Roblox (.rbxl)"**, pick your `.rbxl` and the tree is added to the open scene. From code you can also do it yourself:
+
+```gdscript
+var imp = RBXImporter.new()
+var root = imp.ImportFile("C:/path/MyPlace.rbxl")
+print(imp.GetReport())
+```
+
+**What gets imported.** The full instance tree, exactly as the Explorer shows it: `game` with its services, every instance's name, parent and child order, and its properties — sizes, `CFrame` positions and rotations, colors (including `BrickColor` and the `Material` enum), GUI layout, **the Luau source of every script**, **CollectionService tags**, **instance attributes** and cross-instance references such as `PrimaryPart` or `Part0`/`Part1`.
+
+Classes GodotLuau doesn't implement yet are imported as `RBXInstance`, which keeps the class name, the hierarchy and every property as metadata. **Nothing is dropped**, so scripts that walk the tree with `FindFirstChild` / `WaitForChild` still find what they expect. New nodes added for this: `RBXModel`, `RBXMeshPart`, `RBXTexture`, `RBXDecal`, `RBXMesh`, `RBXBone`.
+
+**What can't be imported.** Meshes, textures and sounds are **not stored in the file** — they are `rbxassetid://` pointers to Roblox's servers, which cannot be downloaded and are not yours to redistribute. The importer keeps every id (on the node and in the report) so you can export the model from Studio yourself and plug it in. DataStores, gamepasses and place configuration live in the cloud too, not in the `.rbxl`.
+
+Two properties are still unsupported and are skipped without touching anything else: `CustomPhysicalProperties` and the new `Content` type. XML places (`.rbxlx`) are not read yet — save as binary `.rbxl` in Studio.
+
+> Reading your own files is interoperability, the same thing [rbx-dom](https://github.com/rojo-rbx/rbx-dom) does. GodotLuau never contacts Roblox servers and ships no Roblox assets.
 
 ## Node and class catalog
 
