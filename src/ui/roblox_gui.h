@@ -41,6 +41,7 @@
 #include <godot_cpp/classes/line_edit.hpp>
 #include <godot_cpp/classes/text_edit.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
+#include "gl_asset.h"
 #include <godot_cpp/classes/texture_button.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
@@ -575,7 +576,13 @@ public:
     void set_image(String path) {
         _image_path = path;
         if (path.is_empty()) return;
-        Ref<Texture2D> tex = ResourceLoader::get_singleton()->load(path);
+        // Imagen de la nube de Roblox: no se puede descargar. Se guarda el id y
+        // se sale sin tocar ResourceLoader; si no, cada ImageLabel importado
+        // suelta dos errores rojos y un place trae cientos.
+        if (gl_is_roblox_asset(path)) { set_meta("__rbx_missing_asset", path); return; }
+        ResourceLoader* rl = ResourceLoader::get_singleton();
+        if (!rl || !rl->exists(path)) return;
+        Ref<Texture2D> tex = rl->load(path);
         if (tex.is_valid()) set_texture(tex);
     }
 

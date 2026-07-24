@@ -6,6 +6,7 @@
 #include <godot_cpp/classes/animation.hpp>
 #include <godot_cpp/classes/animation_library.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include "gl_asset.h"
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <vector>
@@ -58,7 +59,11 @@ static inline void gl_anim_apply(Node* character, const String& anim_id, const S
         character->add_child(ap);
     }
     if (!anim_name.is_empty() && !anim_id.is_empty() && !ap->has_animation(StringName(anim_name))) {
-        Ref<Animation> loaded = ResourceLoader::get_singleton()->load(anim_id, "Animation");
+        // Las animaciones de Roblox viven en su nube: no se pueden cargar aqui.
+        ResourceLoader* rl = ResourceLoader::get_singleton();
+        Ref<Animation> loaded;
+        if (rl && !gl_is_roblox_asset(anim_id) && rl->exists(anim_id, "Animation"))
+            loaded = rl->load(anim_id, "Animation");
         if (loaded.is_valid()) {
             Ref<AnimationLibrary> lib;
             lib.instantiate();

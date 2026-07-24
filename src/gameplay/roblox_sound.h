@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/audio_stream_ogg_vorbis.hpp>
 #include <godot_cpp/classes/audio_stream_wav.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include "gl_asset.h"
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/audio_server.hpp>
@@ -56,7 +57,23 @@ class RobloxSound : public Node {
 
     void _load_stream() {
         if (sound_id.is_empty()) return;
-        Ref<AudioStream> stream = ResourceLoader::get_singleton()->load(sound_id, "AudioStream");
+
+        // El audio vive en los servidores de Roblox y no se puede descargar. Se
+        // deja constancia en el nodo (el importador lo lista en su reporte) y se
+        // sale en silencio: no es un fallo del proyecto del usuario.
+        if (gl_is_roblox_asset(sound_id)) {
+            set_meta("__rbx_missing_asset", sound_id);
+            return;
+        }
+
+        // exists() antes de load() evita el error rojo del cargador cuando la
+        // ruta simplemente no esta: preferimos un aviso propio y legible.
+        ResourceLoader* rl = ResourceLoader::get_singleton();
+        if (!rl || !rl->exists(sound_id, "AudioStream")) {
+            UtilityFunctions::print("[Sound] No se encontro el audio: ", sound_id);
+            return;
+        }
+        Ref<AudioStream> stream = rl->load(sound_id, "AudioStream");
         if (!stream.is_valid()) {
             UtilityFunctions::print("[Sound] No se pudo cargar: ", sound_id);
             return;

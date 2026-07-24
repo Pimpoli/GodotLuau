@@ -11,6 +11,12 @@ const GITHUB_URL     := "https://github.com/Pimpoli/GodotLuau"
 # respaldo local (estilo lanzador de Minecraft).
 const TAGS_URL       := "https://api.github.com/repos/Pimpoli/GodotLuau/tags?per_page=100"
 const RAW_BASE       := "https://raw.githubusercontent.com/Pimpoli/GodotLuau"
+# Se listan los COMMITS que tocaron el archivo Version, no los tags: hay ~100
+# frente a 13, asi salen TODAS las versiones publicadas (incluidas las que nunca
+# llegaron a tener tag, como las 1.15). Un SHA sirve de referencia para bajar su
+# GodotLuau.zip exactamente igual que un tag.
+const COMMITS_URL    := "https://api.github.com/repos/Pimpoli/GodotLuau/commits?path=Version&per_page=100"
+const VER_MAX_PAGES  := 4
 const DATA_FILE      := "user://godotluau_usage.json"
 const CUSTOM_AC_FILE := "user://godotluau_custom_autocomplete.json"
 const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
@@ -340,6 +346,8 @@ var _versions_menu     : PopupMenu      = null
 var _http_tags         : HTTPRequest    = null
 var _http_tagver       : HTTPRequest    = null
 var _tag_list          : Array          = []   # [{ "tag": String, "ver": String }]
+var _ver_raw           : Array          = []   # commits crudos mientras se pagina
+var _ver_page          : int            = 1
 var _pending_tag       : String         = ""
 # Cuando NO esta vacio, la descarga usa esta URL en vez de la ultima version.
 var _zip_url_override  : String         = ""
@@ -2352,36 +2360,79 @@ func _on_versions_pressed() -> void:
 		_show_versions_menu()
 		return
 	_set_ver_status(_t("bar_versions_loading"), "", Color(0.4, 0.8, 1.0))
+	_ver_raw.clear()
+	_ver_page = 1
+	_fetch_version_page()
+
+func _fetch_version_page() -> void:
 	if _http_tags and is_instance_valid(_http_tags): _http_tags.queue_free()
 	_http_tags = HTTPRequest.new()
 	add_child(_http_tags)
-	_http_tags.request_completed.connect(_on_tags_received)
+	_http_tags.request_completed.connect(_on_commits_received)
 	# La API de GitHub exige User-Agent o responde 403.
-	if _http_tags.request(TAGS_URL, ["User-Agent: GodotLuauUpdater"]) != OK:
+	var url := "%s&page=%d" % [COMMITS_URL, _ver_page]
+	if _http_tags.request(url, ["User-Agent: GodotLuauUpdater"]) != OK:
 		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
 		_http_tags.queue_free(); _http_tags = null
 
-func _on_tags_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
+func _on_commits_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
 	if _http_tags and is_instance_valid(_http_tags):
 		_http_tags.queue_free(); _http_tags = null
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
-		return
+		if _ver_raw.is_empty():
+			_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
+			return
+		_build_version_list(); return          # nos quedamos con lo ya reunido
 	var data = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(data) != TYPE_ARRAY:
 		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
 		return
 
+	for c in data:
+		var sha := str(c.get("sha", ""))
+		var cm = c.get("commit", {})
+		var msg := str(cm.get("message", "")) if typeof(cm) == TYPE_DICTIONARY else ""
+		if sha.is_empty(): continue
+		_ver_raw.append({ "sha": sha, "msg": msg.split("\n")[0].strip_edges() })
+
+	# Los commits vienen de 100 en 100 y ordenados del mas nuevo al mas viejo.
+	if data.size() >= 100 and _ver_page < VER_MAX_PAGES:
+		_ver_page += 1
+		_fetch_version_page()
+		return
+	_build_version_list()
+
+# Convierte los commits en la lista del menu:
+#  - solo entradas cuya version empiece por "v" seguida de numero
+#  - sin repetidos: si dos comparten el mismo NUMERO (aunque una lleve texto
+#    extra, como "v1.14.4" y "v1.14.4 - Rework"), se queda la mas reciente
+#  - ordenadas de la mas nueva a la mas antigua
+func _build_version_list() -> void:
+	# Exige al menos vX.Y: asi se descarta la plantilla "v1.X.X - descripcion"
+	# del repo, que con un solo segmento colaba como si fuera la version "v1".
+	var re := RegEx.new()
+	re.compile("v[0-9]+\\.[0-9]+(\\.[0-9]+)*")
+	var seen := {}
 	_tag_list.clear()
-	for t in data:
-		var tag := str(t.get("name", ""))
-		if tag.is_empty(): continue
-		# Tags internos del CI (binarios sueltos), no son versiones instalables.
-		if tag.begins_with("bin-"): continue
-		_tag_list.append({ "tag": tag, "ver": _pretty_tag(tag) })
+	for c in _ver_raw:
+		var msg : String = c["msg"]
+		var m := re.search(msg)
+		if m == null: continue                       # sin "vX.Y" no es una version
+		var num := m.get_string()                    # p.ej. "v1.14.4"
+		var key := num.trim_prefix("v")              # dedupe por el NUMERO pelado
+		if seen.has(key): continue                   # ya guardamos una mas reciente
+		seen[key] = true
+		# Etiqueta: el mensaje entero si ya empieza por la version; si no, el numero.
+		var label := msg
+		if not label.begins_with(num): label = num
+		# 'num' se guarda aparte para ordenar: hacerlo por la etiqueta completa
+		# falla cuando el separador no es "-" ("v1.14.16: texto" -> 1.14.0).
+		_tag_list.append({ "tag": c["sha"], "ver": label, "num": num })
+
 	if _tag_list.is_empty():
 		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
 		return
+	_tag_list.sort_custom(func(a, b): return _version_to_num(a["num"]) > _version_to_num(b["num"]))
 	_set_ver_status(_get_local_version(), "", _col_text)
 	_show_versions_menu()
 
@@ -2397,10 +2448,15 @@ func _pretty_tag(tag: String) -> String:
 func _show_versions_menu() -> void:
 	if not (_versions_menu and is_instance_valid(_versions_menu)): return
 	_versions_menu.clear()
-	var local := _get_local_version()
+	# Se compara por el NUMERO, no por la etiqueta: la instalada trae el texto
+	# completo ("v1.16.1 - Bug Fixes") y la del menu puede traer otro sufijo.
+	var re := RegEx.new()
+	re.compile("v[0-9]+\\.[0-9]+(\\.[0-9]+)*")
+	var lm := re.search(_get_local_version())
+	var local_num := lm.get_string() if lm else ""
 	for i in range(_tag_list.size()):
 		var v : String = _tag_list[i]["ver"]
-		var same := _version_to_num(v) == _version_to_num(local)
+		var same : bool = not local_num.is_empty() and str(_tag_list[i]["num"]) == local_num
 		_versions_menu.add_item(_t("menu_versions_current") % v if same else v, i)
 		if same: _versions_menu.set_item_disabled(_versions_menu.get_item_count() - 1, true)
 	var pos := _versions_btn.get_screen_position() + Vector2(0, _versions_btn.size.y)
