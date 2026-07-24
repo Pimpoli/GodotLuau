@@ -340,7 +340,6 @@ var _ver_label         : Label          = null
 var _ver_btn           : Button         = null
 var _reinstall_btn     : Button         = null
 var _rollback_btn      : Button         = null
-var _check_btn         : Button         = null
 # ── Historial de versiones ────────────────────────────────────────────────────
 var _versions_btn      : Button         = null
 var _versions_menu     : PopupMenu      = null
@@ -1363,15 +1362,9 @@ func _build_panel_contents() -> void:
 	_ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ver_row.add_child(_ver_label)
 
-	# Lupa: buscar actualizaciones. SIEMPRE visible (a diferencia de _ver_btn, que
-	# se oculta al estar al dia), asi se puede volver a comprobar cuando se quiera.
-	_check_btn = Button.new()
-	_check_btn.text = "🔍"
-	_check_btn.flat = true
-	_check_btn.tooltip_text = _t("btn_check_ver")
-	_check_btn.pressed.connect(_check_for_update)
-	ver_row.add_child(_check_btn)
-
+	# Lupa multiaccion: buscar actualizaciones cuando esta al dia, o Actualizar /
+	# Reintentar segun el estado. Ya cumple lo de "buscar de nuevo", asi que NO se
+	# anade otra lupa aparte (eso duplicaba el boton).
 	_ver_btn = Button.new()
 	_ver_btn.text = _t("btn_check_ver")
 	_ver_btn.flat = true
@@ -2034,16 +2027,13 @@ func _check_for_update() -> void:
 	_http_version.request_completed.connect(_on_version_received)
 	_set_ver_status(_t("bar_checking"), "", Color(0.5, 0.8, 1.0))
 	if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = true
-	if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = true
 	if _http_version.request(VERSION_URL) != OK:
 		_http_version.queue_free(); _http_version = null
-		if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = false
 		_reset_ver_idle()
 
 func _on_version_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
 	if _http_version and is_instance_valid(_http_version):
 		_http_version.queue_free(); _http_version = null
-	if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		_reset_ver_idle(); return
 	_remote_version = body.get_string_from_utf8().strip_edges()
