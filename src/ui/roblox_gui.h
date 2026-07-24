@@ -207,8 +207,28 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::INT, "DisplayOrder",     PROPERTY_HINT_RANGE,"-100,100,1"), "set_display_order","get_display_order");
     }
 
+    // StarterGui es una PLANTILLA: al entrar un jugador su contenido se clona a
+    // PlayerGui (roblox_services.h) y solo esa copia se ve. Sin esto la interfaz
+    // sale DOS veces, y en un place importado con 9 ScreenGui en StarterGui la
+    // pantalla se llena de recuadros. Igual que en Roblox, el original no se
+    // dibuja; en el editor si, para poder disenarlo.
+    bool _gl_is_template() const {
+        if (Engine::get_singleton()->is_editor_hint()) return false;
+        for (const Node* p = get_parent(); p; p = p->get_parent())
+            if (p->get_name() == StringName("StarterGui")) return true;
+        return false;
+    }
+
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE && _gl_is_template())
+            set_visible(false);
+    }
+
 public:
-    void set_sg_enabled(bool b)          { enabled = b; set_visible(b); }
+    void set_sg_enabled(bool b) {
+        enabled = b;
+        set_visible(b && !_gl_is_template());
+    }
     bool get_sg_enabled() const          { return enabled; }
     void set_reset_on_spawn(bool b)      { reset_on_spawn = b; }
     bool get_reset_on_spawn() const      { return reset_on_spawn; }

@@ -197,6 +197,20 @@ inline String map_property(const String &cls, const String &p) {
     return p;
 }
 
+// Propiedades que en Godot existen pero con OTRO nombre (minuscula/snake_case).
+// Sin esto no se aplican: p.ej. Roblox usa "Visible" y Godot "visible", asi que
+// un place importado mostraba TODOS los frames aunque estuvieran ocultos.
+// Solo se listan las seguras (mismo significado y mismo tipo).
+inline String map_native_property(const String &p) {
+    static HashMap<String, String> m;
+    if (m.is_empty()) {
+        m["Visible"] = "visible";     // CanvasItem / Node3D
+        m["ZIndex"]  = "z_index";     // CanvasItem
+    }
+    const String *v = m.getptr(p);
+    return v ? *v : String();
+}
+
 // ── Enum.Material -> indice 0..36 de GodotLuau ──────────────────────
 // Roblox usa valores grandes y dispersos; GodotLuau los tiene consecutivos
 // (ver el comentario en roblox_part.h).

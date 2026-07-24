@@ -443,11 +443,25 @@ private:
             }
         }
 
-        if (_props_of(n).has(target)) n->set(StringName(target), value);
-        else {
-            _set_meta_safe(n, target, value);
-            _bump(ignored_props, cur_class + String(".") + target);
+        if (_props_of(n).has(target)) {
+            n->set(StringName(target), value);
+            return;
         }
+        // La propiedad puede existir en Godot con otro nombre ("Visible" ->
+        // "visible"). Sin esta pasada, un place importado enseña TODOS los
+        // frames aunque en Roblox estuvieran ocultos.
+        const String native = rbx::map_native_property(target);
+        if (!native.is_empty() && _props_of(n).has(native)) {
+            // Godot acota z_index a +-4096 y Roblox usa valores enormes
+            // (999999999 para "siempre encima"): sin recortar suelta un error
+            // por cada nodo.
+            if (native == "z_index")
+                value = CLAMP((int64_t)value, (int64_t)-4096, (int64_t)4096);
+            n->set(StringName(native), value);
+            return;
+        }
+        _set_meta_safe(n, target, value);
+        _bump(ignored_props, cur_class + String(".") + target);
     }
 
     bool _do_properties() {
@@ -583,6 +597,31 @@ public:
     }
 
 private:
+    // Los nodos que vienen del .rbxl llevan la marca __rbx_class; los que creo
+    // el template no. Si el place aporta puntos de aparicion propios, se quitan
+    // los de relleno para que el jugador no aparezca en el vacio.
+    void _drop_default_spawns(Node *ws) {
+        Vector<Node *> imported, defaults;
+        Vector<Node *> stack;
+        stack.push_back(ws);
+        while (!stack.is_empty()) {
+            Node *n = stack[stack.size() - 1];
+            stack.remove_at(stack.size() - 1);
+            if (n->is_class("SpawnLocation")) {
+                if (n->has_meta("__rbx_class")) imported.push_back(n);
+                else                            defaults.push_back(n);
+            }
+            for (int k = 0; k < n->get_child_count(); k++) stack.push_back(n->get_child(k));
+        }
+        if (imported.is_empty()) return;   // el place no trae ninguno: se conserva
+        for (int k = 0; k < defaults.size(); k++) {
+            Node *d = defaults[k];
+            if (d->get_parent()) d->get_parent()->remove_child(d);
+            memdelete(d);
+        }
+        report["spawns_de_relleno_quitados"] = defaults.size();
+    }
+
     // Vuelca el contenido del arbol importado en la estructura destino:
     // los servicios que ya existan se REUTILIZAN (solo se mueven sus hijos) y
     // los que falten se crean. Asi no salen Workspace duplicados.
@@ -629,11 +668,16 @@ private:
         if (root && !root->get_parent()) { memdelete(root); }
         root = target_game;
 
-        // El Workspace pudo llegar lleno de golpe y quedarse sin cielo ni sol:
-        // se lo pedimos ahora que ya tiene todo dentro.
         if (RobloxWorkspace *ws = Object::cast_to<RobloxWorkspace>(
-                target_game->get_node_or_null(NodePath("Workspace"))))
+                target_game->get_node_or_null(NodePath("Workspace")))) {
+            // Si el place trae sus propios puntos de aparicion, el SpawnLocation
+            // de relleno del template (en el origen) sobra: el mapa importado
+            // suele estar lejisimos del 0,0,0 y el jugador aparecia en el vacio.
+            _drop_default_spawns(ws);
+            // El Workspace llego lleno de golpe y pudo quedarse sin cielo ni
+            // sol: se lo pedimos ahora que ya tiene todo dentro.
             ws->gl_ensure_environment();
+        }
 
         phase = PH_DONE;
         _finish();

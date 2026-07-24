@@ -611,7 +611,16 @@ public:
     }
 
     // ── Anchored ───────────────────────────────────────────────────
-    void set_anchored(bool a) { anchored = a; set_freeze_enabled(a); }
+    // Anclada = la fisica no la mueve (como en Roblox). Se congela en modo
+    // STATIC y no en el KINEMATIC por defecto: un mapa importado trae miles de
+    // parts ancladas y en kinematico el simulador las sigue procesando (6000
+    // parts ~ 10 FPS). En estatico salen del calculo y se pueden seguir moviendo
+    // por codigo cambiando su transform.
+    void set_anchored(bool a) {
+        anchored = a;
+        set_freeze_mode(RigidBody3D::FREEZE_MODE_STATIC);
+        set_freeze_enabled(a);
+    }
     bool get_anchored() const { return anchored; }
 
     // ── Color ──────────────────────────────────────────────────────
