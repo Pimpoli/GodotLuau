@@ -340,6 +340,7 @@ var _ver_label         : Label          = null
 var _ver_btn           : Button         = null
 var _reinstall_btn     : Button         = null
 var _rollback_btn      : Button         = null
+var _check_btn         : Button         = null
 # ── Historial de versiones ────────────────────────────────────────────────────
 var _versions_btn      : Button         = null
 var _versions_menu     : PopupMenu      = null
@@ -1276,10 +1277,16 @@ func _build_panel_contents() -> void:
 	var outer := MarginContainer.new()
 	for s in ["margin_left","margin_right","margin_top","margin_bottom"]:
 		outer.add_theme_constant_override(s, 14)
+	# EXPAND_FILL + ancho minimo: sin esto el panel se encogia al contenido, asi
+	# que quedaba estrecho al estar al dia (fila corta) y solo ancho cuando habia
+	# actualizacion pendiente (fila larga). Ahora ocupa siempre el ancho del panel.
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.custom_minimum_size = Vector2(760, 0)
 	_settings_panel.add_child(outer)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 10)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.add_child(vbox)
 
 	# ── Header: solo título + idioma ─────────────────────────────────────
@@ -1355,6 +1362,15 @@ func _build_panel_contents() -> void:
 	_ver_label.add_theme_font_size_override("font_size", _fs(13))
 	_ver_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ver_row.add_child(_ver_label)
+
+	# Lupa: buscar actualizaciones. SIEMPRE visible (a diferencia de _ver_btn, que
+	# se oculta al estar al dia), asi se puede volver a comprobar cuando se quiera.
+	_check_btn = Button.new()
+	_check_btn.text = "🔍"
+	_check_btn.flat = true
+	_check_btn.tooltip_text = _t("btn_check_ver")
+	_check_btn.pressed.connect(_check_for_update)
+	ver_row.add_child(_check_btn)
 
 	_ver_btn = Button.new()
 	_ver_btn.text = _t("btn_check_ver")
@@ -2018,13 +2034,16 @@ func _check_for_update() -> void:
 	_http_version.request_completed.connect(_on_version_received)
 	_set_ver_status(_t("bar_checking"), "", Color(0.5, 0.8, 1.0))
 	if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = true
+	if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = true
 	if _http_version.request(VERSION_URL) != OK:
 		_http_version.queue_free(); _http_version = null
+		if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = false
 		_reset_ver_idle()
 
 func _on_version_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
 	if _http_version and is_instance_valid(_http_version):
 		_http_version.queue_free(); _http_version = null
+	if _check_btn and is_instance_valid(_check_btn): _check_btn.disabled = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		_reset_ver_idle(); return
 	_remote_version = body.get_string_from_utf8().strip_edges()
