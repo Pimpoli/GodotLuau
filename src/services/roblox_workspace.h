@@ -146,6 +146,9 @@ protected:
         ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
         ClassDB::bind_method(D_METHOD("set_graphics_quality","level"),         &RobloxWorkspace::set_graphics_quality);
         ClassDB::bind_method(D_METHOD("get_graphics_quality"),                 &RobloxWorkspace::get_graphics_quality);
+        // Rehace las piezas del mundo que falten (cielo, sol, camara, terrain).
+        // La llama el importador de .rbxl despues de llenar el Workspace.
+        ClassDB::bind_method(D_METHOD("EnsureEnvironment"),                    &RobloxWorkspace::gl_ensure_environment);
         ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
@@ -178,115 +181,147 @@ protected:
             "set_touches_use_collision_groups","get_touches_use_collision_groups");
     }
 
+    // Busca un hijo directo del tipo pedido. Se comprueba por TIPO y no por
+    // "¿tiene hijos?" porque un Workspace que llega poblado (por ejemplo desde
+    // el importador de .rbxl) tambien necesita cielo, sol y camara: con la
+    // comprobacion antigua se quedaba sin Environment y la escena salia GRIS.
+    template <class T>
+    T* _gl_find_child_of_type() const {
+        for (int i = 0; i < get_child_count(); i++)
+            if (T* t = Object::cast_to<T>(get_child(i))) return t;
+        return nullptr;
+    }
+
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE && Engine::get_singleton()->is_editor_hint()) {
-            if (get_child_count() == 0) {
-                Node* root = get_tree()->get_edited_scene_root();
-                if (!root) root = this;
+            gl_ensure_environment();
+        }
+    }
 
-                // 1. ROBLOX BLUE SKY
-                //// 1. CIELO AZUL ROBLOX
-                WorldEnvironment* env_node = memnew(WorldEnvironment);
-                env_node->set_name("WorldEnvironment");
-                Ref<Environment> env; env.instantiate();
-                Ref<Sky> sky; sky.instantiate();
-                Ref<ProceduralSkyMaterial> sky_mat; sky_mat.instantiate();
-                
-                // Colores del cielo clasico de Roblox (azul suave, no tan saturado):
-                // top RGB(78,150,205), horizonte RGB(170,205,230), suelo RGB(135,140,150)
-                sky_mat->set_sky_top_color(Color(0.306, 0.588, 0.804));
-                sky_mat->set_sky_horizon_color(Color(0.667, 0.804, 0.902));
-                sky_mat->set_ground_bottom_color(Color(0.529, 0.549, 0.588));
-                sky_mat->set_ground_horizon_color(Color(0.667, 0.804, 0.902));
+public:
+    // Crea las piezas del mundo que falten (cielo, sol, baseplate, terrain,
+    // camara). Es IDEMPOTENTE: cada pieza se crea solo si no hay ya una de su
+    // tipo, asi que se puede llamar sobre un Workspace vacio o sobre uno recien
+    // rellenado por el importador.
+    void gl_ensure_environment() {
+        // No exige estar dentro del arbol: el importador puede preparar el
+        // Workspace antes de colgarlo. Solo el owner necesita la escena.
+        Node* root = nullptr;
+        if (is_inside_tree() && get_tree()) root = get_tree()->get_edited_scene_root();
+        if (!root) root = this;
 
-                sky->set_material(sky_mat);
-                env->set_sky(sky);
-                env->set_background(Environment::BG_SKY);
-                env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-                // Mas relleno ambiental para que los lados en sombra (p.ej. el
-                // personaje) no salgan casi negros.
-                env->set_ambient_light_energy(1.15);
+        const bool need_env  = _gl_find_child_of_type<WorldEnvironment>()   == nullptr;
+        const bool need_sun  = _gl_find_child_of_type<DirectionalLight3D>() == nullptr;
+        const bool need_cam  = _gl_find_child_of_type<Camera3D>()           == nullptr;
+        const bool need_terr = get_node_or_null(NodePath("Terrain"))        == nullptr;
+        // El Baseplate solo se crea en un Workspace VACIO: si ya hay geometria
+        // (mapa importado) una placa de 1000x1000 studs estorbaria.
+        const bool need_base = (get_child_count() == 0);
 
-                // 2. SUN
-                //// 2. SOL
-                DirectionalLight3D* sol = memnew(DirectionalLight3D);
+        if (!need_env && !need_sun && !need_cam && !need_terr && !need_base) return;
+
+        // 1. CIELO AZUL ROBLOX + 2. SOL (van juntos: el look se aplica a ambos)
+        if (need_env || need_sun) {
+            Ref<Environment> env; env.instantiate();
+            Ref<Sky> sky; sky.instantiate();
+            Ref<ProceduralSkyMaterial> sky_mat; sky_mat.instantiate();
+
+            // Colores del cielo clasico de Roblox (azul suave, no tan saturado):
+            // top RGB(78,150,205), horizonte RGB(170,205,230), suelo RGB(135,140,150)
+            sky_mat->set_sky_top_color(Color(0.306, 0.588, 0.804));
+            sky_mat->set_sky_horizon_color(Color(0.667, 0.804, 0.902));
+            sky_mat->set_ground_bottom_color(Color(0.529, 0.549, 0.588));
+            sky_mat->set_ground_horizon_color(Color(0.667, 0.804, 0.902));
+
+            sky->set_material(sky_mat);
+            env->set_sky(sky);
+            env->set_background(Environment::BG_SKY);
+            env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+            // Mas relleno ambiental para que los lados en sombra (p.ej. el
+            // personaje) no salgan casi negros.
+            env->set_ambient_light_energy(1.15);
+
+            DirectionalLight3D* sol = _gl_find_child_of_type<DirectionalLight3D>();
+            if (need_sun) {
+                sol = memnew(DirectionalLight3D);
                 sol->set_name("SunLight");
                 sol->set_rotation_degrees(Vector3(-45, 45, 0));
                 sol->set_shadow(true);
                 add_child(sol);
                 sol->set_owner(root);
+            }
 
-                // Look de iluminacion estilo Roblox "Future" sobre el entorno + sol
-                _apply_roblox_render(env, sol);
+            // Look de iluminacion estilo Roblox "Future" sobre el entorno + sol
+            _apply_roblox_render(env, sol);
 
+            if (need_env) {
                 // El Environment vive como ARCHIVO EDITABLE en GodotLuau/shaders/:
                 // si ya existe se usa ese (respetando los cambios del usuario);
                 // si no, se guarda el recien creado para que pueda modificarlo.
-                {
-                    const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
-                    ResourceLoader* rload = ResourceLoader::get_singleton();
-                    if (rload && rload->exists(env_path)) {
-                        Ref<Environment> user_env = rload->load(env_path);
-                        if (user_env.is_valid()) env = user_env;
-                    } else {
-                        Ref<DirAccess> d = DirAccess::open("res://");
-                        if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
-                            d->make_dir_recursive("GodotLuau/shaders");
-                        ResourceSaver::get_singleton()->save(env, env_path);
-                    }
+                const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
+                ResourceLoader* rload = ResourceLoader::get_singleton();
+                if (rload && rload->exists(env_path)) {
+                    Ref<Environment> user_env = rload->load(env_path);
+                    if (user_env.is_valid()) env = user_env;
+                } else {
+                    Ref<DirAccess> d = DirAccess::open("res://");
+                    if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
+                        d->make_dir_recursive("GodotLuau/shaders");
+                    ResourceSaver::get_singleton()->save(env, env_path);
                 }
+                WorldEnvironment* env_node = memnew(WorldEnvironment);
+                env_node->set_name("WorldEnvironment");
                 env_node->set_environment(env);
                 add_child(env_node);
                 env_node->set_owner(root);
-
-                // 3. BASEPLATE — una RobloxPart de verdad, COMO EN ROBLOX:
-                // seleccionas "Baseplate" y cambias su propiedad Color en el
-                // inspector; la textura de cuadricula (archivo editable en
-                // GodotLuau/assets/textures/) se tiñe con ese color.
-                RobloxPart* bp = memnew(RobloxPart);
-                bp->set_name("Baseplate");
-                add_child(bp);            // ENTER_TREE crea su material interno
-                bp->set_owner(root);
-                bp->set_size(Vector3(1000, 1, 1000));
-                bp->set_anchored(true);
-                bp->set_color(Color(0.42f, 0.42f, 0.45f));   // gris Studio (cambiable)
-                {
-                    ResourceLoader* rload = ResourceLoader::get_singleton();
-                    const String tex_path = "res://GodotLuau/assets/textures/baseplate_grid.png";
-                    Ref<Texture2D> grid_tex;
-                    if (rload && rload->exists(tex_path)) grid_tex = rload->load(tex_path);
-                    if (grid_tex.is_null()) grid_tex = generar_textura_grid();
-                    bp->gl_apply_grid_texture(grid_tex, 125.0f);   // celda menor = 2 studs
-                }
-
-                // 3b. TERRAIN — Workspace.Terrain (como Roblox): vacío al inicio,
-                // se llena por código con Terrain:FillBlock/FillBall (p.ej. MundoVoxel).
-                {
-                    RobloxTerrain* terr = memnew(RobloxTerrain);
-                    terr->set_name("Terrain");
-                    add_child(terr);
-                    terr->set_owner(root);
-                }
-
-                // 4. CURRENT CAMERA — visible in the scene tree like Roblox
-                // workspace.CurrentCamera is the camera that renders the game.
-                // At runtime the player controls it; in the editor you can see its position.
-                //// 4. CÁMARA ACTUAL — visible en el árbol de escena como en Roblox
-                //// workspace.CurrentCamera es la cámara que renderiza el juego.
-                //// En runtime el jugador la controla; en el editor puedes ver su posición.
-                Camera3D* current_cam = memnew(Camera3D);
-                current_cam->set_name("CurrentCamera");
-                current_cam->set_position(Vector3(0.0f, 5.0f, 10.0f));
-                current_cam->set_rotation_degrees(Vector3(-15.0f, 0.0f, 0.0f));
-                add_child(current_cam);
-                current_cam->set_owner(root);
-
-                GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace initialized in editor.");
             }
         }
+
+        // 3. BASEPLATE — una RobloxPart de verdad, COMO EN ROBLOX: seleccionas
+        // "Baseplate" y cambias su propiedad Color en el inspector; la textura de
+        // cuadricula (archivo editable en GodotLuau/assets/textures/) se tiñe con
+        // ese color. Solo en un mundo vacio: sobre un mapa importado estorbaria.
+        if (need_base) {
+            RobloxPart* bp = memnew(RobloxPart);
+            bp->set_name("Baseplate");
+            add_child(bp);            // ENTER_TREE crea su material interno
+            bp->set_owner(root);
+            bp->set_size(Vector3(1000, 1, 1000));
+            bp->set_anchored(true);
+            bp->set_color(Color(0.42f, 0.42f, 0.45f));   // gris Studio (cambiable)
+            ResourceLoader* rload = ResourceLoader::get_singleton();
+            const String tex_path = "res://GodotLuau/assets/textures/baseplate_grid.png";
+            Ref<Texture2D> grid_tex;
+            if (rload && rload->exists(tex_path)) grid_tex = rload->load(tex_path);
+            if (grid_tex.is_null()) grid_tex = generar_textura_grid();
+            bp->gl_apply_grid_texture(grid_tex, 125.0f);   // celda menor = 2 studs
+        }
+
+        // 3b. TERRAIN — Workspace.Terrain (como Roblox): vacío al inicio, se
+        // llena por código con Terrain:FillBlock/FillBall (p.ej. MundoVoxel).
+        if (need_terr) {
+            RobloxTerrain* terr = memnew(RobloxTerrain);
+            terr->set_name("Terrain");
+            add_child(terr);
+            terr->set_owner(root);
+        }
+
+        // 4. CÁMARA ACTUAL — visible en el árbol como en Roblox.
+        // workspace.CurrentCamera es la cámara que renderiza el juego: en runtime
+        // la controla el jugador, en el editor ves su posición.
+        if (need_cam) {
+            Camera3D* current_cam = memnew(Camera3D);
+            current_cam->set_name("CurrentCamera");
+            current_cam->set_position(Vector3(0.0f, 5.0f, 10.0f));
+            current_cam->set_rotation_degrees(Vector3(-15.0f, 0.0f, 0.0f));
+            add_child(current_cam);
+            current_cam->set_owner(root);
+        }
+
+        GL_DEBUG_PRINT("[GodotLuau] RobloxWorkspace: entorno asegurado en el editor.");
     }
 
-public:
+
     // ── Getters / Setters (properties match Roblox Workspace API) ─
     void  set_gravity(float g)                     { gravity = Math::max(g, 0.0f); _apply_gravity(); }
     float get_gravity() const                      { return gravity; }

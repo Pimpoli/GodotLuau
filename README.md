@@ -176,12 +176,30 @@ Press **Esc** (or the mobile button / gamepad Start) for the Roblox-style menu: 
 
 GodotLuau reads Roblox's **binary place format** directly, so you can open a place you saved from Studio and get its whole tree back in Godot.
 
-**How to use it:** in Godot, **Project → Tools → "Importar lugar de Roblox (.rbxl)"**, pick your `.rbxl` and the tree is added to the open scene. From code you can also do it yourself:
+**How to use it:** in Godot, **Project → Tools → "Importar lugar de Roblox (.rbxl)"** and pick your `.rbxl`. **3D only** — importing into a 2D Workspace is rejected with a clear message.
+
+The import runs **in batches across frames** (~30 ms per frame) so the editor stays responsive, with a progress window showing the phase, the percentage and what is being processed right now — including `Script 45 of 202: MyScript`. It goes through three stages:
+
+1. **Importing** — instances, properties, hierarchy and cross-references.
+2. **Comprobado (checked)** — every instance in the file is verified to exist and to be inside the tree, so nothing is silently skipped.
+3. **Recolocado (placed)** — the result is merged into the Roblox structure already in your scene: **your existing `Workspace`, `Players`, `Lighting`… are reused, not duplicated**, and whatever is missing gets created. If the scene has no `Game` at all, a full one is built with `RobloxTemplate` first.
+
+From code:
 
 ```gdscript
 var imp = RBXImporter.new()
-var root = imp.ImportFile("C:/path/MyPlace.rbxl")
+var root = imp.ImportFile("C:/path/MyPlace.rbxl")   # blocking
 print(imp.GetReport())
+```
+
+Or step by step, to drive your own progress bar:
+
+```gdscript
+imp.Begin(path)
+imp.SetTarget(my_game_node)        # optional: merge into an existing Game
+while not imp.IsDone() and not imp.HasFailed():
+    imp.Step()
+    print(imp.GetPhaseName(), imp.GetProgress(), imp.GetCurrentItem())
 ```
 
 **What gets imported.** The full instance tree, exactly as the Explorer shows it: `game` with its services, every instance's name, parent and child order, and its properties — sizes, `CFrame` positions and rotations, colors (including `BrickColor` and the `Material` enum), GUI layout, **the Luau source of every script**, **CollectionService tags**, **instance attributes** and cross-instance references such as `PrimaryPart` or `Part0`/`Part1`.

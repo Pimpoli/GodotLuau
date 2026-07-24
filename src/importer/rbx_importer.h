@@ -3,11 +3,21 @@
 
 // Convierte un .rbxl en un arbol de nodos de Godot.
 //
-// Orden de trabajo (importa respetarlo):
-//   1. INST -> crear un nodo por instancia, todavia sueltos
-//   2. PROP -> aplicar las propiedades columna a columna
-//   3. PRNT -> construir la jerarquia y asignar owner
-//   4. resolver las referencias entre instancias (ya existen todos los nodos)
+// Trabaja POR FASES y POR LOTES para no congelar el editor con un place de
+// 90.000 instancias. El flujo es:
+//
+//   Begin(ruta)            abre el archivo y prepara los indices
+//   Step()  -> bool        procesa un lote; false cuando ya no queda nada
+//   GetProgress()/GetPhaseName()/GetCurrentItem()  para pintar la barra
+//   GetResult()            el nodo raiz
+//
+// Fases: Leyendo -> Importando -> Propiedades -> Jerarquia -> Referencias ->
+//        Comprobando -> Recolocando -> Listo
+//
+// "Comprobando" verifica que TODA instancia del archivo acabo en el arbol.
+// "Recolocando" fusiona el resultado con la estructura Roblox que ya tengas en
+// la escena (reutiliza tu Workspace, Players, etc. en vez de duplicarlos) y crea
+// la que falte.
 //
 // Nada de lo que venga del archivo puede tumbar el editor: si algo no cuadra se
 // salta esa columna y se anota en el reporte.
@@ -17,11 +27,13 @@
 #include "rbx_classmap.h"
 #include "rbx_instances.h"
 #include "luau_script.h"
+#include "roblox_workspace.h"
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
@@ -32,29 +44,71 @@ using namespace godot;
 class RBXImporter : public RefCounted {
     GDCLASS(RBXImporter, RefCounted);
 
-    String last_error;
-    Dictionary report;
-    bool verbose = false;
+public:
+    enum Phase {
+        PH_IDLE = 0, PH_PARSE, PH_INSTANCES, PH_PROPERTIES, PH_HIERARCHY,
+        PH_REFS, PH_VERIFY, PH_PLACE, PH_DONE, PH_ERROR
+    };
+
+private:
+    // Tamaño de lote por fase. Ajustados para que un step ronde los pocos ms:
+    // suficiente para avanzar rapido sin que se note el tiron en el editor.
+    static const int BATCH_INSTANCES = 2500;
+    static const int BATCH_VALUES    = 4000;
+    static const int BATCH_LINKS     = 6000;
+    static const int BATCH_REFS      = 3000;
+    static const int BATCH_VERIFY    = 6000;
 
     struct Inst {
         String rbx_class;
         Node *node = nullptr;
     };
-
     struct PendingRef {
         Node *node = nullptr;
         String prop;
         int32_t target = -1;
     };
 
-    HashMap<int32_t, Inst> by_ref;
-    HashMap<String, HashSet<String>> prop_cache;   // clase Godot -> props validas
-    Vector<PendingRef> pending_refs;
-    Dictionary class_counts, missing_classes, ignored_props;
-    Array missing_assets;
-    int scripts_imported = 0, tags_applied = 0, orphans = 0, attrs_applied = 0;
+    // ── Estado que sobrevive entre Step() ───────────────────────────
+    rbx::RBXFile file;
+    String path;
+    Phase phase = PH_IDLE;
+    int cursor = 0;          // indice dentro de la fase
+    int sub_cursor = 0;      // indice dentro del chunk actual (fase PROPERTIES)
 
-    // get_property_list es caro: 38562 instancias no pueden pedirlo una a una.
+    Vector<int> inst_chunks, prop_chunks, prnt_chunks;
+    HashMap<uint32_t, String> class_names;
+    HashMap<uint32_t, Vector<int32_t>> class_refs;
+    Vector<uint32_t> flat_class;     // por instancia: su class_index
+    Vector<int32_t>  flat_ref;       // por instancia: su referent
+
+    // Chunk PROP en curso
+    bool prop_loaded = false;
+    Vector<Variant> cur_vals;
+    String cur_prop, cur_class;
+    uint8_t cur_type = 0;
+    Vector<int32_t> cur_refs;
+
+    // Enlaces del PRNT ya decodificados
+    Vector<int32_t> link_child, link_parent;
+
+    HashMap<int32_t, Inst> by_ref;
+    HashMap<String, HashSet<String>> prop_cache;
+    Vector<PendingRef> pending_refs;
+
+    Node *root = nullptr;
+    Node *target_game = nullptr;     // Game existente con el que fusionar
+
+    String last_error, current_item;
+    Dictionary report, class_counts, missing_classes, ignored_props;
+    Array missing_assets, verify_errors;
+    int scripts_imported = 0, scripts_total = 0, scripts_seen = 0;
+    int tags_applied = 0, orphans = 0, attrs_applied = 0, refs_ok = 0;
+    int reused_services = 0, created_services = 0, verified_ok = 0;
+    uint64_t t_start = 0;
+    bool verbose = false;
+
+    // ── Utilidades ──────────────────────────────────────────────────
     const HashSet<String> &_props_of(Node *n) {
         String cls = n->get_class();
         HashMap<String, HashSet<String>>::Iterator it = prop_cache.find(cls);
@@ -69,24 +123,25 @@ class RBXImporter : public RefCounted {
         return prop_cache.find(cls)->value;
     }
 
-    // Godot exige que el nombre de un metadato sea un identificador valido, pero
-    // en Roblox un atributo puede llamarse "Bevel Roundness". Se sustituye lo no
-    // valido por _ y se guarda la equivalencia para poder consultarla.
+    static String _safe_node_name(const String &raw, const String &fallback) {
+        String s = raw.validate_node_name().strip_edges();
+        if (s.is_empty()) s = fallback.is_empty() ? String("Instance") : fallback;
+        return s;
+    }
+
+    // Godot exige identificador valido en los metadatos, pero un atributo de
+    // Roblox puede llamarse "Bevel Roundness".
     static String _safe_meta_name(const String &raw) {
         String out;
-        bool changed = false;
         for (int k = 0; k < raw.length(); k++) {
             char32_t c = raw[k];
             bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                       (c >= '0' && c <= '9') || c == '_';
-            if (!ok) { c = '_'; changed = true; }
-            out += String::chr(c);
+            out += String::chr(ok ? c : '_');
         }
         if (out.is_empty()) return String("_");
-        // Un identificador no puede empezar por digito.
         char32_t f = out[0];
         if (f >= '0' && f <= '9') out = String("_") + out;
-        (void)changed;
         return out;
     }
 
@@ -100,18 +155,8 @@ class RBXImporter : public RefCounted {
         }
     }
 
-    static String _safe_node_name(const String &raw, const String &fallback) {
-        String s = raw.validate_node_name();
-        s = s.strip_edges();
-        if (s.is_empty()) s = fallback;
-        return s;
-    }
+    void _bump(Dictionary &d, const String &k) { d[k] = (int)d.get(k, 0) + 1; }
 
-    void _bump(Dictionary &d, const String &k) {
-        d[k] = (int)d.get(k, 0) + 1;
-    }
-
-    // Los tags van en una unica entrada de la tabla SSTR, separados por \0.
     void _apply_tags(Node *n, const PackedByteArray &raw) {
         if (raw.size() == 0) return;
         PackedStringArray tags;
@@ -128,11 +173,9 @@ class RBXImporter : public RefCounted {
         tags_applied += tags.size();
     }
 
-    // AttributesSerialize: blob con pares nombre->valor tipado.
-    //   u32 numero_de_atributos
-    //   por cada uno: u32 len + nombre, u8 tipo, valor
-    // Solo se decodifican los tipos que de verdad se usan en los juegos; si algo
-    // no cuadra se guarda el blob entero y se sigue (nunca se aborta).
+    // AttributesSerialize: u32 numero, luego (u32 len + nombre, u8 tipo, valor).
+    // Los codigos de tipo son los de rbx_types::Variant, NO los del formato de
+    // propiedades (0x11 = Vector3, verificado contra un place real).
     void _apply_attributes(Node *n, const PackedByteArray &raw) {
         if (raw.size() < 4) return;
         rbx::Reader r(raw.ptr(), raw.size());
@@ -144,37 +187,34 @@ class RBXImporter : public RefCounted {
             uint8_t t = r.u8();
             if (!r.ok() || name.is_empty()) { n->set_meta("__rbx_attributes_raw", raw); return; }
 
-            // Los codigos de tipo de un ATRIBUTO no son los del formato de
-            // propiedades: son los de rbx_types::Variant. Verificados contra un
-            // place real (0x11 = Vector3).
             Variant v;
             bool known = true;
             switch (t) {
-                case 0x02: v = r.str(); break;                             // String
-                case 0x03: v = (r.u8() != 0); break;                       // Bool
-                case 0x05: v = r.f64le(); break;                           // Float64
-                case 0x06: v = (int64_t)r.i64le(); break;                  // Int64
-                case 0x09: { float a = r.f32le(); int32_t b = r.i32le();   // UDim
+                case 0x02: v = r.str(); break;                              // String
+                case 0x03: v = (r.u8() != 0); break;                        // Bool
+                case 0x05: v = r.f64le(); break;                            // Float64
+                case 0x06: v = (int64_t)r.i64le(); break;                   // Int64
+                case 0x09: { float a = r.f32le(); int32_t b = r.i32le();    // UDim
                              v = Vector2(a, (float)b); } break;
-                case 0x0A: { float a = r.f32le(); int32_t b = r.i32le();   // UDim2
+                case 0x0A: { float a = r.f32le(); int32_t b = r.i32le();    // UDim2
                              float c = r.f32le(); int32_t d = r.i32le();
                              v = Vector4(a, (float)b, c, (float)d); } break;
-                case 0x0E: v = (int64_t)r.u32le(); break;                  // BrickColor
-                case 0x0F: { float cr = r.f32le(), cg = r.f32le(),         // Color3
+                case 0x0E: v = (int64_t)r.u32le(); break;                   // BrickColor
+                case 0x0F: { float cr = r.f32le(), cg = r.f32le(),          // Color3
                                    cb = r.f32le();
                              v = Color(cr, cg, cb); } break;
-                case 0x10: { float a = r.f32le(), b = r.f32le();           // Vector2
+                case 0x10: { float a = r.f32le(), b = r.f32le();            // Vector2
                              v = Vector2(a, b); } break;
-                case 0x11: { float a = r.f32le(), b = r.f32le(),           // Vector3
+                case 0x11: { float a = r.f32le(), b = r.f32le(),            // Vector3
                                    c = r.f32le();
                              v = Vector3(a, b, c); } break;
-                case 0x14: { float m[9];                                   // CFrame
+                case 0x14: { float m[9];                                    // CFrame
                              float px = r.f32le(), py = r.f32le(), pz = r.f32le();
                              for (int j = 0; j < 9; j++) m[j] = r.f32le();
                              v = rbx::cframe_to_transform(m, Vector3(px, py, pz)); } break;
-                case 0x1B: { float a = r.f32le(), b = r.f32le();           // NumberRange
+                case 0x1B: { float a = r.f32le(), b = r.f32le();            // NumberRange
                              v = Vector2(a, b); } break;
-                case 0x1C: { float a = r.f32le(), b = r.f32le(),           // Rect
+                case 0x1C: { float a = r.f32le(), b = r.f32le(),            // Rect
                                    c = r.f32le(), d = r.f32le();
                              v = Rect2(a, b, c - a, d - b); } break;
                 default: known = false; break;
@@ -193,63 +233,40 @@ class RBXImporter : public RefCounted {
         }
     }
 
-    void _cleanup_unparented() {
+    void _fail(const String &msg) {
+        last_error = msg;
+        phase = PH_ERROR;
+        // Liberar lo que no llegara a colgarse de ningun sitio.
         for (HashMap<int32_t, Inst>::Iterator it = by_ref.begin(); it; ++it) {
             Node *n = it->value.node;
             if (n && !n->get_parent()) memdelete(n);
         }
         by_ref.clear();
+        if (root && !root->get_parent()) { memdelete(root); root = nullptr; }
     }
 
-protected:
-    static void _bind_methods() {
-        ClassDB::bind_method(D_METHOD("ImportFile", "path"),  &RBXImporter::import_file);
-        ClassDB::bind_method(D_METHOD("GetLastError"),        &RBXImporter::get_last_error);
-        ClassDB::bind_method(D_METHOD("GetReport"),           &RBXImporter::get_report);
-        ClassDB::bind_method(D_METHOD("SetVerbose", "v"),     &RBXImporter::set_verbose);
-        // Alias en snake_case para GDScript
-        ClassDB::bind_method(D_METHOD("import_file", "path"), &RBXImporter::import_file);
-        ClassDB::bind_method(D_METHOD("get_last_error"),      &RBXImporter::get_last_error);
-        ClassDB::bind_method(D_METHOD("get_report"),          &RBXImporter::get_report);
-        ClassDB::bind_method(D_METHOD("set_verbose", "v"),    &RBXImporter::set_verbose);
-    }
-
-public:
-    void set_verbose(bool v) { verbose = v; }
-    String get_last_error() const { return last_error; }
-    Dictionary get_report() const { return report; }
-
-    Node *import_file(const String &p_path) {
-        const uint64_t t0 = Time::get_singleton()->get_ticks_msec();
-        last_error = String();
-        report = Dictionary();
-        by_ref.clear(); prop_cache.clear(); pending_refs.clear();
-        class_counts = Dictionary(); missing_classes = Dictionary();
-        ignored_props = Dictionary(); missing_assets = Array();
-        scripts_imported = tags_applied = orphans = attrs_applied = 0;
-
-        PackedByteArray bytes = FileAccess::get_file_as_bytes(p_path);
-        if (bytes.size() < 32) {
-            last_error = "No se pudo leer el archivo o esta vacio: " + p_path;
-            return nullptr;
-        }
+    // ── Fases ───────────────────────────────────────────────────────
+    bool _do_parse() {
+        PackedByteArray bytes = FileAccess::get_file_as_bytes(path);
+        if (bytes.size() < 32) { _fail("No se pudo leer el archivo o esta vacio: " + path); return false; }
         if (bytes[0] == '<' && bytes[7] != '!') {
-            last_error = "Este .rbxlx esta en XML. El lector de XML llega en la "
-                         "siguiente version; por ahora guardalo en Studio como .rbxl binario.";
-            return nullptr;
+            _fail("Este .rbxlx esta en XML. El lector de XML llega en la siguiente "
+                  "version; por ahora guardalo en Studio como .rbxl binario.");
+            return false;
+        }
+        String err;
+        if (!rbx::parse_container(bytes, file, err)) { _fail(err); return false; }
+
+        for (int k = 0; k < file.chunks.size(); k++) {
+            const String &n = file.chunks[k].name;
+            if (n == "INST") inst_chunks.push_back(k);
+            else if (n == "PROP") prop_chunks.push_back(k);
+            else if (n == "PRNT") prnt_chunks.push_back(k);
         }
 
-        rbx::RBXFile file;
-        String err;
-        if (!rbx::parse_container(bytes, file, err)) { last_error = err; return nullptr; }
-
-        // ── 1. INST: crear los nodos ────────────────────────────────
-        HashMap<uint32_t, String> class_names;
-        HashMap<uint32_t, Vector<int32_t>> class_refs;
-
-        for (int ci = 0; ci < file.chunks.size(); ci++) {
-            const rbx::Chunk &c = file.chunks[ci];
-            if (c.name != "INST") continue;
+        // Cabeceras de los INST: clases, referents y lista aplanada.
+        for (int i = 0; i < inst_chunks.size(); i++) {
+            const rbx::Chunk &c = file.chunks[inst_chunks[i]];
             rbx::Reader r(c.data.ptr(), c.data.size());
             uint32_t idx = r.u32le();
             String cname = r.str();
@@ -257,208 +274,253 @@ public:
             uint32_t count = r.u32le();
             if (!r.ok() || count > file.instance_count + 1024) continue;
 
-            LocalVector<int32_t> refs;
-            refs.resize(count);
+            LocalVector<int32_t> refs; refs.resize(count);
             r.read_ref_array(count, refs.ptr());
             if (!r.ok()) continue;
-            if (fmt == 1) r.skip(count);            // flags is_service
 
             class_names[idx] = cname;
             Vector<int32_t> vec;
-            for (uint32_t k = 0; k < count; k++) vec.push_back(refs[k]);
-            class_refs[idx] = vec;
-
-            String godot_class = rbx::map_class(cname);
             for (uint32_t k = 0; k < count; k++) {
-                Node *n = nullptr;
-                if (!godot_class.is_empty())
-                    n = Object::cast_to<Node>(ClassDB::instantiate(StringName(godot_class)));
-                if (!n) {
-                    RBXInstance *gi = memnew(RBXInstance);
-                    gi->set_rbx_class_name(cname);
-                    n = gi;
-                    if (godot_class.is_empty()) _bump(missing_classes, cname);
-                }
-                n->set_name(cname);
-                n->set_meta("__rbx_class", cname);
-                Inst inst; inst.rbx_class = cname; inst.node = n;
-                by_ref.insert(refs[k], inst);
+                vec.push_back(refs[k]);
+                flat_class.push_back(idx);
+                flat_ref.push_back(refs[k]);
             }
-            _bump(class_counts, cname);
+            class_refs[idx] = vec;
             class_counts[cname] = (int)count;
         }
 
-        // ── 2. PROP: aplicar propiedades ────────────────────────────
-        for (int ci = 0; ci < file.chunks.size(); ci++) {
-            const rbx::Chunk &c = file.chunks[ci];
-            if (c.name != "PROP") continue;
+        // Cuantos scripts hay, para poder decir "script 12 de 202".
+        for (int i = 0; i < prop_chunks.size(); i++) {
+            const rbx::Chunk &c = file.chunks[prop_chunks[i]];
             rbx::Reader r(c.data.ptr(), c.data.size());
             uint32_t idx = r.u32le();
             String pname = r.str();
-            uint8_t tid = r.u8();
-            if (!r.ok()) continue;
+            if (pname != "Source") continue;
+            HashMap<uint32_t, Vector<int32_t>>::Iterator it = class_refs.find(idx);
+            if (it) scripts_total += it->value.size();
+        }
+
+        // Los servicios cuelgan de un DataModel que NO existe como instancia.
+        root = memnew(Node);
+        root->set_name("Game");
+        root->set_meta("__rbx_class", "DataModel");
+
+        cursor = 0;
+        phase = PH_INSTANCES;
+        return true;
+    }
+
+    bool _do_instances() {
+        const int total = flat_ref.size();
+        int end = MIN(cursor + BATCH_INSTANCES, total);
+        for (; cursor < end; cursor++) {
+            const String cname = class_names.has(flat_class[cursor])
+                                 ? class_names[flat_class[cursor]] : String("Instance");
+            String godot_class = rbx::map_class(cname);
+            Node *n = nullptr;
+            if (!godot_class.is_empty())
+                n = Object::cast_to<Node>(ClassDB::instantiate(StringName(godot_class)));
+            if (!n) {
+                RBXInstance *gi = memnew(RBXInstance);
+                gi->set_rbx_class_name(cname);
+                n = gi;
+                if (godot_class.is_empty()) _bump(missing_classes, cname);
+            }
+            n->set_name(cname);
+            n->set_meta("__rbx_class", cname);
+            Inst inst; inst.rbx_class = cname; inst.node = n;
+            by_ref.insert(flat_ref[cursor], inst);
+        }
+        current_item = String::num_int64(cursor) + " / " + String::num_int64(total) + " instancias";
+        if (cursor >= total) { cursor = 0; sub_cursor = 0; prop_loaded = false; phase = PH_PROPERTIES; }
+        return true;
+    }
+
+    // Carga la siguiente columna de propiedades. Devuelve false si ya no quedan.
+    bool _load_next_prop() {
+        while (cursor < prop_chunks.size()) {
+            const rbx::Chunk &c = file.chunks[prop_chunks[cursor]];
+            rbx::Reader r(c.data.ptr(), c.data.size());
+            uint32_t idx = r.u32le();
+            cur_prop = r.str();
+            cur_type = r.u8();
+            if (!r.ok()) { cursor++; continue; }
 
             HashMap<uint32_t, Vector<int32_t>>::Iterator rit = class_refs.find(idx);
-            if (!rit) continue;
-            const Vector<int32_t> &refs = rit->value;
-            const uint32_t count = (uint32_t)refs.size();
-            if (count == 0) continue;
-            const String rbx_class = class_names.has(idx) ? class_names[idx] : String();
+            if (!rit || rit->value.size() == 0) { cursor++; continue; }
+            cur_refs = rit->value;
+            cur_class = class_names.has(idx) ? class_names[idx] : String();
+            const uint32_t count = (uint32_t)cur_refs.size();
 
-            // Tags: hace falta el blob crudo, no la String resuelta.
-            if (pname == "Tags" && tid == rbx::PT_SHAREDSTRING) {
+            // Tags y AttributesSerialize son blobs binarios: se aplican enteros
+            // aqui porque necesitan los bytes crudos, no el valor decodificado.
+            if (cur_prop == "Tags" && cur_type == rbx::PT_SHAREDSTRING) {
                 LocalVector<uint32_t> ids;
-                if (!rbx::decode_sharedstring_indices(r, count, ids)) continue;
-                for (uint32_t k = 0; k < count; k++) {
-                    HashMap<int32_t, Inst>::Iterator ii = by_ref.find(refs[k]);
-                    if (!ii || (int)ids[k] >= file.shared_raw.size()) continue;
-                    _apply_tags(ii->value.node, file.shared_raw[ids[k]]);
+                if (rbx::decode_sharedstring_indices(r, count, ids)) {
+                    for (uint32_t k = 0; k < count; k++) {
+                        HashMap<int32_t, Inst>::Iterator ii = by_ref.find(cur_refs[k]);
+                        if (ii && (int)ids[k] < file.shared_raw.size())
+                            _apply_tags(ii->value.node, file.shared_raw[ids[k]]);
+                    }
                 }
-                continue;
+                cursor++; continue;
             }
-
-            // AttributesSerialize es un blob binario disfrazado de String: hay
-            // que leerlo en crudo o se pierde al validarlo como texto.
-            if (pname == "AttributesSerialize" && tid == rbx::PT_STRING) {
+            if (cur_prop == "AttributesSerialize" && cur_type == rbx::PT_STRING) {
                 for (uint32_t k = 0; k < count; k++) {
                     PackedByteArray raw = r.blob();
                     if (!r.ok()) break;
                     if (raw.size() == 0) continue;
-                    HashMap<int32_t, Inst>::Iterator ii = by_ref.find(refs[k]);
+                    HashMap<int32_t, Inst>::Iterator ii = by_ref.find(cur_refs[k]);
                     if (ii) _apply_attributes(ii->value.node, raw);
                 }
-                continue;
+                cursor++; continue;
             }
 
-            Vector<Variant> vals;
-            if (!rbx::decode_column(r, tid, count, file.shared_strings, vals)) {
-                _bump(ignored_props, rbx_class + String(".") + pname +
-                                     " (" + rbx::prop_type_name(tid) + ")");
-                continue;
+            if (!rbx::decode_column(r, cur_type, count, file.shared_strings, cur_vals)) {
+                _bump(ignored_props, cur_class + String(".") + cur_prop +
+                                     " (" + rbx::prop_type_name(cur_type) + ")");
+                cursor++; continue;
             }
+            sub_cursor = 0;
+            prop_loaded = true;
+            return true;
+        }
+        return false;
+    }
 
-            for (uint32_t k = 0; k < count; k++) {
-                HashMap<int32_t, Inst>::Iterator ii = by_ref.find(refs[k]);
-                if (!ii) continue;
-                Node *n = ii->value.node;
-                const Variant &v = vals[k];
+    void _apply_one_prop(int k) {
+        HashMap<int32_t, Inst>::Iterator ii = by_ref.find(cur_refs[k]);
+        if (!ii) return;
+        Node *n = ii->value.node;
+        const Variant &v = cur_vals[k];
 
-                if (pname == "Name") {
-                    String raw = v;
-                    String safe = _safe_node_name(raw, rbx_class);
-                    n->set_name(safe);
-                    if (safe != raw) n->set_meta("__rbx_name", raw);
-                    continue;
-                }
-                if (pname == "Source") {
-                    String src = v;
-                    Ref<LuauScript> ls; ls.instantiate();
-                    ls->_set_source_code(src);
-                    n->set("codigo_luau", ls);
-                    if (!src.is_empty()) scripts_imported++;
-                    continue;
-                }
-                if (tid == rbx::PT_REF) {
-                    int32_t tgt = (int32_t)(int64_t)v;
-                    if (tgt >= 0) {
-                        PendingRef pr; pr.node = n; pr.prop = pname; pr.target = tgt;
-                        pending_refs.push_back(pr);
-                    }
-                    continue;
-                }
+        if (cur_prop == "Name") {
+            String raw = v;
+            String safe = _safe_node_name(raw, cur_class);
+            n->set_name(safe);
+            if (safe != raw) n->set_meta("__rbx_name", raw);
+            return;
+        }
+        if (cur_prop == "Source") {
+            String src = v;
+            Ref<LuauScript> ls; ls.instantiate();
+            ls->_set_source_code(src);
+            n->set("codigo_luau", ls);
+            scripts_seen++;
+            if (!src.is_empty()) scripts_imported++;
+            current_item = "Script " + String::num_int64(scripts_seen) + " de " +
+                           String::num_int64(scripts_total) + ": " + n->get_name();
+            return;
+        }
+        if (cur_type == rbx::PT_REF) {
+            int32_t tgt = (int32_t)(int64_t)v;
+            if (tgt >= 0) { PendingRef pr; pr.node = n; pr.prop = cur_prop; pr.target = tgt;
+                            pending_refs.push_back(pr); }
+            return;
+        }
 
-                String target = rbx::map_property(rbx_class, pname);
-                if (target.is_empty()) continue;
+        String target = rbx::map_property(cur_class, cur_prop);
+        if (target.is_empty()) return;
 
-                Variant value = v;
-                if (target == "Material")        value = rbx::map_material((int)(int64_t)v);
-                else if (target == "Shape")      value = rbx::map_part_type((int)(int64_t)v);
-                else if (pname == "BrickColor")  { target = "Color"; value = rbx::brick_color((int)(int64_t)v); }
-                else if (target == "CFrame") {
-                    // El CFrame de una part es su posicion y rotacion en el mundo.
-                    Node3D *n3 = Object::cast_to<Node3D>(n);
-                    if (n3) { n3->set_transform(v); continue; }
-                }
+        Variant value = v;
+        if (target == "Material")       value = rbx::map_material((int)(int64_t)v);
+        else if (target == "Shape")     value = rbx::map_part_type((int)(int64_t)v);
+        else if (cur_prop == "BrickColor") { target = "Color"; value = rbx::brick_color((int)(int64_t)v); }
+        else if (target == "CFrame") {
+            Node3D *n3 = Object::cast_to<Node3D>(n);
+            if (n3) { n3->set_transform(v); return; }
+        }
 
-                // Assets de la nube de Roblox: no se pueden descargar.
-                if (value.get_type() == Variant::STRING) {
-                    String s = value;
-                    if (s.begins_with("rbxassetid://") ||
-                        s.begins_with("http://www.roblox.com/asset") ||
-                        s.begins_with("rbxasset://")) {
-                        Dictionary d;
-                        d["Instancia"] = n->get_name();
-                        d["Propiedad"] = target;
-                        d["AssetId"] = s;
-                        missing_assets.push_back(d);
-                    }
-                }
-
-                if (_props_of(n).has(target)) {
-                    n->set(StringName(target), value);
-                } else {
-                    // No se pierde el dato: queda como metadato inspeccionable.
-                    _set_meta_safe(n, target, value);
-                    _bump(ignored_props, rbx_class + String(".") + target);
-                }
+        if (value.get_type() == Variant::STRING) {
+            String s = value;
+            if (s.begins_with("rbxassetid://") || s.begins_with("rbxasset://") ||
+                s.begins_with("http://www.roblox.com/asset")) {
+                Dictionary d;
+                d["Instancia"] = n->get_name();
+                d["Propiedad"] = target;
+                d["AssetId"] = s;
+                missing_assets.push_back(d);
             }
         }
 
-        // ── 3. PRNT: jerarquia ──────────────────────────────────────
-        // El DataModel NO es una instancia del archivo: TODOS los servicios
-        // (Workspace, Players, Lighting...) llegan con parent == -1. Por eso la
-        // raiz se crea aqui, como hace Roblox con game.
-        Node *root = memnew(Node);
-        root->set_name("Game");
-        root->set_meta("__rbx_class", "DataModel");
-        for (int ci = 0; ci < file.chunks.size(); ci++) {
-            const rbx::Chunk &c = file.chunks[ci];
-            if (c.name != "PRNT") continue;
+        if (_props_of(n).has(target)) n->set(StringName(target), value);
+        else {
+            _set_meta_safe(n, target, value);
+            _bump(ignored_props, cur_class + String(".") + target);
+        }
+    }
+
+    bool _do_properties() {
+        int budget = BATCH_VALUES;
+        while (budget > 0) {
+            if (!prop_loaded && !_load_next_prop()) {
+                cursor = 0; phase = PH_HIERARCHY; return true;
+            }
+            const int total = cur_vals.size();
+            int end = MIN(sub_cursor + budget, total);
+            budget -= (end - sub_cursor);
+            for (; sub_cursor < end; sub_cursor++) _apply_one_prop(sub_cursor);
+            if (sub_cursor >= total) {
+                if (cur_prop != "Source")
+                    current_item = cur_class + "." + cur_prop;
+                prop_loaded = false;
+                cursor++;
+            }
+        }
+        return true;
+    }
+
+    bool _do_hierarchy() {
+        if (link_child.is_empty()) {
+            if (prnt_chunks.is_empty()) { cursor = 0; phase = PH_REFS; return true; }
+            const rbx::Chunk &c = file.chunks[prnt_chunks[0]];
             rbx::Reader r(c.data.ptr(), c.data.size());
-            r.u8();                              // version
+            r.u8();
             uint32_t count = r.u32le();
-            if (!r.ok() || count > file.instance_count + 1024) break;
+            if (!r.ok() || count > file.instance_count + 1024) { cursor = 0; phase = PH_REFS; return true; }
+            LocalVector<int32_t> ch, pa; ch.resize(count); pa.resize(count);
+            r.read_ref_array(count, ch.ptr());
+            r.read_ref_array(count, pa.ptr());
+            if (!r.ok()) { cursor = 0; phase = PH_REFS; return true; }
+            for (uint32_t k = 0; k < count; k++) { link_child.push_back(ch[k]); link_parent.push_back(pa[k]); }
+            cursor = 0;
+        }
 
-            LocalVector<int32_t> childs, parents;
-            childs.resize(count); parents.resize(count);
-            r.read_ref_array(count, childs.ptr());
-            r.read_ref_array(count, parents.ptr());
-            if (!r.ok()) break;
-
-            for (uint32_t k = 0; k < count; k++) {
-                HashMap<int32_t, Inst>::Iterator ci2 = by_ref.find(childs[k]);
-                if (!ci2) continue;
-                Node *child = ci2->value.node;
-                if (parents[k] < 0) {           // servicio: cuelga del DataModel
-                    root->add_child(child);
-                    continue;
-                }
-                HashMap<int32_t, Inst>::Iterator pi = by_ref.find(parents[k]);
-                if (!pi) { root->add_child(child); orphans++; continue; }
-                pi->value.node->add_child(child);
+        const int total = link_child.size();
+        int end = MIN(cursor + BATCH_LINKS, total);
+        for (; cursor < end; cursor++) {
+            HashMap<int32_t, Inst>::Iterator ci = by_ref.find(link_child[cursor]);
+            if (!ci) continue;
+            Node *child = ci->value.node;
+            if (child->get_parent()) continue;
+            if (link_parent[cursor] < 0) { root->add_child(child); continue; }
+            HashMap<int32_t, Inst>::Iterator pi = by_ref.find(link_parent[cursor]);
+            if (!pi) { root->add_child(child); orphans++; continue; }
+            pi->value.node->add_child(child);
+        }
+        current_item = String::num_int64(cursor) + " / " + String::num_int64(total) + " enlaces";
+        if (cursor >= total) {
+            // Nada puede quedar suelto: seria una fuga y ademas se perderia.
+            for (HashMap<int32_t, Inst>::Iterator it = by_ref.begin(); it; ++it) {
+                Node *n = it->value.node;
+                if (n && n != root && !n->get_parent()) { root->add_child(n); orphans++; }
             }
-            break;
+            cursor = 0; phase = PH_REFS;
         }
+        return true;
+    }
 
-        // Cualquier nodo que el PRNT no haya colocado no puede quedar suelto: se
-        // filtraria memoria y ademas se perderia informacion del place.
-        for (HashMap<int32_t, Inst>::Iterator it = by_ref.begin(); it; ++it) {
-            Node *n = it->value.node;
-            if (n && n != root && !n->get_parent()) { root->add_child(n); orphans++; }
-        }
-
-        // ── 4. Referencias entre instancias ─────────────────────────
-        int refs_ok = 0;
-        for (int k = 0; k < pending_refs.size(); k++) {
-            const PendingRef &pr = pending_refs[k];
+    bool _do_refs() {
+        const int total = pending_refs.size();
+        int end = MIN(cursor + BATCH_REFS, total);
+        for (; cursor < end; cursor++) {
+            const PendingRef &pr = pending_refs[cursor];
             HashMap<int32_t, Inst>::Iterator ti = by_ref.find(pr.target);
             if (!ti || !ti->value.node) continue;
             Node *tgt = ti->value.node;
             String prop = rbx::map_property(String(), pr.prop);
             if (prop.is_empty()) continue;
-
             if (_props_of(pr.node).has(prop)) {
-                // PrimaryPart y compania esperan un NodePath relativo a la raiz.
                 Variant cur = pr.node->get(StringName(prop));
                 if (cur.get_type() == Variant::NODE_PATH)
                     pr.node->set(StringName(prop), pr.node->get_path_to(tgt));
@@ -469,12 +531,117 @@ public:
             }
             refs_ok++;
         }
+        current_item = String::num_int64(cursor) + " / " + String::num_int64(total) + " referencias";
+        if (cursor >= total) { cursor = 0; phase = PH_VERIFY; }
+        return true;
+    }
 
-        // El owner debe ponerse con el arbol ya montado o la escena no se guarda.
-        _set_owner_recursive(root, root);
+    // Comprobado: cada instancia del archivo debe tener nodo y estar colgada
+    // dentro del arbol, por si algo se saltó en las fases anteriores.
+    bool _do_verify() {
+        const int total = flat_ref.size();
+        int end = MIN(cursor + BATCH_VERIFY, total);
+        for (; cursor < end; cursor++) {
+            HashMap<int32_t, Inst>::Iterator it = by_ref.find(flat_ref[cursor]);
+            const String cname = class_names.has(flat_class[cursor])
+                                 ? class_names[flat_class[cursor]] : String("?");
+            if (!it || !it->value.node) {
+                if (verify_errors.size() < 200)
+                    verify_errors.push_back(String("Sin nodo: ") + cname);
+                continue;
+            }
+            Node *n = it->value.node;
+            if (n != root && !n->get_parent()) {
+                root->add_child(n);
+                orphans++;
+                if (verify_errors.size() < 200)
+                    verify_errors.push_back(String("Recuperado suelto: ") + cname + " / " + n->get_name());
+                continue;
+            }
+            verified_ok++;
+        }
+        current_item = String::num_int64(cursor) + " / " + String::num_int64(total) + " comprobadas";
+        if (cursor >= total) { cursor = 0; phase = PH_PLACE; }
+        return true;
+    }
 
-        const uint64_t ms = Time::get_singleton()->get_ticks_msec() - t0;
+public:
+    // ── Recolocado ──────────────────────────────────────────────────
+    // Busca un Game (DataModel) ya montado en la escena para reutilizarlo.
+    static Node *find_existing_game(Node *scene_root) {
+        if (!scene_root) return nullptr;
+        if (scene_root->is_class("RobloxTemplate") || scene_root->is_class("RobloxGame3D"))
+            return scene_root;
+        // Un Game valido es el que tiene un Workspace dentro.
+        if (scene_root->get_node_or_null(NodePath("Workspace"))) return scene_root;
+        for (int k = 0; k < scene_root->get_child_count(); k++) {
+            Node *c = scene_root->get_child(k);
+            if (c->is_class("RobloxTemplate") || c->is_class("RobloxGame3D")) return c;
+            if (c->get_node_or_null(NodePath("Workspace"))) return c;
+        }
+        return nullptr;
+    }
 
+private:
+    // Vuelca el contenido del arbol importado en la estructura destino:
+    // los servicios que ya existan se REUTILIZAN (solo se mueven sus hijos) y
+    // los que falten se crean. Asi no salen Workspace duplicados.
+    bool _do_place() {
+        if (!target_game || target_game == root) { phase = PH_DONE; _finish(); return true; }
+
+        // Solo 3D: un Workspace 2D no puede recibir un place de Roblox.
+        Node *tws = target_game->get_node_or_null(NodePath("Workspace"));
+        if (tws && tws->is_class("RobloxWorkspace2D")) {
+            _fail("La escena destino usa un Workspace 2D. El importador de .rbxl "
+                  "solo funciona en proyectos 3D.");
+            return false;
+        }
+
+        Vector<Node *> services;
+        for (int k = 0; k < root->get_child_count(); k++) services.push_back(root->get_child(k));
+
+        for (int k = 0; k < services.size(); k++) {
+            Node *svc = services[k];
+            const String svc_name = svc->get_name();
+            Node *dst = target_game->get_node_or_null(NodePath(svc_name));
+
+            if (dst && dst != svc) {
+                // Ya existe: movemos su contenido y descartamos el importado.
+                Vector<Node *> kids;
+                for (int j = 0; j < svc->get_child_count(); j++) kids.push_back(svc->get_child(j));
+                for (int j = 0; j < kids.size(); j++) {
+                    Node *kid = kids[j];
+                    svc->remove_child(kid);
+                    dst->add_child(kid);
+                }
+                root->remove_child(svc);
+                memdelete(svc);
+                reused_services++;
+            } else {
+                // No existe: el servicio importado pasa tal cual al destino.
+                root->remove_child(svc);
+                target_game->add_child(svc);
+                created_services++;
+            }
+        }
+
+        // El Game importado ya esta vacio.
+        if (root && !root->get_parent()) { memdelete(root); }
+        root = target_game;
+
+        // El Workspace pudo llegar lleno de golpe y quedarse sin cielo ni sol:
+        // se lo pedimos ahora que ya tiene todo dentro.
+        if (RobloxWorkspace *ws = Object::cast_to<RobloxWorkspace>(
+                target_game->get_node_or_null(NodePath("Workspace"))))
+            ws->gl_ensure_environment();
+
+        phase = PH_DONE;
+        _finish();
+        return true;
+    }
+
+    void _finish() {
+        const uint64_t ms = Time::get_singleton()->get_ticks_msec() - t_start;
         report["instancias_totales"]     = (int)file.instance_count;
         report["nodos_creados"]          = (int)by_ref.size();
         report["clases_en_archivo"]      = (int)file.class_count;
@@ -487,18 +654,138 @@ public:
         report["atributos_aplicados"]    = attrs_applied;
         report["referencias_resueltas"]  = refs_ok;
         report["huerfanos"]              = orphans;
+        report["comprobadas_ok"]         = verified_ok;
+        report["errores_comprobacion"]   = verify_errors;
+        report["servicios_reutilizados"] = reused_services;
+        report["servicios_creados"]      = created_services;
         report["tiempo_ms"]              = (int)ms;
+        current_item = "Listo";
+        if (verbose)
+            UtilityFunctions::print("[RBX] ", (int)by_ref.size(), " nodos en ", (int)ms,
+                                    " ms | reutilizados ", reused_services,
+                                    " servicios, creados ", created_services);
+    }
 
-        if (verbose) {
-            UtilityFunctions::print("[RBX] ", p_path);
-            UtilityFunctions::print("[RBX] ", (int)by_ref.size(), " nodos en ", (int)ms, " ms, ",
-                                    scripts_imported, " scripts, ",
-                                    missing_assets.size(), " assets sin resolver");
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("Begin", "path"),        &RBXImporter::begin_import);
+        ClassDB::bind_method(D_METHOD("Step"),                 &RBXImporter::step);
+        ClassDB::bind_method(D_METHOD("GetProgress"),          &RBXImporter::get_progress);
+        ClassDB::bind_method(D_METHOD("GetPhaseName"),         &RBXImporter::get_phase_name);
+        ClassDB::bind_method(D_METHOD("GetCurrentItem"),       &RBXImporter::get_current_item);
+        ClassDB::bind_method(D_METHOD("GetResult"),            &RBXImporter::get_result);
+        ClassDB::bind_method(D_METHOD("SetTarget", "game"),    &RBXImporter::set_target);
+        ClassDB::bind_method(D_METHOD("ImportFile", "path"),   &RBXImporter::import_file);
+        ClassDB::bind_method(D_METHOD("GetLastError"),         &RBXImporter::get_last_error);
+        ClassDB::bind_method(D_METHOD("GetReport"),            &RBXImporter::get_report);
+        ClassDB::bind_method(D_METHOD("SetVerbose", "v"),      &RBXImporter::set_verbose);
+        ClassDB::bind_method(D_METHOD("IsDone"),               &RBXImporter::is_done);
+        ClassDB::bind_method(D_METHOD("HasFailed"),            &RBXImporter::has_failed);
+        // Alias snake_case para GDScript
+        ClassDB::bind_method(D_METHOD("import_file", "path"),  &RBXImporter::import_file);
+        ClassDB::bind_method(D_METHOD("get_last_error"),       &RBXImporter::get_last_error);
+        ClassDB::bind_method(D_METHOD("get_report"),           &RBXImporter::get_report);
+        ClassDB::bind_method(D_METHOD("set_verbose", "v"),     &RBXImporter::set_verbose);
+    }
+
+public:
+    void set_verbose(bool v) { verbose = v; }
+    String get_last_error() const { return last_error; }
+    Dictionary get_report() const { return report; }
+    Node *get_result() { return root; }
+    bool is_done() const { return phase == PH_DONE; }
+    bool has_failed() const { return phase == PH_ERROR; }
+    String get_current_item() const { return current_item; }
+
+    // Game existente con el que fusionar. Si es null, el resultado se queda como
+    // un arbol suelto que el llamante colgara donde quiera.
+    void set_target(Node *game) { target_game = game; }
+
+    String get_phase_name() const {
+        switch (phase) {
+            case PH_IDLE:       return "Preparando";
+            case PH_PARSE:      return "Leyendo archivo";
+            case PH_INSTANCES:  return "Importando instancias";
+            case PH_PROPERTIES: return "Importando propiedades";
+            case PH_HIERARCHY:  return "Armando jerarquia";
+            case PH_REFS:       return "Enlazando referencias";
+            case PH_VERIFY:     return "Comprobado";
+            case PH_PLACE:      return "Recolocado";
+            case PH_DONE:       return "Listo";
+            default:            return "Error";
         }
+    }
 
-        by_ref.clear();
+    // Progreso global 0..1, ponderado por lo que cuesta cada fase.
+    float get_progress() const {
+        struct W { float base, span; };
+        auto frac = [](int a, int b) -> float { return b > 0 ? (float)a / (float)b : 1.0f; };
+        switch (phase) {
+            case PH_IDLE:   return 0.0f;
+            case PH_PARSE:  return 0.02f;
+            case PH_INSTANCES:  return 0.05f + 0.20f * frac(cursor, flat_ref.size());
+            case PH_PROPERTIES: return 0.25f + 0.45f * frac(cursor, prop_chunks.size());
+            case PH_HIERARCHY:  return 0.70f + 0.10f * frac(cursor, link_child.size());
+            case PH_REFS:       return 0.80f + 0.05f * frac(cursor, pending_refs.size());
+            case PH_VERIFY:     return 0.85f + 0.10f * frac(cursor, flat_ref.size());
+            case PH_PLACE:      return 0.95f;
+            case PH_DONE:       return 1.0f;
+            default:            return 1.0f;
+        }
+    }
+
+    // Prepara la importacion. Devuelve false si el archivo no sirve.
+    bool begin_import(const String &p_path) {
+        path = p_path;
+        last_error = String();
+        report = Dictionary(); class_counts = Dictionary(); missing_classes = Dictionary();
+        ignored_props = Dictionary(); missing_assets = Array(); verify_errors = Array();
+        by_ref.clear(); prop_cache.clear(); pending_refs.clear();
+        inst_chunks.clear(); prop_chunks.clear(); prnt_chunks.clear();
+        flat_class.clear(); flat_ref.clear();
+        link_child.clear(); link_parent.clear();
+        class_names.clear(); class_refs.clear();
+        file = rbx::RBXFile();
+        cursor = sub_cursor = 0;
+        prop_loaded = false;
+        scripts_imported = scripts_total = scripts_seen = 0;
+        tags_applied = orphans = attrs_applied = refs_ok = 0;
+        reused_services = created_services = verified_ok = 0;
+        root = nullptr;
+        current_item = "";
+        t_start = Time::get_singleton()->get_ticks_msec();
+        phase = PH_PARSE;
+        return _do_parse();
+    }
+
+    // Procesa un lote. Devuelve true mientras quede trabajo.
+    bool step() {
+        switch (phase) {
+            case PH_PARSE:      return _do_parse();
+            case PH_INSTANCES:  return _do_instances();
+            case PH_PROPERTIES: return _do_properties();
+            case PH_HIERARCHY:  return _do_hierarchy();
+            case PH_REFS:       return _do_refs();
+            case PH_VERIFY:     return _do_verify();
+            case PH_PLACE:      return _do_place();
+            default:            return false;   // DONE o ERROR
+        }
+    }
+
+    // Importacion de una sola llamada (bloquea). Util desde codigo y para tests.
+    Node *import_file(const String &p_path) {
+        if (!begin_import(p_path)) return nullptr;
+        int guard = 0;
+        while (phase != PH_DONE && phase != PH_ERROR) {
+            if (!step()) break;
+            if (++guard > 2000000) { _fail("El importador no termina (bucle infinito)"); break; }
+        }
+        if (phase == PH_ERROR) return nullptr;
+        if (phase != PH_DONE) { phase = PH_DONE; _finish(); }
         return root;
     }
 };
+
+VARIANT_ENUM_CAST(RBXImporter::Phase);
 
 #endif // RBX_IMPORTER_H
