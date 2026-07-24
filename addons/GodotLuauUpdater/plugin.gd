@@ -6,6 +6,11 @@ const ZIP_URL        := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/mai
 const HASH_URL       := "https://raw.githubusercontent.com/Pimpoli/GodotLuau/main/GodotLuau.zip.sha256"
 const VERSION_FILE   := "res://Version"
 const GITHUB_URL     := "https://github.com/Pimpoli/GodotLuau"
+# Historial de versiones: cada tag del repo lleva su GodotLuau.zip commiteado,
+# asi que se puede instalar CUALQUIER version publicada, no solo la ultima ni el
+# respaldo local (estilo lanzador de Minecraft).
+const TAGS_URL       := "https://api.github.com/repos/Pimpoli/GodotLuau/tags?per_page=100"
+const RAW_BASE       := "https://raw.githubusercontent.com/Pimpoli/GodotLuau"
 const DATA_FILE      := "user://godotluau_usage.json"
 const CUSTOM_AC_FILE := "user://godotluau_custom_autocomplete.json"
 const DLL_EXTENSIONS := ["dll", "so", "dylib", "framework"]
@@ -100,6 +105,12 @@ const TR := {
 		"bar_apply_close":       "✅ Ready. Godot will close and apply the DLL.",
 		"btn_rollback":          "↺ Back to %s",
 		"bar_rollback_done":     "✅ Restored %s. Restart to apply.",
+		"btn_versions":          "🗂 Versions",
+		"bar_versions_loading":  "🕐 Loading version list...",
+		"bar_versions_err":      "❌ Could not fetch the version list",
+		"bar_installing_ver":    "⬇ Installing %s...",
+		"menu_versions_title":   "Install another version",
+		"menu_versions_current": "%s  (installed)",
 		"bar_restart":           "🔄 Restart editor",
 		"bar_restarting":        "🔄 Restarting...",
 		"bar_data_cleared":      "🗑 Data deleted.",
@@ -185,6 +196,12 @@ const TR := {
 		"bar_apply_close":       "✅ Listo. Godot se cerrará y aplicará la DLL.",
 		"btn_rollback":          "↺ Volver a %s",
 		"bar_rollback_done":     "✅ Restaurado %s. Reinicia para aplicar.",
+		"btn_versions":          "🗂 Versiones",
+		"bar_versions_loading":  "🕐 Cargando lista de versiones...",
+		"bar_versions_err":      "❌ No se pudo obtener la lista de versiones",
+		"bar_installing_ver":    "⬇ Instalando %s...",
+		"menu_versions_title":   "Instalar otra version",
+		"menu_versions_current": "%s  (instalada)",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
 		"bar_data_cleared":      "🗑 Datos eliminados.",
@@ -270,6 +287,12 @@ const TR := {
 		"bar_apply_close":       "✅ Pronto. O Godot fechará e aplicará a DLL.",
 		"btn_rollback":          "↺ Voltar para %s",
 		"bar_rollback_done":     "✅ Restaurado %s. Reinicie para aplicar.",
+		"btn_versions":          "🗂 Versoes",
+		"bar_versions_loading":  "🕐 Carregando lista de versoes...",
+		"bar_versions_err":      "❌ Nao foi possivel obter a lista de versoes",
+		"bar_installing_ver":    "⬇ Instalando %s...",
+		"menu_versions_title":   "Instalar outra versao",
+		"menu_versions_current": "%s  (instalada)",
 		"bar_restart":           "🔄 Reiniciar editor",
 		"bar_restarting":        "🔄 Reiniciando...",
 		"bar_data_cleared":      "🗑 Dados excluídos.",
@@ -311,6 +334,15 @@ var _ver_label         : Label          = null
 var _ver_btn           : Button         = null
 var _reinstall_btn     : Button         = null
 var _rollback_btn      : Button         = null
+# ── Historial de versiones ────────────────────────────────────────────────────
+var _versions_btn      : Button         = null
+var _versions_menu     : PopupMenu      = null
+var _http_tags         : HTTPRequest    = null
+var _http_tagver       : HTTPRequest    = null
+var _tag_list          : Array          = []   # [{ "tag": String, "ver": String }]
+var _pending_tag       : String         = ""
+# Cuando NO esta vacio, la descarga usa esta URL en vez de la ultima version.
+var _zip_url_override  : String         = ""
 var _notif_bar         : PanelContainer = null
 var _notif_label       : Label          = null
 var _outdated_timer    : Timer          = null
@@ -1332,6 +1364,20 @@ func _build_panel_contents() -> void:
 	_reinstall_btn.pressed.connect(_start_reinstall)
 	ver_row.add_child(_reinstall_btn)
 
+	# Historial completo: instalar CUALQUIER version publicada, no solo el
+	# respaldo local de la anterior.
+	_versions_btn = Button.new()
+	_versions_btn.text = _t("btn_versions")
+	_versions_btn.flat = true
+	_versions_btn.add_theme_color_override("font_color", Color(0.75, 0.85, 1.0))
+	_versions_btn.tooltip_text = "Install any published version"
+	_versions_btn.pressed.connect(_on_versions_pressed)
+	ver_row.add_child(_versions_btn)
+
+	_versions_menu = PopupMenu.new()
+	_versions_menu.id_pressed.connect(_on_version_chosen)
+	_versions_btn.add_child(_versions_menu)
+
 	# Volver a la version anterior (visible solo si hay un respaldo guardado)
 	_rollback_btn = Button.new()
 	_rollback_btn.flat = true
@@ -1955,6 +2001,9 @@ func _on_action_pressed() -> void:
 
 func _check_for_update() -> void:
 	if _http_version and is_instance_valid(_http_version): return
+	# Buscar actualizacion mira SIEMPRE la ultima publicada, aunque antes se
+	# hubiera instalado una version concreta del historial.
+	_zip_url_override = ""
 	_http_version = HTTPRequest.new()
 	_http_version.timeout = 10.0
 	add_child(_http_version)
@@ -2044,7 +2093,10 @@ func _start_download() -> void:
 	_http_download.download_file = OS.get_user_data_dir() + "/godotluau_update.zip"
 	add_child(_http_download)
 	_http_download.request_completed.connect(_on_download_completed)
-	if _http_download.request(ZIP_URL) != OK:
+	# Con override se instala una version concreta del historial; sin el, la
+	# ultima publicada.
+	var url := _zip_url_override if not _zip_url_override.is_empty() else ZIP_URL
+	if _http_download.request(url) != OK:
 		_set_ver_status(_t("bar_dl_err"), _t("bar_retry"), Color(1.0, 0.4, 0.4), "download")
 		_downloading = false
 		if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
@@ -2073,7 +2125,10 @@ func _start_hash_verify() -> void:
 	_http_hash.timeout = 15.0
 	add_child(_http_hash)
 	_http_hash.request_completed.connect(_on_hash_received)
-	if _http_hash.request(HASH_URL) != OK:
+	# El .sha256 vive junto al .zip: al instalar una version del historial hay
+	# que pedir EL SUYO, o el checksum de main no cuadraria y abortaria siempre.
+	var hurl := (_zip_url_override + ".sha256") if not _zip_url_override.is_empty() else HASH_URL
+	if _http_hash.request(hurl) != OK:
 		# Sin verificación de integridad NO instalamos (evita aplicar un ZIP
 		# manipulado o corrupto). El repo oficial siempre publica el .sha256.
 		_http_hash.queue_free(); _http_hash = null
@@ -2178,6 +2233,9 @@ func _apply_update() -> void:
 	var vf := FileAccess.open(VERSION_FILE, FileAccess.WRITE)
 	if vf: vf.store_string(_remote_version + "\n")
 	if _reinstall_btn and is_instance_valid(_reinstall_btn): _reinstall_btn.disabled = false
+	# La siguiente descarga vuelve a ser "la ultima version" salvo que se elija
+	# otra del historial otra vez.
+	_zip_url_override = ""
 	_refresh_rollback_btn()
 
 	if staged.is_empty():
@@ -2283,6 +2341,100 @@ func _rmdir_recursive(path: String) -> void:
 		entry = d.get_next()
 	d.list_dir_end()
 	DirAccess.remove_absolute(clean)
+
+# ── Historial de versiones (instalar cualquier version publicada) ────────────
+# Cada tag del repo lleva su GodotLuau.zip commiteado, asi que no hace falta que
+# exista un Release ni tener un respaldo local: se puede saltar a cualquiera.
+
+func _on_versions_pressed() -> void:
+	if _downloading: return
+	if not _tag_list.is_empty():
+		_show_versions_menu()
+		return
+	_set_ver_status(_t("bar_versions_loading"), "", Color(0.4, 0.8, 1.0))
+	if _http_tags and is_instance_valid(_http_tags): _http_tags.queue_free()
+	_http_tags = HTTPRequest.new()
+	add_child(_http_tags)
+	_http_tags.request_completed.connect(_on_tags_received)
+	# La API de GitHub exige User-Agent o responde 403.
+	if _http_tags.request(TAGS_URL, ["User-Agent: GodotLuauUpdater"]) != OK:
+		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
+		_http_tags.queue_free(); _http_tags = null
+
+func _on_tags_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
+	if _http_tags and is_instance_valid(_http_tags):
+		_http_tags.queue_free(); _http_tags = null
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
+		return
+	var data = JSON.parse_string(body.get_string_from_utf8())
+	if typeof(data) != TYPE_ARRAY:
+		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
+		return
+
+	_tag_list.clear()
+	for t in data:
+		var tag := str(t.get("name", ""))
+		if tag.is_empty(): continue
+		# Tags internos del CI (binarios sueltos), no son versiones instalables.
+		if tag.begins_with("bin-"): continue
+		_tag_list.append({ "tag": tag, "ver": _pretty_tag(tag) })
+	if _tag_list.is_empty():
+		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
+		return
+	_set_ver_status(_get_local_version(), "", _col_text)
+	_show_versions_menu()
+
+# "GodotLuau-v1.14.4-Rework" -> "v1.14.4 - Rework"; el nombre exacto se confirma
+# luego leyendo el archivo Version de ese tag.
+func _pretty_tag(tag: String) -> String:
+	var s := tag.trim_prefix("GodotLuau-")
+	if s.is_empty() or s == "GodotLuau": return tag
+	var i := s.find("-")
+	if i > 0: s = s.substr(0, i) + " - " + s.substr(i + 1)
+	return s
+
+func _show_versions_menu() -> void:
+	if not (_versions_menu and is_instance_valid(_versions_menu)): return
+	_versions_menu.clear()
+	var local := _get_local_version()
+	for i in range(_tag_list.size()):
+		var v : String = _tag_list[i]["ver"]
+		var same := _version_to_num(v) == _version_to_num(local)
+		_versions_menu.add_item(_t("menu_versions_current") % v if same else v, i)
+		if same: _versions_menu.set_item_disabled(_versions_menu.get_item_count() - 1, true)
+	var pos := _versions_btn.get_screen_position() + Vector2(0, _versions_btn.size.y)
+	_versions_menu.popup(Rect2i(Vector2i(pos), Vector2i(240, 0)))
+
+func _on_version_chosen(id: int) -> void:
+	if _downloading: return
+	if id < 0 or id >= _tag_list.size(): return
+	_pending_tag = _tag_list[id]["tag"]
+	# Antes de bajar 14 MB pedimos el archivo Version del tag: asi res://Version
+	# queda con el nombre EXACTO de esa release y no uno derivado del tag.
+	if _http_tagver and is_instance_valid(_http_tagver): _http_tagver.queue_free()
+	_http_tagver = HTTPRequest.new()
+	add_child(_http_tagver)
+	_http_tagver.request_completed.connect(_on_tag_version_received)
+	if _http_tagver.request("%s/%s/Version" % [RAW_BASE, _pending_tag]) != OK:
+		_install_pending_tag(_pretty_tag(_pending_tag))
+
+func _on_tag_version_received(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray) -> void:
+	if _http_tagver and is_instance_valid(_http_tagver):
+		_http_tagver.queue_free(); _http_tagver = null
+	var ver := _pretty_tag(_pending_tag)
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		var t := body.get_string_from_utf8().strip_edges()
+		if not t.is_empty(): ver = t
+	_install_pending_tag(ver)
+
+func _install_pending_tag(ver: String) -> void:
+	if _pending_tag.is_empty(): return
+	_remote_version   = ver
+	_zip_url_override = "%s/%s/GodotLuau.zip" % [RAW_BASE, _pending_tag]
+	_pending_tag = ""
+	_set_ver_status(_t("bar_installing_ver") % ver, "", Color(0.4, 0.8, 1.0))
+	_start_download()
 
 func _on_rollback_pressed() -> void:
 	if not _can_rollback(): return
