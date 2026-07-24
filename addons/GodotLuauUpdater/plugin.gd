@@ -2441,12 +2441,11 @@ func _build_version_list() -> void:
 		var key := num.trim_prefix("v")              # dedupe por el NUMERO pelado
 		if seen.has(key): continue                   # ya guardamos una mas reciente
 		seen[key] = true
-		# Etiqueta: el mensaje entero si ya empieza por la version; si no, el numero.
-		var label := msg
-		if not label.begins_with(num): label = num
 		# 'num' se guarda aparte para ordenar: hacerlo por la etiqueta completa
 		# falla cuando el separador no es "-" ("v1.14.16: texto" -> 1.14.0).
-		_tag_list.append({ "tag": c["sha"], "ver": label, "num": num })
+		# 'ver' es la etiqueta CORTA del menu (el mensaje entero lo llenaba toda
+		# la pantalla): numero + el nombre corto tras " - ", cortado en ":".
+		_tag_list.append({ "tag": c["sha"], "ver": _short_label(msg, num), "num": num })
 
 	if _tag_list.is_empty():
 		_set_ver_status(_t("bar_versions_err"), "", Color(1.0, 0.4, 0.4))
@@ -2454,6 +2453,26 @@ func _build_version_list() -> void:
 	_tag_list.sort_custom(func(a, b): return _version_to_num(a["num"]) > _version_to_num(b["num"]))
 	_set_ver_status(_get_local_version(), "", _col_text)
 	_show_versions_menu()
+
+# Etiqueta CORTA para el menu (el mensaje de commit entero ocupaba toda la
+# pantalla con 78 versiones). Toma el numero y, si hay un nombre de release tras
+# " - ", lo anade recortado (cortando en ":", que empieza la descripcion larga).
+#   "v1.14.9.2: sync editor-placed..."          -> "v1.14.9.2"
+#   "v1.14.4 - Rework: coordinator/matchmaker"  -> "v1.14.4 - Rework"
+#   "v1.16.1 - Bug Fixes"                        -> "v1.16.1 - Bug Fixes"
+func _short_label(msg: String, num: String) -> String:
+	var rest := msg.substr(num.length())
+	var dash := rest.find(" - ")
+	if dash < 0: return num
+	var name := rest.substr(dash + 3)
+	var colon := name.find(":")
+	if colon >= 0: name = name.substr(0, colon)
+	name = name.strip_edges()
+	# Solo se anade si es un NOMBRE de release corto ("Bug Fixes", "Rework"). Si
+	# es largo es una descripcion de changelog: se deja solo el numero, para que
+	# la lista quede limpia y uniforme como los tags de antes.
+	if name.is_empty() or name.length() > 20: return num
+	return num + " - " + name
 
 # "GodotLuau-v1.14.4-Rework" -> "v1.14.4 - Rework"; el nombre exacto se confirma
 # luego leyendo el archivo Version de ese tag.
@@ -2478,6 +2497,9 @@ func _show_versions_menu() -> void:
 		var same : bool = not local_num.is_empty() and str(_tag_list[i]["num"]) == local_num
 		_versions_menu.add_item(_t("menu_versions_current") % v if same else v, i)
 		if same: _versions_menu.set_item_disabled(_versions_menu.get_item_count() - 1, true)
+	# Altura acotada: con 78 versiones el menu llenaba la pantalla entera. Con
+	# max_size el PopupMenu se limita y muestra barra de desplazamiento.
+	_versions_menu.max_size = Vector2i(300, 460)
 	var pos := _versions_btn.get_screen_position() + Vector2(0, _versions_btn.size.y)
 	_versions_menu.popup(Rect2i(Vector2i(pos), Vector2i(240, 0)))
 
