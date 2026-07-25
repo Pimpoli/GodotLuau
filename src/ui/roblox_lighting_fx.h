@@ -1277,6 +1277,12 @@ class ColorCorrectionEffect : public Node {
     void _apply() {
         Ref<Environment> env = _lx_get_env(this);
         if (!env.is_valid()) return;
+        // EDITOR = JUEGO (antigris): en el editor este efecto entra al arbol
+        // DESPUES del Workspace, asi que si tocara el ajuste de color volveria a
+        // dejar el estudio gris aunque al jugar se vea bien (ahi el Workspace
+        // corre de ultimo y lo apaga). Para que el editor se vea igual que el
+        // juego, aqui se deja el ajuste APAGADO, como hace el Workspace al jugar.
+        if (Engine::get_singleton()->is_editor_hint()) { env->set_adjustment_enabled(false); return; }
         if (!enabled) { env->set_adjustment_enabled(false); return; }
         bool active = (fabsf(brightness - 1.0f) > 0.001f ||
                        fabsf(contrast   - 1.0f) > 0.001f ||
