@@ -64,6 +64,7 @@ private:
     bool  auto_fall_height     = true;    // true = calcular desde el mapa
     float fall_height_margin   = 150.0f;  // se resta a la Y anclada más baja
     double _fall_scan_timer     = 0.0;    // recomputar el suelo cada ~1s, no por frame
+    double _fall_destroy_timer  = 0.0;    // barrer partes caidas cada ~0.3s, no por frame
     float  _fall_effective      = -500.0f; // umbral vigente (cache)
 
     void _apply_gravity() {
@@ -551,7 +552,14 @@ public:
 
         // Destruir Parts sueltas (no ancladas, fuera de un personaje) que caen por
         // debajo — es lo que dice el nombre FallenPartsDestroyHeight en Roblox.
-        _destroy_fallen_parts(this);
+        // THROTTLE (rendimiento): recorrer TODO el arbol cada frame costaba carisimo
+        // en mapas grandes (38K nodos -> un vector por nodo por frame). Cae por
+        // debajo del suelo no necesita precision de frame: basta cada ~0.3s.
+        _fall_destroy_timer -= delta;
+        if (_fall_destroy_timer <= 0.0) {
+            _fall_destroy_timer = 0.3;
+            _destroy_fallen_parts(this);
+        }
     }
 
 private:

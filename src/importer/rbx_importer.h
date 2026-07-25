@@ -388,6 +388,63 @@ private:
         return false;
     }
 
+    // Traduce las propiedades de GUI de Roblox a los METODOS de las clases Roblox*
+    // (RobloxFrame/TextLabel/...): en Godot no se llaman "Position"/"Size"/etc.
+    // como propiedades sino set_udim2_pos()/set_bg_color()/... Sin esto, NINGUNA
+    // propiedad de UI se aplicaba: todo Frame quedaba con su default (blanco,
+    // ~100x50, pegado arriba-izquierda) — de ahi los recuadros blancos raros.
+    // Devuelve true si la manejo (para no seguir con la ruta generica).
+    bool _apply_gui_prop(Node *n, const String &prop, const Variant &val) {
+        const int t = val.get_type();
+        // Posicion / tamano (UDim2 -> Vector4(sx,ox,sy,oy))
+        if (prop == "Position" && t == Variant::VECTOR4 && n->has_method("set_udim2_pos")) {
+            Vector4 u = val; n->call("set_udim2_pos", u.x, u.y, u.z, u.w); return true;
+        }
+        if (prop == "Size" && t == Variant::VECTOR4 && n->has_method("set_udim2_size")) {
+            Vector4 u = val; n->call("set_udim2_size", u.x, u.y, u.z, u.w); return true;
+        }
+        if (prop == "AnchorPoint" && t == Variant::VECTOR2 && n->has_method("set_anchor_point")) {
+            Vector2 a = val; n->call("set_anchor_point", a.x, a.y); return true;
+        }
+        // Fondo
+        if (prop == "BackgroundColor3" && t == Variant::COLOR && n->has_method("set_bg_color")) {
+            Color c = val; n->call("set_bg_color", c.r, c.g, c.b); return true;
+        }
+        if (prop == "BackgroundTransparency" && n->has_method("set_bg_alpha")) {
+            n->call("set_bg_alpha", (float)val); return true;
+        }
+        if (prop == "BorderColor3" && t == Variant::COLOR && n->has_method("set_border_color")) {
+            Color c = val; n->call("set_border_color", c.r, c.g, c.b); return true;
+        }
+        if (prop == "BorderSizePixel" && n->has_method("set_border_px")) {
+            n->call("set_border_px", (int)(int64_t)val); return true;
+        }
+        // Texto
+        if (prop == "Text" && n->has_method("set_text")) {
+            n->call("set_text", String(val)); return true;
+        }
+        if (prop == "TextColor3" && t == Variant::COLOR && n->has_method("set_text_color")) {
+            Color c = val; n->call("set_text_color", c.r, c.g, c.b); return true;
+        }
+        if (prop == "TextSize" && n->has_method("set_text_size")) {
+            n->call("set_text_size", (int)(float)val); return true;
+        }
+        if (prop == "TextScaled" && n->has_method("set_text_scaled")) {
+            n->call("set_text_scaled", (bool)val); return true;
+        }
+        // Imagen (rbxassetid:// no se puede bajar; set_image marca el asset faltante)
+        if ((prop == "Image" || prop == "Texture") && n->has_method("set_image")) {
+            n->call("set_image", String(val)); return true;
+        }
+        if (prop == "ImageColor3" && t == Variant::COLOR && n->has_method("set_image_color")) {
+            Color c = val; n->call("set_image_color", c.r, c.g, c.b); return true;
+        }
+        if (prop == "ImageTransparency" && n->has_method("set_image_transparency")) {
+            n->call("set_image_transparency", (float)val); return true;
+        }
+        return false;
+    }
+
     void _apply_one_prop(int k) {
         HashMap<int32_t, Inst>::Iterator ii = by_ref.find(cur_refs[k]);
         if (!ii) return;
@@ -442,6 +499,10 @@ private:
                 missing_assets.push_back(d);
             }
         }
+
+        // GUI: traducir Position/Size/BackgroundColor3/Text/... a los metodos de
+        // las clases Roblox* (se usa el nombre ORIGINAL de Roblox, no el mapeado).
+        if (_apply_gui_prop(n, cur_prop, value)) return;
 
         if (_props_of(n).has(target)) {
             n->set(StringName(target), value);
