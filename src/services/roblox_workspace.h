@@ -93,14 +93,44 @@ private:
         return ImageTexture::create_from_image(img);
     }
 
+    // Crea el material de cielo azul clasico de Roblox (azul suave, no saturado).
+    // Se usa para entornos nuevos y para REPARAR uno cuyo cielo se perdio.
+    Ref<Sky> _gl_make_roblox_sky() {
+        Ref<Sky> sky; sky.instantiate();
+        Ref<ProceduralSkyMaterial> m; m.instantiate();
+        m->set_sky_top_color(Color(0.306, 0.588, 0.804));
+        m->set_sky_horizon_color(Color(0.667, 0.804, 0.902));
+        m->set_ground_bottom_color(Color(0.529, 0.549, 0.588));
+        m->set_ground_horizon_color(Color(0.667, 0.804, 0.902));
+        sky->set_material(m);
+        return sky;
+    }
+
     // Aplica el look de iluminacion estilo Roblox "Future" a un Environment + sol:
     // tonemapping filmico (antes era Linear plano), glow sutil (bloom real para
     // Neon y brillos), SSAO (profundidad barata), luz ambiental del cielo y
     // sombras suaves del sol (PCSS, Forward+). Idempotente: se llama al crear la
     // escena en el editor Y en runtime sobre un Environment ya existente, asi el
     // look mejora tambien en proyectos viejos sin recrear la escena.
+    //
+    // ── ANTIGRIS (1.16.6) ────────────────────────────────────────────────
+    // El bug de "todo gris" al crear un Game 3D era un Environment guardado con
+    // el AJUSTE de color a saturacion 0.2 (grisaceo) + niebla densa, que se
+    // recargaba desde el .tres "editable" en cada escena nueva. Ahora esta
+    // funcion GARANTIZA que jamas pueda salir gris: apaga el adjustment, fuerza
+    // el fondo a CIELO valido y deja la niebla suave. Como se llama sobre CADA
+    // entorno (nuevo o existente), repara tambien escenas ya hechas.
     void _apply_roblox_render(const Ref<Environment>& env, DirectionalLight3D* sun) {
         if (env.is_valid()) {
+            // 1) Nunca gris: fuera el ajuste de saturacion/brillo que tenia.
+            env->set_adjustment_enabled(false);
+            // 2) Fondo = cielo SIEMPRE. Un BG_COLOR/CANVAS dejaba pantalla plana.
+            if (env->get_background() != Environment::BG_SKY)
+                env->set_background(Environment::BG_SKY);
+            Ref<Sky> sky = env->get_sky();
+            if (!sky.is_valid() || !sky->get_material().is_valid())
+                env->set_sky(_gl_make_roblox_sky());
+
             env->set_tonemapper(Environment::TONE_MAPPER_ACES);
             env->set_tonemap_white(6.0f);
             env->set_tonemap_exposure(1.0f);
@@ -210,71 +240,75 @@ public:
         if (is_inside_tree() && get_tree()) root = get_tree()->get_edited_scene_root();
         if (!root) root = this;
 
-        const bool need_env  = _gl_find_child_of_type<WorldEnvironment>()   == nullptr;
-        const bool need_sun  = _gl_find_child_of_type<DirectionalLight3D>() == nullptr;
-        const bool need_cam  = _gl_find_child_of_type<Camera3D>()           == nullptr;
-        const bool need_terr = get_node_or_null(NodePath("Terrain"))        == nullptr;
+        WorldEnvironment*   we  = _gl_find_child_of_type<WorldEnvironment>();
+        DirectionalLight3D*  sol = _gl_find_child_of_type<DirectionalLight3D>();
+
+        // ── REPARAR el entorno existente SIEMPRE (antigris 1.16.6) ──────────
+        // Antes esto solo corria si faltaba alguna pieza; una escena YA COMPLETA
+        // (Workspace importado o game.tscn viejo) con el Environment gris salia
+        // por el return de abajo sin tocarse y se quedaba gris. Ahora, si hay un
+        // WorldEnvironment, se le aplica el look garantizado-no-gris antes de
+        // cualquier atajo. Si su Environment vive en un .tres (el "editable"
+        // rotado) y estaba gris, se reescribe reparado para que no vuelva nunca.
+        if (we) {
+            Ref<Environment> env = we->get_environment();
+            if (!env.is_valid()) {
+                env.instantiate();
+                env->set_sky(_gl_make_roblox_sky());
+                env->set_background(Environment::BG_SKY);
+                we->set_environment(env);
+            }
+            Ref<Sky> sky_cur = env->get_sky();
+            const bool was_gray = env->is_adjustment_enabled()
+                               || env->get_background() != Environment::BG_SKY
+                               || !sky_cur.is_valid()
+                               || (env->is_fog_enabled() && env->get_fog_density() > 0.01f);
+            env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+            env->set_ambient_light_energy(1.15);
+            _apply_roblox_render(env, sol);
+            if (was_gray && Engine::get_singleton()->is_editor_hint()) {
+                const String rp = env->get_path();
+                if (!rp.is_empty())
+                    ResourceSaver::get_singleton()->save(env, rp);
+            }
+        }
+
+        const bool need_env  = (we  == nullptr);
+        const bool need_sun  = (sol == nullptr);
+        const bool need_cam  = _gl_find_child_of_type<Camera3D>() == nullptr;
+        const bool need_terr = get_node_or_null(NodePath("Terrain")) == nullptr;
         // El Baseplate solo se crea en un Workspace VACIO: si ya hay geometria
         // (mapa importado) una placa de 1000x1000 studs estorbaria.
         const bool need_base = (get_child_count() == 0);
 
         if (!need_env && !need_sun && !need_cam && !need_terr && !need_base) return;
 
-        // 1. CIELO AZUL ROBLOX + 2. SOL (van juntos: el look se aplica a ambos)
-        if (need_env || need_sun) {
+        // 2. SOL (se crea antes que el entorno para que el look se aplique a ambos)
+        if (need_sun) {
+            sol = memnew(DirectionalLight3D);
+            sol->set_name("SunLight");
+            sol->set_rotation_degrees(Vector3(-45, 45, 0));
+            sol->set_shadow(true);
+            add_child(sol);
+            sol->set_owner(root);
+        }
+
+        // 1. CIELO AZUL ROBLOX + ENVIRONMENT — embebido en la escena (no un .tres
+        // compartido que se corrompia y volvia todo gris). Editable inline en el
+        // inspector del WorldEnvironment.
+        if (need_env) {
             Ref<Environment> env; env.instantiate();
-            Ref<Sky> sky; sky.instantiate();
-            Ref<ProceduralSkyMaterial> sky_mat; sky_mat.instantiate();
-
-            // Colores del cielo clasico de Roblox (azul suave, no tan saturado):
-            // top RGB(78,150,205), horizonte RGB(170,205,230), suelo RGB(135,140,150)
-            sky_mat->set_sky_top_color(Color(0.306, 0.588, 0.804));
-            sky_mat->set_sky_horizon_color(Color(0.667, 0.804, 0.902));
-            sky_mat->set_ground_bottom_color(Color(0.529, 0.549, 0.588));
-            sky_mat->set_ground_horizon_color(Color(0.667, 0.804, 0.902));
-
-            sky->set_material(sky_mat);
-            env->set_sky(sky);
+            env->set_sky(_gl_make_roblox_sky());
             env->set_background(Environment::BG_SKY);
             env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-            // Mas relleno ambiental para que los lados en sombra (p.ej. el
-            // personaje) no salgan casi negros.
             env->set_ambient_light_energy(1.15);
-
-            DirectionalLight3D* sol = _gl_find_child_of_type<DirectionalLight3D>();
-            if (need_sun) {
-                sol = memnew(DirectionalLight3D);
-                sol->set_name("SunLight");
-                sol->set_rotation_degrees(Vector3(-45, 45, 0));
-                sol->set_shadow(true);
-                add_child(sol);
-                sol->set_owner(root);
-            }
-
-            // Look de iluminacion estilo Roblox "Future" sobre el entorno + sol
             _apply_roblox_render(env, sol);
 
-            if (need_env) {
-                // El Environment vive como ARCHIVO EDITABLE en GodotLuau/shaders/:
-                // si ya existe se usa ese (respetando los cambios del usuario);
-                // si no, se guarda el recien creado para que pueda modificarlo.
-                const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
-                ResourceLoader* rload = ResourceLoader::get_singleton();
-                if (rload && rload->exists(env_path)) {
-                    Ref<Environment> user_env = rload->load(env_path);
-                    if (user_env.is_valid()) env = user_env;
-                } else {
-                    Ref<DirAccess> d = DirAccess::open("res://");
-                    if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
-                        d->make_dir_recursive("GodotLuau/shaders");
-                    ResourceSaver::get_singleton()->save(env, env_path);
-                }
-                WorldEnvironment* env_node = memnew(WorldEnvironment);
-                env_node->set_name("WorldEnvironment");
-                env_node->set_environment(env);
-                add_child(env_node);
-                env_node->set_owner(root);
-            }
+            WorldEnvironment* env_node = memnew(WorldEnvironment);
+            env_node->set_name("WorldEnvironment");
+            env_node->set_environment(env);
+            add_child(env_node);
+            env_node->set_owner(root);
         }
 
         // 3. BASEPLATE — una RobloxPart de verdad, COMO EN ROBLOX: seleccionas
@@ -404,10 +438,11 @@ public:
 
         _apply_gravity();
 
-        // Aplicar el look de iluminacion Roblox al entorno YA existente: las
-        // escenas viejas no se recrean (su WorldEnvironment se guardo con los
-        // ajustes antiguos), pero al jugar deben verse con tonemap/glow/SSAO/
-        // sombras suaves igual. Idempotente.
+        // Reparar el entorno al jugar (antigris 1.16.6): aunque una escena vieja
+        // tenga su Environment guardado gris (adjustment de saturacion baja, niebla
+        // densa), _apply_roblox_render lo fuerza a un look correcto — jamas gris.
+        // Ya no se recarga ningun .tres compartido (era la fuente del gris que
+        // volvia una y otra vez).
         {
             WorldEnvironment* we = nullptr;
             DirectionalLight3D* sun = nullptr;
@@ -417,25 +452,13 @@ public:
                 if (!sun) sun = Object::cast_to<DirectionalLight3D>(c);
             }
             Ref<Environment> env = we ? we->get_environment() : Ref<Environment>();
-            // Si el usuario tiene su environment editable en GodotLuau/shaders/,
-            // usarlo en TODAS las escenas (viejas incluidas).
-            ResourceLoader* rload = ResourceLoader::get_singleton();
-            const String env_path = "res://GodotLuau/shaders/environment_roblox.tres";
-            if (we && rload && rload->exists(env_path)) {
-                Ref<Environment> user_env = rload->load(env_path);
-                if (user_env.is_valid()) { we->set_environment(user_env); env = user_env; }
-                if (sun) { sun->set_shadow(true); }
-            } else if (env.is_valid() || sun) {
-                _apply_roblox_render(env, sun);
-                // Primera vez que se juega: dejar el environment como archivo
-                // editable (solo corriendo desde el editor; un export no escribe res://)
-                if (env.is_valid() && OS::get_singleton()->has_feature("editor")) {
-                    Ref<DirAccess> d = DirAccess::open("res://");
-                    if (d.is_valid() && !d->dir_exists("GodotLuau/shaders"))
-                        d->make_dir_recursive("GodotLuau/shaders");
-                    ResourceSaver::get_singleton()->save(env, env_path);
-                }
+            if (!env.is_valid() && we) {
+                env.instantiate();
+                env->set_sky(_gl_make_roblox_sky());
+                env->set_background(Environment::BG_SKY);
+                we->set_environment(env);
             }
+            if (env.is_valid() || sun) _apply_roblox_render(env, sun);
         }
 
         // ── Terrain: asegurar que exista (escenas viejas sin Terrain guardado) ──

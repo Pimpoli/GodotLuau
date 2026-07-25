@@ -220,8 +220,14 @@ protected:
     }
 
     void _notification(int p_what) {
-        if (p_what == NOTIFICATION_ENTER_TREE && _gl_is_template())
-            set_visible(false);
+        if (p_what != NOTIFICATION_ENTER_TREE) return;
+        // El ORIGINAL bajo StarterGui es una plantilla: se oculta (su copia en
+        // PlayerGui es la que se ve). Pero la COPIA hereda visible=false al
+        // duplicarse (el original ya estaba oculto), y sin esto se quedaba
+        // invisible: el HUD del jugador NUNCA aparecia. Al entrar en PlayerGui
+        // ya no es plantilla, asi que se fuerza visible segun Enabled. Igual en
+        // el editor, donde se muestra para poder disenarla.
+        set_visible(_gl_is_template() ? false : enabled);
     }
 
 public:
