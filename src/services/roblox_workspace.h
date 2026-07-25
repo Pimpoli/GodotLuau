@@ -120,10 +120,30 @@ private:
     // funcion GARANTIZA que jamas pueda salir gris: apaga el adjustment, fuerza
     // el fondo a CIELO valido y deja la niebla suave. Como se llama sobre CADA
     // entorno (nuevo o existente), repara tambien escenas ya hechas.
+    // ¿Hay un ColorCorrectionEffect (Lighting) en la escena? Si lo hay, ES EL
+    // quien controla el "adjustment" del Environment (brillo/contraste/saturacion),
+    // y el antigris NO debe pisarlo — asi un juego importado que baja la saturacion
+    // a proposito conserva su look. El gris que arreglamos venia de un .tres podrido
+    // SIN ningun ColorCorrection, por eso ahi si se apaga.
+    static bool _gl_find_class_in(Node* n, const char* cls) {
+        if (!n) return false;
+        if (n->is_class(cls)) return true;
+        for (int i = 0; i < n->get_child_count(); i++)
+            if (_gl_find_class_in(n->get_child(i), cls)) return true;
+        return false;
+    }
+    bool _gl_has_color_correction() const {
+        Node* dm = get_parent();
+        if (!dm) return false;
+        Node* lighting = dm->get_node_or_null(NodePath("Lighting"));
+        return _gl_find_class_in(lighting ? lighting : dm, "ColorCorrectionEffect");
+    }
+
     void _apply_roblox_render(const Ref<Environment>& env, DirectionalLight3D* sun) {
         if (env.is_valid()) {
-            // 1) Nunca gris: fuera el ajuste de saturacion/brillo que tenia.
-            env->set_adjustment_enabled(false);
+            // 1) Nunca gris: fuera el ajuste de saturacion/brillo del .tres podrido,
+            //    salvo que un ColorCorrectionEffect lo gobierne (look del juego).
+            if (!_gl_has_color_correction()) env->set_adjustment_enabled(false);
             // 2) Fondo = cielo SIEMPRE. Un BG_COLOR/CANVAS dejaba pantalla plana.
             if (env->get_background() != Environment::BG_SKY)
                 env->set_background(Environment::BG_SKY);

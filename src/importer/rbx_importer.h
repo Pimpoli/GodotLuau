@@ -597,9 +597,49 @@ public:
     }
 
 private:
+    // Punto de aparicion "sobre el mapa": centroide XZ de las Parts ancladas
+    // importadas y por encima de todo (tope Y). Asi el jugador cae en el centro
+    // del mapa en vez de quedarse en la placa blanca del origen. Devuelve false
+    // si no hay geometria anclada (nada que medir).
+    bool _map_spawn_point(Node *ws, Vector3 &out) {
+        if (!ws || !ws->is_inside_tree()) return false;
+        bool found = false;
+        double sx = 0, sz = 0;
+        int n = 0;
+        float maxY = 0, minY = 0;
+        Vector<Node *> stack;
+        stack.push_back(ws);
+        while (!stack.is_empty()) {
+            Node *nd = stack[stack.size() - 1];
+            stack.remove_at(stack.size() - 1);
+            if (nd->is_class("RobloxPart") && nd->has_meta("__rbx_class")) {
+                Variant anc = nd->get("Anchored");
+                if (anc.get_type() == Variant::BOOL && (bool)anc) {
+                    if (Node3D *p = Object::cast_to<Node3D>(nd)) {
+                        Vector3 gp = p->get_global_position();
+                        sx += gp.x; sz += gp.z; n++;
+                        if (!found) { maxY = minY = gp.y; found = true; }
+                        else { if (gp.y > maxY) maxY = gp.y; if (gp.y < minY) minY = gp.y; }
+                    }
+                }
+            }
+            for (int k = 0; k < nd->get_child_count(); k++) stack.push_back(nd->get_child(k));
+        }
+        if (!found || n == 0) return false;
+        float topY = maxY + 5.0f;
+        // Evitar caidas absurdas cuando hay un skybox altisimo: si el mapa es muy
+        // alto, aparecer a media altura y no desde el techo.
+        if (maxY - minY > 300.0f) topY = minY + (maxY - minY) * 0.5f;
+        out = Vector3((float)(sx / n), topY, (float)(sz / n));
+        return true;
+    }
+
     // Los nodos que vienen del .rbxl llevan la marca __rbx_class; los que creo
     // el template no. Si el place aporta puntos de aparicion propios, se quitan
-    // los de relleno para que el jugador no aparezca en el vacio.
+    // los de relleno. Si NO trae ninguno (spawn por script, comun en muchos
+    // juegos), la placa de relleno se REUBICA sobre el mapa en vez de dejarla en
+    // el origen (0,0,0) lejos del mapa, que es por lo que el jugador aparecia en
+    // una placa blanca solitaria en lugar de dentro del juego.
     void _drop_default_spawns(Node *ws) {
         Vector<Node *> imported, defaults;
         Vector<Node *> stack;
@@ -613,13 +653,28 @@ private:
             }
             for (int k = 0; k < n->get_child_count(); k++) stack.push_back(n->get_child(k));
         }
-        if (imported.is_empty()) return;   // el place no trae ninguno: se conserva
-        for (int k = 0; k < defaults.size(); k++) {
+        if (!imported.is_empty()) {
+            // El place trae sus propios spawns: los de relleno sobran.
+            for (int k = 0; k < defaults.size(); k++) {
+                Node *d = defaults[k];
+                if (d->get_parent()) d->get_parent()->remove_child(d);
+                memdelete(d);
+            }
+            report["spawns_de_relleno_quitados"] = defaults.size();
+            return;
+        }
+        // Sin spawn propio: reubicar UNA placa de relleno sobre el mapa.
+        if (defaults.is_empty()) return;
+        Vector3 spawn;
+        if (!_map_spawn_point(ws, spawn)) return;   // no hay mapa que medir
+        if (Node3D *keep = Object::cast_to<Node3D>(defaults[0]))
+            keep->set_position(spawn);
+        for (int k = 1; k < defaults.size(); k++) {   // sobran las demas
             Node *d = defaults[k];
             if (d->get_parent()) d->get_parent()->remove_child(d);
             memdelete(d);
         }
-        report["spawns_de_relleno_quitados"] = defaults.size();
+        report["spawn_de_relleno_reubicado"] = spawn;
     }
 
     // Vuelca el contenido del arbol importado en la estructura destino:

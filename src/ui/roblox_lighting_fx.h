@@ -62,10 +62,12 @@ class AtmosphereNode : public Node {
     float haze             = 0.0f;
     float fog_sun_scatter  = 0.5f;
     float volumetric_dist  = 100.0f;
+    bool  enabled          = true;   // Roblox Atmosphere.Enabled
 
     void _apply() {
         Ref<Environment> env = _lx_get_env(this);
         if (!env.is_valid()) return;
+        if (!enabled) { env->set_fog_enabled(false); env->set_volumetric_fog_enabled(false); return; }
         bool on = density > 0.001f;
         env->set_fog_enabled(on);
         if (!on) return;
@@ -91,6 +93,9 @@ class AtmosphereNode : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &AtmosphereNode::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &AtmosphereNode::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_density","v"), &AtmosphereNode::set_density);
         ClassDB::bind_method(D_METHOD("get_density"),     &AtmosphereNode::get_density);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Density",PROPERTY_HINT_RANGE,"0,1,0.001"),"set_density","get_density");
@@ -125,6 +130,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)          { enabled = v;                                if(is_inside_tree()) _apply(); }
+    bool get_enabled() const          { return enabled; }
     void set_density(float v)         { density = Math::clamp(v,0.0f,1.0f);        if(is_inside_tree()) _apply(); }
     float get_density() const         { return density; }
     void set_offset(float v)          { offset  = Math::clamp(v,0.0f,1.0f);        if(is_inside_tree()) _apply(); }
@@ -1067,11 +1074,12 @@ class SunRaysNode : public Node {
     float spread      = 1.0f;
     Color ray_color   = Color(1.00f, 0.95f, 0.70f);
     float bloom_boost = 0.5f;
+    bool  enabled     = true;   // Roblox SunRaysEffect.Enabled
 
     void _apply() {
         Ref<Environment> env = _lx_get_env(this);
         if (!env.is_valid()) return;
-        if (intensity < 0.01f) { env->set_glow_enabled(false); return; }
+        if (!enabled || intensity < 0.01f) { env->set_glow_enabled(false); return; }
         env->set_glow_enabled(true);
         env->set_glow_normalized(false);
         env->set_glow_strength(1.5f + intensity);
@@ -1085,6 +1093,9 @@ class SunRaysNode : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &SunRaysNode::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &SunRaysNode::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_intensity","v"), &SunRaysNode::set_intensity);
         ClassDB::bind_method(D_METHOD("get_intensity"),     &SunRaysNode::get_intensity);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Intensity",PROPERTY_HINT_RANGE,"0,1,0.001"),"set_intensity","get_intensity");
@@ -1101,6 +1112,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)      { enabled     = v;                         if(is_inside_tree()) _apply(); }
+    bool get_enabled() const      { return enabled; }
     void set_intensity(float v)   { intensity   = Math::clamp(v,0.0f,1.0f); if(is_inside_tree()) _apply(); }
     float get_intensity() const   { return intensity; }
     void set_spread(float v)      { spread      = Math::clamp(v,0.0f,1.0f); if(is_inside_tree()) _apply(); }
@@ -1123,12 +1136,13 @@ class BloomEffect : public Node {
     float hdr_scale    = 2.0f;
     float lum_cap      = 8.0f;
     int   blend_mode   = (int)Environment::GLOW_BLEND_MODE_SOFTLIGHT;
+    bool  enabled      = true;   // Roblox BloomEffect.Enabled
 
     void _apply() {
         Ref<Environment> env = _lx_get_env(this);
         if (!env.is_valid()) return;
-        env->set_glow_enabled(intensity > 0.001f);
-        if (intensity < 0.001f) return;
+        env->set_glow_enabled(enabled && intensity > 0.001f);
+        if (!enabled || intensity < 0.001f) return;
         env->set_glow_normalized(false);
         env->set_glow_intensity(intensity);
         env->set_glow_bloom(size);
@@ -1142,6 +1156,9 @@ class BloomEffect : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &BloomEffect::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &BloomEffect::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_intensity","v"), &BloomEffect::set_intensity);
         ClassDB::bind_method(D_METHOD("get_intensity"),     &BloomEffect::get_intensity);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Intensity",PROPERTY_HINT_RANGE,"0,3,0.001"),"set_intensity","get_intensity");
@@ -1165,6 +1182,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)     { enabled    = v;                          if(is_inside_tree()) _apply(); }
+    bool get_enabled() const     { return enabled; }
     void set_intensity(float v)  { intensity  = Math::clamp(v,0.0f,3.0f);  if(is_inside_tree()) _apply(); }
     float get_intensity() const  { return intensity; }
     void set_size(float v)       { size       = Math::clamp(v,0.0f,1.0f);  if(is_inside_tree()) _apply(); }
@@ -1188,6 +1207,7 @@ class BlurEffect : public Node {
     float size       = 0.0f;
     float near_size  = 0.0f;
     float far_size   = 0.0f;
+    bool  enabled    = true;   // Roblox BlurEffect.Enabled
 
     void _apply() {
         WorldEnvironment* we = _lx_find_we_node(this);
@@ -1195,7 +1215,7 @@ class BlurEffect : public Node {
         Ref<CameraAttributesPractical> cam;
         cam.instantiate();
         float effective = Math::max(size, Math::max(near_size, far_size));
-        if (effective < 0.01f) {
+        if (!enabled || effective < 0.01f) {
             cam->set_dof_blur_far_enabled(false);
             cam->set_dof_blur_near_enabled(false);
         } else {
@@ -1214,6 +1234,9 @@ class BlurEffect : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &BlurEffect::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &BlurEffect::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_size","v"),      &BlurEffect::set_size);
         ClassDB::bind_method(D_METHOD("get_size"),          &BlurEffect::get_size);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Size",PROPERTY_HINT_RANGE,"0,56,0.1"),"set_size","get_size");
@@ -1227,6 +1250,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)    { enabled   = v;                         if(is_inside_tree()) _apply(); }
+    bool get_enabled() const    { return enabled; }
     void set_size(float v)      { size      = Math::clamp(v,0.0f,56.0f); if(is_inside_tree()) _apply(); }
     float get_size() const      { return size; }
     void set_near_size(float v) { near_size = Math::clamp(v,0.0f,56.0f); if(is_inside_tree()) _apply(); }
@@ -1247,10 +1272,12 @@ class ColorCorrectionEffect : public Node {
     float gamma       = 1.0f;
     Color tint_color  = Color(1.0f, 1.0f, 1.0f);
     float tint_amount = 0.0f;
+    bool  enabled     = true;   // Roblox ColorCorrectionEffect.Enabled
 
     void _apply() {
         Ref<Environment> env = _lx_get_env(this);
         if (!env.is_valid()) return;
+        if (!enabled) { env->set_adjustment_enabled(false); return; }
         bool active = (fabsf(brightness - 1.0f) > 0.001f ||
                        fabsf(contrast   - 1.0f) > 0.001f ||
                        fabsf(saturation - 1.0f) > 0.001f ||
@@ -1277,6 +1304,9 @@ class ColorCorrectionEffect : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &ColorCorrectionEffect::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &ColorCorrectionEffect::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_brightness","v"), &ColorCorrectionEffect::set_brightness);
         ClassDB::bind_method(D_METHOD("get_brightness"),     &ColorCorrectionEffect::get_brightness);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,"Brightness",PROPERTY_HINT_RANGE,"0,5,0.001"),"set_brightness","get_brightness");
@@ -1299,6 +1329,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)      { enabled     = v;                          if(is_inside_tree()) _apply(); }
+    bool get_enabled() const      { return enabled; }
     void set_brightness(float v)  { brightness  = Math::clamp(v,0.0f,5.0f);  if(is_inside_tree()) _apply(); }
     float get_brightness() const  { return brightness; }
     void set_contrast(float v)    { contrast    = Math::clamp(v,0.0f,5.0f);  if(is_inside_tree()) _apply(); }
@@ -1326,12 +1358,19 @@ class DepthOfFieldEffect : public Node {
     float blur_amount    = 0.1f;
     bool  far_enabled    = false;
     bool  near_enabled   = false;
+    bool  enabled        = true;   // Roblox DepthOfFieldEffect.Enabled (maestro)
 
     void _apply() {
         WorldEnvironment* we = _lx_find_we_node(this);
         if (!we) return;
         Ref<CameraAttributesPractical> cam;
         cam.instantiate();
+        if (!enabled) {
+            cam->set_dof_blur_far_enabled(false);
+            cam->set_dof_blur_near_enabled(false);
+            we->set_camera_attributes(cam);
+            return;
+        }
         cam->set_dof_blur_far_enabled(far_enabled);
         if (far_enabled) {
             cam->set_dof_blur_far_distance(far_distance);
@@ -1349,6 +1388,9 @@ class DepthOfFieldEffect : public Node {
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("set_enabled","v"), &DepthOfFieldEffect::set_enabled);
+        ClassDB::bind_method(D_METHOD("get_enabled"),     &DepthOfFieldEffect::get_enabled);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"Enabled"),"set_enabled","get_enabled");
         ClassDB::bind_method(D_METHOD("set_far_enabled","v"),    &DepthOfFieldEffect::set_far_enabled);
         ClassDB::bind_method(D_METHOD("get_far_enabled"),        &DepthOfFieldEffect::get_far_enabled);
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"FarEnabled"),"set_far_enabled","get_far_enabled");
@@ -1374,6 +1416,8 @@ protected:
     void _notification(int p_what) { if (p_what == NOTIFICATION_ENTER_TREE) _apply(); }
 
 public:
+    void set_enabled(bool v)         { enabled        = v;                                  if(is_inside_tree()) _apply(); }
+    bool get_enabled() const         { return enabled; }
     void set_far_enabled(bool v)     { far_enabled    = v;                                  if(is_inside_tree()) _apply(); }
     bool get_far_enabled() const     { return far_enabled; }
     void set_near_enabled(bool v)    { near_enabled   = v;                                  if(is_inside_tree()) _apply(); }
