@@ -1299,7 +1299,10 @@ class ColorCorrectionEffect : public Node {
                                      fabsf(tint_color.r - tint_color.b)));
             eff_sat *= (1.0f + tint_amount * tc_sat * 0.5f);
         }
-        env->set_adjustment_saturation(eff_sat);
+        // PISO ANTIGRIS: aunque un juego importado baje la saturacion a casi cero
+        // (dejando el mundo gris), nunca se aplica por debajo de este minimo, para
+        // que SIEMPRE se vean colores. Subir la saturacion jamas puede dar gris.
+        env->set_adjustment_saturation(Math::max(eff_sat, 0.6f));
     }
 
 protected:
