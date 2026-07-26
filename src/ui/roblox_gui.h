@@ -69,29 +69,25 @@ struct GuiUDim2 { float xs = 0, xo = 0, ys = 0, yo = 0; };
 
 static void _gui_apply_layout(Control* ctrl, const GuiUDim2& pos, const GuiUDim2& sz,
                                float ax = 0, float ay = 0) {
-    if (!ctrl || !ctrl->is_inside_tree()) return;
-    Vector2 ps;
-    Control* parent_ctrl = Object::cast_to<Control>(ctrl->get_parent());
-    if (parent_ctrl) {
-        ps = parent_ctrl->get_size();
-    } else {
-        Viewport* vp = ctrl->get_viewport();
-        ps = vp ? vp->get_visible_rect().size : Vector2(800, 600);
-    }
-    float w = ps.x * sz.xs + sz.xo;
-    float h = ps.y * sz.ys + sz.yo;
-    float x = ps.x * pos.xs + pos.xo - w * ax;
-    float y = ps.y * pos.ys + pos.yo - h * ay;
-    // Anclas arriba-izquierda + offsets directos: el tamaño UDim2 manda. Antes con
-    // set_position/set_size el motor clampaba al mínimo de contenido (el texto de
-    // un Label/Button), así que el tamaño real no era el pedido y el anchor lo
-    // calculaba mal. custom_minimum_size(0,0) + clip (en las clases con texto)
-    // quita ese mínimo.
+    if (!ctrl) return;
+    // Roblox UDim2 -> anclas + offsets NATIVAS de Godot. Mapeo EXACTO que no
+    // depende del tamaño del padre en el instante de aplicarlo: Godot recalcula el
+    // rect solo cuando el padre cambia de tamaño, así que ya no importa que al
+    // ENTER_TREE el padre valga 0 (era la causa de que un Size=(1,1) saliera 100x50).
+    // El AnchorPoint (ax,ay) se hornea en las anclas/offsets. Y como anclas/offsets
+    // SÍ son propiedades de Control, sobreviven a duplicate() → los ScreenGui que se
+    // clonan de StarterGui a PlayerGui conservan su posición y tamaño.
+    //   rect_scale  = posScale + (side==far ? (1-a)*sizeScale : -a*sizeScale)
+    //   rect_offset = posOffset + (side==far ? (1-a)*sizeOffset : -a*sizeOffset)
+    ctrl->set_anchor(SIDE_LEFT,   pos.xs - ax * sz.xs);
+    ctrl->set_anchor(SIDE_RIGHT,  pos.xs + (1.0f - ax) * sz.xs);
+    ctrl->set_anchor(SIDE_TOP,    pos.ys - ay * sz.ys);
+    ctrl->set_anchor(SIDE_BOTTOM, pos.ys + (1.0f - ay) * sz.ys);
+    ctrl->set_offset(SIDE_LEFT,   pos.xo - ax * sz.xo);
+    ctrl->set_offset(SIDE_RIGHT,  pos.xo + (1.0f - ax) * sz.xo);
+    ctrl->set_offset(SIDE_TOP,    pos.yo - ay * sz.yo);
+    ctrl->set_offset(SIDE_BOTTOM, pos.yo + (1.0f - ay) * sz.yo);
     ctrl->set_custom_minimum_size(Vector2(0, 0));
-    ctrl->set_anchor(SIDE_LEFT,   0.0f); ctrl->set_anchor(SIDE_TOP,    0.0f);
-    ctrl->set_anchor(SIDE_RIGHT,  0.0f); ctrl->set_anchor(SIDE_BOTTOM, 0.0f);
-    ctrl->set_offset(SIDE_LEFT,   x);     ctrl->set_offset(SIDE_TOP,    y);
-    ctrl->set_offset(SIDE_RIGHT,  x + w); ctrl->set_offset(SIDE_BOTTOM, y + h);
 }
 
 // Re-aplica los modificadores hijos (UICorner/UIStroke/UIGradient…) tras
@@ -137,10 +133,10 @@ static void _gl_gui_wire_relayout(Control* self, const char* method) {
 ////  Apply Roblox GUI props the importer left as METADATA.
 static void gl_apply_rbx_gui_meta(Node* n) {
     if (!n) return;
+    // NO se borran las metas: así sobreviven a duplicate() y el ScreenGui clonado
+    // a PlayerGui (o un reparent) las vuelve a aplicar. Reaplicar es idempotente.
     auto take = [&](const char* k) -> Variant {
-        Variant v = n->get_meta(k, Variant());
-        n->remove_meta(k);
-        return v;
+        return n->get_meta(k, Variant());
     };
     if (n->has_meta("Position")) { Variant v = take("Position");
         if (v.get_type() == Variant::VECTOR4 && n->has_method("set_udim2_pos")) {
