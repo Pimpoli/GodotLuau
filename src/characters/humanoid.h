@@ -15,6 +15,12 @@
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/label3d.hpp>
+#include <godot_cpp/classes/sprite3d.hpp>
+#include <godot_cpp/classes/sprite_base3d.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/classes/base_material3d.hpp>
 #include <vector>
 
 #include "lua.h"
@@ -162,6 +168,11 @@ private:
     bool   requires_neck          = true;
     String display_name;
 
+    // ── Display overhead (nombre + barra de vida), como Roblox ──────────
+    Node3D*             _overhead    = nullptr;
+    Label3D*            _name_label  = nullptr;
+    Sprite3D*           _hp_sprite   = nullptr;
+
     // ── HumanoidStateType (mirror of Enum.HumanoidStateType in Luau) ─
     //// ── HumanoidStateType (espejo de Enum.HumanoidStateType en Luau) ─
     // 0=None 1=Running 2=Jumping 3=Landed 4=Swimming 5=Climbing 6=Seated
@@ -280,6 +291,7 @@ public:
         if (old != health) {
             emit_signal("HealthChanged", health, old);
             fire_lua_health_changed(health_changed_cbs, health, old);
+            _update_overhead();
         }
 
         if (health <= 0.0f) {
@@ -374,8 +386,76 @@ public:
 
     // ── _physics_process: all movement logic ───────────────────────
     //// ── _physics_process: toda la lógica de movimiento ─────────────
+    // Crea el display sobre la cabeza (nombre + barra de vida), estilo Roblox:
+    // el nombre es un Label3D en billboard; la barra es un quad con shader que se
+    // llena desde la izquierda (verde→rojo) y se ve a través de paredes (always
+    // on top). Se crea una sola vez, colgado del cuerpo del personaje.
+    void _ensure_overhead() {
+        if (_overhead) return;
+        Node3D* body = Object::cast_to<Node3D>(get_parent());
+        if (!body) return;
+
+        _overhead = memnew(Node3D);
+        _overhead->set_name("Overhead");
+        body->add_child(_overhead);
+        _overhead->set_position(Vector3(0, 3.0f, 0));   // sobre la cabeza (R6/R15)
+
+        // Nombre
+        _name_label = memnew(Label3D);
+        _name_label->set_text(display_name.is_empty() ? String(body->get_name()) : display_name);
+        _name_label->set_billboard_mode(BaseMaterial3D::BILLBOARD_ENABLED);
+        _name_label->set_draw_flag(Label3D::FLAG_DISABLE_DEPTH_TEST, true);
+        _name_label->set_font_size(48);
+        _name_label->set_pixel_size(0.0065f);   // ~0.3 unidades de alto, escala con distancia
+        _name_label->set_outline_size(8);
+        _name_label->set_position(Vector3(0, 0.58f, 0));   // nombre arriba, con hueco sobre la barra
+        _overhead->add_child(_name_label);
+
+        // Barra de vida: Sprite3D con textura generada (billboard nativo, fiable).
+        // La textura se rellena de izquierda a derecha según la vida (verde→rojo),
+        // exactamente como una barra de Roblox.
+        _hp_sprite = memnew(Sprite3D);
+        _hp_sprite->set_billboard_mode(BaseMaterial3D::BILLBOARD_ENABLED);
+        _hp_sprite->set_draw_flag(SpriteBase3D::FLAG_DISABLE_DEPTH_TEST, true);
+        _hp_sprite->set_pixel_size(0.014f);   // 100px * 0.014 = ~1.4 unidades de ancho
+        _hp_sprite->set_position(Vector3(0, 0.28f, 0));
+        _overhead->add_child(_hp_sprite);
+
+        _update_overhead();
+    }
+
+    Ref<ImageTexture> _make_hp_texture(float ratio) {
+        const int W = 100, H = 14;
+        Ref<Image> img = Image::create(W, H, false, Image::FORMAT_RGBA8);
+        Color fill = Color(0.9f, 0.15f, 0.15f).lerp(Color(0.15f, 0.9f, 0.2f), ratio);
+        Color bg(0.07f, 0.07f, 0.07f, 1.0f);
+        Color border(0.0f, 0.0f, 0.0f, 1.0f);
+        int fillx = (int)(ratio * W);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                bool b = (x < 2 || x >= W - 2 || y < 2 || y >= H - 2);
+                img->set_pixel(x, y, b ? border : (x < fillx ? fill : bg));
+            }
+        return ImageTexture::create_from_image(img);
+    }
+
+    void _update_overhead() {
+        if (_hp_sprite) {
+            float ratio = max_health > 0.0f ? Math::clamp(health / max_health, 0.0f, 1.0f) : 0.0f;
+            _hp_sprite->set_texture(_make_hp_texture(ratio));
+            // Como Roblox (HealthDisplayType por defecto): solo se ve con daño.
+            _hp_sprite->set_visible(ratio < 0.999f);
+        }
+        if (_name_label) {
+            Node* body = get_parent();
+            _name_label->set_text(display_name.is_empty() && body ? String(body->get_name()) : display_name);
+        }
+    }
+
     void _physics_process(double delta) override {
-        if (Engine::get_singleton()->is_editor_hint() || is_dead) return;
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        _ensure_overhead();
+        if (is_dead) { _update_overhead(); return; }
 
         CharacterBody3D* body = Object::cast_to<CharacterBody3D>(get_parent());
         if (!body) return;

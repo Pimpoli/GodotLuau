@@ -2894,6 +2894,14 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key,"Enabled")       == 0) { lua_pushboolean(L, sg->get_sg_enabled());   return 1; }
         if (strcmp(key,"DisplayOrder")  == 0) { lua_pushnumber(L,  sg->get_display_order()); return 1; }
         if (strcmp(key,"ResetOnSpawn")  == 0) { lua_pushboolean(L, sg->get_reset_on_spawn());return 1; }
+        // AbsoluteSize de un ScreenGui = tamaño del viewport (como Roblox); pos = 0,0.
+        // Varios scripts leen ScreenGui.AbsoluteSize para escalar su UI.
+        if (strcmp(key,"AbsoluteSize")     == 0) {
+            Vector2 vp(1280, 720);
+            if (sg->get_viewport()) vp = sg->get_viewport()->get_visible_rect().size;
+            push_vector2(L, vp.x, vp.y); return 1;
+        }
+        if (strcmp(key,"AbsolutePosition") == 0) { push_vector2(L, 0, 0); return 1; }
     }
 
     // Helper lambda para leer UDim2 como tabla Lua
