@@ -82,7 +82,7 @@ inline String map_class(const String &c) {
         m["Frame"] = "RobloxFrame";        m["CanvasGroup"] = "RobloxCanvasGroup";
         m["TextLabel"] = "RobloxTextLabel";   m["TextButton"] = "RobloxTextButton";
         m["TextBox"] = "RobloxTextBox";       m["ImageLabel"] = "RobloxImageLabel";
-        m["ImageButton"] = "RobloxImageLabel";
+        m["ImageButton"] = "RobloxImageButton";
         m["ScrollingFrame"] = "RobloxScrollingFrame";
         m["UIListLayout"] = "UIListLayout";   m["UIGridLayout"] = "UIGridLayout";
         m["UIPageLayout"] = "UIPageLayout";   m["UICorner"] = "UICorner";

@@ -199,6 +199,7 @@ void initialize_luau_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<RobloxTextButton>();
         ClassDB::register_class<RobloxTextBox>();
         ClassDB::register_class<RobloxImageLabel>();
+        ClassDB::register_class<RobloxImageButton>();
         ClassDB::register_class<RobloxScrollingFrame>();
 
         // Lighting FX nodes

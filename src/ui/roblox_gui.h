@@ -506,6 +506,7 @@ protected:
         ClassDB::bind_method(D_METHOD("set_text_color","r","g","b"),         &RobloxTextButton::set_text_color);
         ClassDB::bind_method(D_METHOD("set_text_size","s"),                  &RobloxTextButton::set_text_size);
         ADD_SIGNAL(MethodInfo("MouseButton1Click"));
+        ADD_SIGNAL(MethodInfo("Activated"));   // Roblox GuiButton.Activated
         ADD_SIGNAL(MethodInfo("MouseEnter"));
         ADD_SIGNAL(MethodInfo("MouseLeave"));
     }
@@ -514,7 +515,7 @@ public:
     GUI_COMMON_METHODS(RobloxTextButton)
 
     void _on_parent_resized() { GUI_COMMON_APPLY_LAYOUT }
-    void _on_pressed()        { emit_signal("MouseButton1Click"); _fire_gui_cbs(_click_cbs); }
+    void _on_pressed()        { emit_signal("MouseButton1Click"); emit_signal("Activated"); _fire_gui_cbs(_click_cbs); }
     void _on_mouse_enter()    { emit_signal("MouseEnter");        _fire_gui_cbs(_enter_cbs); }
     void _on_mouse_leave()    { emit_signal("MouseLeave");        _fire_gui_cbs(_leave_cbs); }
 
@@ -523,6 +524,110 @@ public:
         add_theme_color_override("font_color", Color(r, g, b));
     }
     void set_text_size(int s)  { add_theme_font_size_override("font_size", s); }
+
+    void add_click_cb(lua_State* L, int ref)  { _click_cbs.push_back({L, ref, true}); }
+    void add_enter_cb(lua_State* L, int ref)  { _enter_cbs.push_back({L, ref, true}); }
+    void add_leave_cb(lua_State* L, int ref)  { _leave_cbs.push_back({L, ref, true}); }
+    void _gl_disconnect(int ref) {
+        for (auto& cb : _click_cbs) if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _enter_cbs) if (cb.ref==ref) cb.active=false;
+        for (auto& cb : _leave_cbs) if (cb.ref==ref) cb.active=false;
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────
+//  RobloxImageButton — Image button (clickable). Antes ImageButton mapeaba a
+//  RobloxImageLabel y no tenia Activated/MouseButton1Click, asi que TODOS los
+//  botones-imagen de los juegos importados fallaban ("Activated is not a valid
+//  member of ImageLabel"). Esta clase es un boton de verdad: fondo + imagen
+//  (como icono que llena) + eventos tipo Roblox.
+////  RobloxImageButton — Botón con imagen, señales tipo Roblox.
+// ────────────────────────────────────────────────────────────────────
+class RobloxImageButton : public Button {
+    GDCLASS(RobloxImageButton, Button);
+    GUI_COMMON_FIELDS
+    String _image_path;
+    float  _img_r = 1, _img_g = 1, _img_b = 1, _img_alpha = 1;
+
+    std::vector<GuiLuaCallback> _click_cbs;
+    std::vector<GuiLuaCallback> _enter_cbs;
+    std::vector<GuiLuaCallback> _leave_cbs;
+
+    void _apply_style() {
+        Ref<StyleBoxFlat> st; st.instantiate();
+        st->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
+        st->set_border_color(Color(_border_r, _border_g, _border_b));
+        st->set_border_width_all(_border_px);
+        add_theme_stylebox_override("normal",  st);
+        add_theme_stylebox_override("hover",   st);
+        add_theme_stylebox_override("pressed", st);
+        _gl_gui_reapply_modifiers(this);
+    }
+
+    void _notification(int p_what) {
+        if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
+            GUI_COMMON_APPLY_LAYOUT
+            _apply_style();
+            set_expand_icon(true);   // el icono (imagen) llena el boton, como Roblox
+            set_modulate(Color(_img_r, _img_g, _img_b, _img_alpha));
+            connect("pressed",       Callable(this, "_on_pressed"));
+            connect("mouse_entered", Callable(this, "_on_mouse_enter"));
+            connect("mouse_exited",  Callable(this, "_on_mouse_leave"));
+            _gl_gui_wire_relayout(this, "_on_parent_resized");
+        }
+    }
+
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_disconnect","ref"), &RobloxImageButton::_gl_disconnect);
+        ClassDB::bind_method(D_METHOD("_on_parent_resized"), &RobloxImageButton::_on_parent_resized);
+        ClassDB::bind_method(D_METHOD("_on_pressed"),        &RobloxImageButton::_on_pressed);
+        ClassDB::bind_method(D_METHOD("_on_mouse_enter"),    &RobloxImageButton::_on_mouse_enter);
+        ClassDB::bind_method(D_METHOD("_on_mouse_leave"),    &RobloxImageButton::_on_mouse_leave);
+        ClassDB::bind_method(D_METHOD("set_udim2_pos","xs","xo","ys","yo"),  &RobloxImageButton::set_udim2_pos);
+        ClassDB::bind_method(D_METHOD("set_udim2_size","xs","xo","ys","yo"), &RobloxImageButton::set_udim2_size);
+        ClassDB::bind_method(D_METHOD("set_anchor_point","ax","ay"),         &RobloxImageButton::set_anchor_point);
+        ClassDB::bind_method(D_METHOD("set_bg_color","r","g","b"),           &RobloxImageButton::set_bg_color);
+        ClassDB::bind_method(D_METHOD("set_bg_alpha","a"),                   &RobloxImageButton::set_bg_alpha);
+        ClassDB::bind_method(D_METHOD("set_border_color","r","g","b"),       &RobloxImageButton::set_border_color);
+        ClassDB::bind_method(D_METHOD("set_border_px","px"),                 &RobloxImageButton::set_border_px);
+        ClassDB::bind_method(D_METHOD("set_image","path"),                   &RobloxImageButton::set_image);
+        ClassDB::bind_method(D_METHOD("set_image_color","r","g","b"),        &RobloxImageButton::set_image_color);
+        ClassDB::bind_method(D_METHOD("set_image_transparency","a"),         &RobloxImageButton::set_image_transparency);
+        ADD_SIGNAL(MethodInfo("MouseButton1Click"));
+        ADD_SIGNAL(MethodInfo("Activated"));
+        ADD_SIGNAL(MethodInfo("MouseButton1Down"));
+        ADD_SIGNAL(MethodInfo("MouseButton1Up"));
+        ADD_SIGNAL(MethodInfo("MouseEnter"));
+        ADD_SIGNAL(MethodInfo("MouseLeave"));
+    }
+
+public:
+    GUI_COMMON_METHODS(RobloxImageButton)
+
+    void _on_parent_resized() { GUI_COMMON_APPLY_LAYOUT }
+    void _on_pressed()     { emit_signal("MouseButton1Click"); emit_signal("Activated"); _fire_gui_cbs(_click_cbs); }
+    void _on_mouse_enter() { emit_signal("MouseEnter"); _fire_gui_cbs(_enter_cbs); }
+    void _on_mouse_leave() { emit_signal("MouseLeave"); _fire_gui_cbs(_leave_cbs); }
+
+    void set_image(String path) {
+        _image_path = path;
+        if (path.is_empty()) return;
+        if (gl_is_roblox_asset(path)) { set_meta("__rbx_missing_asset", path); return; }
+        ResourceLoader* rl = ResourceLoader::get_singleton();
+        if (!rl || !rl->exists(path)) return;
+        Ref<Texture2D> tex = rl->load(path);
+        if (tex.is_valid()) set_button_icon(tex);
+    }
+    void set_image_color(float r, float g, float b) {
+        _img_r = r; _img_g = g; _img_b = b;
+        set_modulate(Color(_img_r, _img_g, _img_b, _img_alpha));
+    }
+    void set_image_transparency(float a) {
+        _img_alpha = 1.0f - Math::clamp(a, 0.0f, 1.0f);
+        set_modulate(Color(_img_r, _img_g, _img_b, _img_alpha));
+    }
 
     void add_click_cb(lua_State* L, int ref)  { _click_cbs.push_back({L, ref, true}); }
     void add_enter_cb(lua_State* L, int ref)  { _enter_cbs.push_back({L, ref, true}); }

@@ -3003,6 +3003,53 @@ static int godot_object_index(lua_State* L) {
             return 1;
         }
     }
+    RobloxImageButton* rimgbtn = Object::cast_to<RobloxImageButton>(n);
+    if (rimgbtn) {
+        if (strcmp(key,"Size")     == 0) { push_udim2_table(rimgbtn->get_udim2_size()); return 1; }
+        if (strcmp(key,"Position") == 0) { push_udim2_table(rimgbtn->get_udim2_pos());  return 1; }
+        if (strcmp(key,"BackgroundColor3")      == 0) { push_color3(L, rimgbtn->get_bg_r(), rimgbtn->get_bg_g(), rimgbtn->get_bg_b()); return 1; }
+        if (strcmp(key,"BackgroundTransparency")== 0) { lua_pushnumber(L, rimgbtn->get_bg_alpha()); return 1; }
+        if (strcmp(key,"Visible")  == 0) { lua_pushboolean(L, rimgbtn->is_visible()); return 1; }
+        if (strcmp(key,"ZIndex")   == 0) { lua_pushnumber(L, rimgbtn->get_z_index()); return 1; }
+        if (strcmp(key,"MouseButton1Click") == 0 || strcmp(key,"Activated") == 0) {
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)rimgbtn);
+            lua_pushcclosure(L, [](lua_State* pL)->int{
+                RobloxImageButton* btn = (RobloxImageButton*)lua_touserdata(pL, lua_upvalueindex(1));
+                int fn_pos = -1;
+                for (int ai=1; ai<=lua_gettop(pL); ai++) if (lua_isfunction(pL,ai)) { fn_pos=ai; break; }
+                if (fn_pos==-1 || !btn) return 0;
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL,1);
+                if (!mL) mL = pL;
+                lua_pushvalue(pL, fn_pos);
+                int ref = lua_ref(pL, -1); lua_pop(pL,1);
+                btn->add_click_cb(mL, ref);
+                _gl_push_connection(pL, btn, ref); return 1;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+        if (strcmp(key,"MouseEnter") == 0) {
+            lua_newtable(L);
+            lua_pushlightuserdata(L, (void*)rimgbtn);
+            lua_pushcclosure(L, [](lua_State* pL)->int{
+                RobloxImageButton* btn = (RobloxImageButton*)lua_touserdata(pL, lua_upvalueindex(1));
+                int fn_pos = -1;
+                for (int ai=1; ai<=lua_gettop(pL); ai++) if (lua_isfunction(pL,ai)) { fn_pos=ai; break; }
+                if (fn_pos==-1 || !btn) return 0;
+                lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                lua_State* mL = (lua_State*)lua_touserdata(pL, -1); lua_pop(pL,1);
+                if (!mL) mL = pL;
+                lua_pushvalue(pL, fn_pos);
+                int ref = lua_ref(pL, -1); lua_pop(pL,1);
+                btn->add_enter_cb(mL, ref);
+                _gl_push_connection(pL, btn, ref); return 1;
+            }, "Connect", 1);
+            lua_setfield(L, -2, "Connect");
+            return 1;
+        }
+    }
     RobloxTextBox* rtbox = Object::cast_to<RobloxTextBox>(n);
     if (rtbox) {
         if (strcmp(key,"Size")     == 0) { push_udim2_table(rtbox->get_udim2_size()); return 1; }
