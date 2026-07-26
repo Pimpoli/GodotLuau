@@ -121,6 +121,25 @@ private:
     // funcion GARANTIZA que jamas pueda salir gris: apaga el adjustment, fuerza
     // el fondo a CIELO valido y deja la niebla suave. Como se llama sobre CADA
     // entorno (nuevo o existente), repara tambien escenas ya hechas.
+    static bool _gl_find_class_in(Node* n, const char* cls) {
+        if (!n) return false;
+        if (n->is_class(cls)) return true;
+        for (int i = 0; i < n->get_child_count(); i++)
+            if (_gl_find_class_in(n->get_child(i), cls)) return true;
+        return false;
+    }
+    // ¿Hay un efecto de Lighting que gobierne esta caracteristica del Environment?
+    // Si lo hay, el Workspace NO debe forzarla: asi un BloomEffect/Atmosphere con
+    // Enabled=false se queda apagado en vez de reactivarse cada vez que se entra a
+    // la escena o al jugar. (glow/fog encendidos NO pueden dar gris, asi que aqui
+    // si es seguro "respetar" el efecto — al reves del adjustment, que siempre off.)
+    bool _gl_lighting_has(const char* cls) const {
+        Node* dm = get_parent();
+        if (!dm) return false;
+        Node* lighting = dm->get_node_or_null(NodePath("Lighting"));
+        return _gl_find_class_in(lighting ? lighting : dm, cls);
+    }
+
     void _apply_roblox_render(const Ref<Environment>& env, DirectionalLight3D* sun) {
         if (env.is_valid()) {
             // 1) NUNCA gris: el ajuste de color (saturacion baja) es lo que dejaba
@@ -139,16 +158,20 @@ private:
             env->set_tonemap_white(6.0f);
             env->set_tonemap_exposure(1.0f);
 
-            env->set_glow_enabled(true);
-            env->set_glow_blend_mode(Environment::GLOW_BLEND_MODE_SCREEN);
-            env->set_glow_intensity(0.5f);
-            env->set_glow_strength(1.0f);
-            env->set_glow_bloom(0.1f);
-            env->set_glow_hdr_bleed_threshold(0.95f);
-            env->set_glow_hdr_bleed_scale(2.0f);
-            env->set_glow_level(2, 0.6f);
-            env->set_glow_level(3, 0.4f);
-            env->set_glow_level(4, 0.2f);
+            // Glow: solo se fuerza si NO hay Bloom/SunRays que lo controle (asi un
+            // Bloom con Enabled=false no se reactiva).
+            if (!_gl_lighting_has("BloomEffect") && !_gl_lighting_has("SunRaysNode")) {
+                env->set_glow_enabled(true);
+                env->set_glow_blend_mode(Environment::GLOW_BLEND_MODE_SCREEN);
+                env->set_glow_intensity(0.5f);
+                env->set_glow_strength(1.0f);
+                env->set_glow_bloom(0.1f);
+                env->set_glow_hdr_bleed_threshold(0.95f);
+                env->set_glow_hdr_bleed_scale(2.0f);
+                env->set_glow_level(2, 0.6f);
+                env->set_glow_level(3, 0.4f);
+                env->set_glow_level(4, 0.2f);
+            }
 
             env->set_ssao_enabled(true);
             env->set_ssao_radius(1.0f);
@@ -159,12 +182,14 @@ private:
             env->set_ambient_light_sky_contribution(1.0f);
             env->set_ambient_light_energy(1.0f);
 
-            // Atmosfera sutil de distancia (como el "atmosphere" de Roblox):
-            // niebla muy leve que da profundidad sin costar rendimiento.
-            env->set_fog_enabled(true);
-            env->set_fog_light_color(Color(0.76f, 0.85f, 0.94f));
-            env->set_fog_density(0.0006f);
-            env->set_fog_sky_affect(0.0f);
+            // Atmosfera sutil de distancia (niebla muy leve): solo se fuerza si NO
+            // hay un Atmosphere que la controle (asi un Atmosphere apagado no revive).
+            if (!_gl_lighting_has("AtmosphereNode")) {
+                env->set_fog_enabled(true);
+                env->set_fog_light_color(Color(0.76f, 0.85f, 0.94f));
+                env->set_fog_density(0.0006f);
+                env->set_fog_sky_affect(0.0f);
+            }
         }
         if (sun) {
             sun->set_shadow(true);

@@ -108,14 +108,20 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
         }
     }
 
-    // Environment: SSAO / glow / niebla según el nivel.
+    // Environment: SSAO / glow / niebla según el nivel. PERO glow/niebla NO se
+    // tocan si hay un efecto de Lighting que los gobierna (Bloom/SunRays → glow,
+    // Atmosphere → niebla): asi un efecto con Enabled=false no se reactiva al
+    // aplicar la calidad. SSAO no lo controla ningun efecto de Roblox, va libre.
     if (Node* wen = gl_find_by_class(root, "WorldEnvironment")) {
         if (WorldEnvironment* we = Object::cast_to<WorldEnvironment>(wen)) {
             Ref<Environment> env = we->get_environment();
             if (env.is_valid()) {
+                const bool has_glow_fx = gl_find_by_class(root, "BloomEffect") ||
+                                         gl_find_by_class(root, "SunRaysNode");
+                const bool has_fog_fx  = gl_find_by_class(root, "AtmosphereNode");
                 env->set_ssao_enabled(q.ssao);
-                env->set_glow_enabled(q.glow);
-                env->set_fog_enabled(q.fog);
+                if (!has_glow_fx) env->set_glow_enabled(q.glow);
+                if (!has_fog_fx)  env->set_fog_enabled(q.fog);
             }
         }
     }

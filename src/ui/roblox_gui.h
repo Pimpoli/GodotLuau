@@ -126,6 +126,60 @@ static void _gl_gui_wire_relayout(Control* self, const char* method) {
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  Aplica las props de GUI de Roblox que el importador dejo como METADATA
+//  (Position/Size/BackgroundColor3/Text/...). Los .rbxl importados con
+//  versiones viejas guardaban esas props como meta porque no sabian
+//  traducirlas a los metodos (set_udim2_pos, etc.), dejando cada Frame con su
+//  default (blanco, ~100x50, arriba-izquierda). Esto las aplica al CARGAR la
+//  escena, asi se arreglan sin re-importar. Cada meta se borra tras aplicarla
+//  (idempotente y no ensucia el inspector). Para UI creada por Lua no hay estas
+//  metas, asi que es un no-op.
+////  Apply Roblox GUI props the importer left as METADATA.
+static void gl_apply_rbx_gui_meta(Node* n) {
+    if (!n) return;
+    auto take = [&](const char* k) -> Variant {
+        Variant v = n->get_meta(k, Variant());
+        n->remove_meta(k);
+        return v;
+    };
+    if (n->has_meta("Position")) { Variant v = take("Position");
+        if (v.get_type() == Variant::VECTOR4 && n->has_method("set_udim2_pos")) {
+            Vector4 u = v; n->call("set_udim2_pos", u.x, u.y, u.z, u.w); } }
+    if (n->has_meta("Size")) { Variant v = take("Size");
+        if (v.get_type() == Variant::VECTOR4 && n->has_method("set_udim2_size")) {
+            Vector4 u = v; n->call("set_udim2_size", u.x, u.y, u.z, u.w); } }
+    if (n->has_meta("AnchorPoint")) { Variant v = take("AnchorPoint");
+        if (v.get_type() == Variant::VECTOR2 && n->has_method("set_anchor_point")) {
+            Vector2 a = v; n->call("set_anchor_point", a.x, a.y); } }
+    if (n->has_meta("BackgroundColor3")) { Variant v = take("BackgroundColor3");
+        if (v.get_type() == Variant::COLOR && n->has_method("set_bg_color")) {
+            Color c = v; n->call("set_bg_color", c.r, c.g, c.b); } }
+    if (n->has_meta("BackgroundTransparency")) { Variant v = take("BackgroundTransparency");
+        if (n->has_method("set_bg_alpha")) n->call("set_bg_alpha", (float)v); }
+    if (n->has_meta("BorderColor3")) { Variant v = take("BorderColor3");
+        if (v.get_type() == Variant::COLOR && n->has_method("set_border_color")) {
+            Color c = v; n->call("set_border_color", c.r, c.g, c.b); } }
+    if (n->has_meta("BorderSizePixel")) { Variant v = take("BorderSizePixel");
+        if (n->has_method("set_border_px")) n->call("set_border_px", (int)(int64_t)v); }
+    if (n->has_meta("Text")) { Variant v = take("Text");
+        if (n->has_method("set_text")) n->call("set_text", String(v)); }
+    if (n->has_meta("TextColor3")) { Variant v = take("TextColor3");
+        if (v.get_type() == Variant::COLOR && n->has_method("set_text_color")) {
+            Color c = v; n->call("set_text_color", c.r, c.g, c.b); } }
+    if (n->has_meta("TextSize")) { Variant v = take("TextSize");
+        if (n->has_method("set_text_size")) n->call("set_text_size", (int)(float)v); }
+    if (n->has_meta("TextScaled")) { Variant v = take("TextScaled");
+        if (n->has_method("set_text_scaled")) n->call("set_text_scaled", (bool)v); }
+    if (n->has_meta("Image")) { Variant v = take("Image");
+        if (n->has_method("set_image")) n->call("set_image", String(v)); }
+    if (n->has_meta("ImageColor3")) { Variant v = take("ImageColor3");
+        if (v.get_type() == Variant::COLOR && n->has_method("set_image_color")) {
+            Color c = v; n->call("set_image_color", c.r, c.g, c.b); } }
+    if (n->has_meta("ImageTransparency")) { Variant v = take("ImageTransparency");
+        if (n->has_method("set_image_transparency")) n->call("set_image_transparency", (float)v); }
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Macro: common GUI fields (position, size, background color)
 ////  Macro: campos comunes de GUI (posición, tamaño, color de fondo)
 // ────────────────────────────────────────────────────────────────────
@@ -265,6 +319,7 @@ class RobloxFrame : public Panel {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             // Connect to parent to re-layout when parent resizes
@@ -340,6 +395,7 @@ class RobloxTextLabel : public Label {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             // clip_text: sin esto el mínimo del Label es el ancho del texto, que
             // clampaba el tamaño UDim2 y descuadraba el anchor. Con clip, el box
             // vale exactamente su Size (el texto que no cabe se recorta).
@@ -425,6 +481,7 @@ class RobloxTextButton : public Button {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             set_clip_text(true);   // el box vale su Size, no el ancho del texto
@@ -505,6 +562,7 @@ class RobloxTextBox : public LineEdit {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             add_theme_color_override("font_color", Color(_txt_r, _txt_g, _txt_b));
@@ -573,6 +631,7 @@ class RobloxImageLabel : public TextureRect {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             _gl_gui_wire_relayout(this, "_on_parent_resized");
@@ -646,6 +705,7 @@ class RobloxScrollingFrame : public ScrollContainer {
 
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
+            gl_apply_rbx_gui_meta(this);   // props importadas guardadas como meta
             GUI_COMMON_APPLY_LAYOUT
             _apply_style();
             _gl_gui_wire_relayout(this, "_on_parent_resized");
