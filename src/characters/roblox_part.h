@@ -37,6 +37,30 @@ static HashMap<String, Ref<StandardMaterial3D>>& gl_shared_materials() {
     return cache;
 }
 
+// ── Cache de MALLAS y FORMAS por tamaño (rendimiento, 1.16.8) ─────────
+// Antes CADA part creaba su propia BoxMesh/BoxShape3D: un mapa importado de
+// 38.000 piezas = 38.000 mallas y 38.000 formas de colision unicas, aunque la
+// mayoria midan exactamente lo mismo. Compartiendolas por tamaño el motor puede
+// reutilizar el recurso (y agrupar draws), y la fisica reutiliza la forma.
+// IMPORTANTE: una malla del cache NO se puede mutar (la usan muchas piezas);
+// al cambiar de tamaño se pide OTRA al cache (ver _refresh_shape).
+static HashMap<String, Ref<Mesh>>& gl_shared_meshes() {
+    static HashMap<String, Ref<Mesh>> cache;
+    return cache;
+}
+static HashMap<String, Ref<Shape3D>>& gl_shared_shapes() {
+    static HashMap<String, Ref<Shape3D>> cache;
+    return cache;
+}
+// Clave estable: forma + tamaño cuantizado (evita ruido de float y limita el
+// numero de variantes; 0.01 studs es mas fino de lo que se aprecia).
+static String gl_shape_key(int shape, const Vector3& s) {
+    return String::num_int64(shape) + "|" +
+           String::num_int64((int64_t)Math::round(s.x * 100.0f)) + "," +
+           String::num_int64((int64_t)Math::round(s.y * 100.0f)) + "," +
+           String::num_int64((int64_t)Math::round(s.z * 100.0f));
+}
+
 class RobloxPart : public RigidBody3D {
     GDCLASS(RobloxPart, RigidBody3D);
 
@@ -48,12 +72,7 @@ private:
     Ref<PhysicsMaterial>    phys_mat;
 
     // Active shape meshes (only one set of refs valid at a time)
-    Ref<BoxMesh>         box_mesh;
-    Ref<BoxShape3D>      box_shape;
-    Ref<SphereMesh>      sphere_mesh;
-    Ref<SphereShape3D>   sphere_shape;
-    Ref<CylinderMesh>    cyl_mesh;
-    Ref<CylinderShape3D> cyl_shape;
+    // (las mallas/formas ya no se guardan por pieza: vienen del cache compartido)
 
     // ── BasePart core properties ──────────────────────────────────
     bool    anchored      = true;
@@ -300,75 +319,73 @@ private:
         _apply_part_texture();   // la textura persistida sobrevive re-aplicados
     }
 
-    void _apply_shape_internal(int s) {
+    // Pide al cache la malla + forma de colision de (forma, tamaño) actuales,
+    // creandolas solo la primera vez que aparece esa combinacion. Sustituye a la
+    // creacion por-pieza: miles de bloques del mismo tamaño comparten recurso.
+    void _refresh_shape(int s) {
         if (!mesh_instance || !collision_shape) return;
 
-        // Release all existing shape refs
-        box_mesh    = Ref<BoxMesh>();
-        box_shape   = Ref<BoxShape3D>();
-        sphere_mesh = Ref<SphereMesh>();
-        sphere_shape= Ref<SphereShape3D>();
-        cyl_mesh    = Ref<CylinderMesh>();
-        cyl_shape   = Ref<CylinderShape3D>();
-
-        float r = Math::min(size.x, size.z) * 0.5f;
+        const String key = gl_shape_key(s, size);
+        HashMap<String, Ref<Mesh>>&   mcache = gl_shared_meshes();
+        HashMap<String, Ref<Shape3D>>& scache = gl_shared_shapes();
+        Ref<Mesh>*    fm = mcache.getptr(key);
+        Ref<Shape3D>* fs = scache.getptr(key);
 
         // Reset de rotación (el Cylinder la usa; el resto debe quedar recto)
         mesh_instance->set_rotation(Vector3(0, 0, 0));
         collision_shape->set_rotation(Vector3(0, 0, 0));
 
-        switch (s) {
-            case 1: { // Ball
-                sphere_mesh.instantiate();
-                sphere_mesh->set_radius(r);
-                sphere_mesh->set_height(r * 2.0f);
-                mesh_instance->set_mesh(sphere_mesh);
-                sphere_shape.instantiate();
-                sphere_shape->set_radius(r);
-                collision_shape->set_shape(sphere_shape);
-                break;
+        Ref<Mesh>    mesh;
+        Ref<Shape3D> shape;
+        if (fm && fs) {
+            mesh = *fm; shape = *fs;
+        } else {
+            const float r  = Math::min(size.x, size.z) * 0.5f;
+            const float cr = Math::min(size.y, size.z) * 0.5f;
+            switch (s) {
+                case 1: {   // Ball
+                    Ref<SphereMesh> m; m.instantiate();
+                    m->set_radius(r); m->set_height(r * 2.0f);
+                    Ref<SphereShape3D> c; c.instantiate();
+                    c->set_radius(r);
+                    mesh = m; shape = c;
+                    break;
+                }
+                case 2: {   // Cylinder — en Roblox apunta al eje X (Godot en Y)
+                    Ref<CylinderMesh> m; m.instantiate();
+                    m->set_top_radius(cr); m->set_bottom_radius(cr); m->set_height(size.x);
+                    Ref<CylinderShape3D> c; c.instantiate();
+                    c->set_radius(cr); c->set_height(size.x);
+                    mesh = m; shape = c;
+                    break;
+                }
+                default: {  // Block / Wedge / CornerWedge
+                    Ref<BoxMesh> m; m.instantiate();
+                    m->set_size(size);
+                    Ref<BoxShape3D> c; c.instantiate();
+                    c->set_size(size);
+                    mesh = m; shape = c;
+                    break;
+                }
             }
-            case 2: { // Cylinder — en Roblox apunta al eje X (Godot lo hace en Y)
-                float cr = Math::min(size.y, size.z) * 0.5f;
-                cyl_mesh.instantiate();
-                cyl_mesh->set_top_radius(cr);
-                cyl_mesh->set_bottom_radius(cr);
-                cyl_mesh->set_height(size.x);
-                mesh_instance->set_mesh(cyl_mesh);
-                cyl_shape.instantiate();
-                cyl_shape->set_radius(cr);
-                cyl_shape->set_height(size.x);
-                collision_shape->set_shape(cyl_shape);
-                // Rotar 90° en Z para que el eje del cilindro quede en X
-                mesh_instance->set_rotation(Vector3(0, 0, 1.5707964f));
-                collision_shape->set_rotation(Vector3(0, 0, 1.5707964f));
-                break;
-            }
-            default: { // Block / Wedge / CornerWedge
-                box_mesh.instantiate();
-                box_mesh->set_size(size);
-                mesh_instance->set_mesh(box_mesh);
-                box_shape.instantiate();
-                box_shape->set_size(size);
-                collision_shape->set_shape(box_shape);
-                break;
-            }
+            mcache[key] = mesh;
+            scache[key] = shape;
+        }
+
+        mesh_instance->set_mesh(mesh);
+        collision_shape->set_shape(shape);
+        if (s == 2) {   // eje del cilindro en X
+            mesh_instance->set_rotation(Vector3(0, 0, 1.5707964f));
+            collision_shape->set_rotation(Vector3(0, 0, 1.5707964f));
         }
     }
 
+    void _apply_shape_internal(int s) { _refresh_shape(s); }
+
     void _update_shape_dims() {
-        float r = Math::min(size.x, size.z) * 0.5f;
-        if (box_mesh.is_valid())    box_mesh->set_size(size);
-        if (box_shape.is_valid())   box_shape->set_size(size);
-        if (sphere_mesh.is_valid()) { sphere_mesh->set_radius(r); sphere_mesh->set_height(r * 2.0f); }
-        if (sphere_shape.is_valid()) sphere_shape->set_radius(r);
-        // Cylinder: misma convencion que _apply_shape_internal (eje X de Roblox:
-        // radio por Y/Z, altura por X) — antes usaba Y y el resize lo deformaba.
-        float cr = Math::min(size.y, size.z) * 0.5f;
-        if (cyl_mesh.is_valid()) {
-            cyl_mesh->set_top_radius(cr); cyl_mesh->set_bottom_radius(cr); cyl_mesh->set_height(size.x);
-        }
-        if (cyl_shape.is_valid()) { cyl_shape->set_radius(cr); cyl_shape->set_height(size.x); }
+        // Las mallas/formas son COMPARTIDAS: no se pueden mutar (afectaria a todas
+        // las piezas de ese tamaño). Se pide la variante del nuevo tamaño.
+        _refresh_shape(roblox_shape);
         _update_mass_from_density();
     }
 
