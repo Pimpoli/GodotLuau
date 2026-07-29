@@ -94,11 +94,17 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
     if (Viewport* vp = any->get_viewport()) vp->set_scaling_3d_scale(q.render_scale);
 
     // Sol: sombra on/off, tamaño de penumbra y bias que evita el acne.
+    // Si existe el servicio Lighting, EL manda sobre GlobalShadows y ShadowSoftness
+    // (como en Roblox): la calidad solo ajusta resolucion/filtro/bias, no pisa esos
+    // dos valores del juego.
+    const bool has_lighting = gl_find_by_class(root, "Lighting") != nullptr;
     if (Node* sn = gl_find_by_class(root, "DirectionalLight3D")) {
         if (DirectionalLight3D* dl = Object::cast_to<DirectionalLight3D>(sn)) {
-            dl->set_shadow(q.shadows);
-            dl->set_param(Light3D::PARAM_SIZE, q.sun_size);
-            dl->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f);
+            if (!has_lighting) {
+                dl->set_shadow(q.shadows);
+                dl->set_param(Light3D::PARAM_SIZE, q.sun_size);
+                dl->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f);
+            }
             // Bias: suficiente para matar el acne (los "puntos") sin peter-panning.
             dl->set_param(Light3D::PARAM_SHADOW_NORMAL_BIAS, 1.0f);
             dl->set_param(Light3D::PARAM_SHADOW_BIAS, 0.06f);

@@ -933,7 +933,14 @@ private:
         float sun_y = 45.0f + geographic_latitude * 0.3f;
         sun->set_rotation_degrees(Vector3(-elev, sun_y, 0.0f));
         sun->set_shadow(global_shadows);
-        sun->set_param(Light3D::PARAM_SHADOW_BLUR, shadow_softness * 4.0f);
+        // ShadowSoftness de Roblox (0..1) = lo difusa que es la penumbra. En Godot
+        // la penumbra REAL la da el tamaño angular de la luz (PARAM_SIZE); el blur
+        // solo emborrona el mapa. Antes solo se tocaba el blur, asi que subir
+        // ShadowSoftness casi no se notaba. 0 = sombra dura, 1 = muy difusa.
+        // El tamaño angular se queda en un rango sano (0..2): mas alto genera
+        // ruido de puntos en las superficies en vez de una penumbra suave.
+        sun->set_param(Light3D::PARAM_SIZE,        shadow_softness * 2.0f);
+        sun->set_param(Light3D::PARAM_SHADOW_BLUR, 1.0f + shadow_softness);
 
         // ── FIEL A ROBLOX ────────────────────────────────────────────────
         // Brightness ES la intensidad de la luz del sol, directa. Antes se
@@ -1006,37 +1013,33 @@ private:
             env->set_fog_density(fog_density * 0.08f);
         }
 
-        // ── Technology → calidad visual real (antes era decorativo) ──
-        // Compatibility/Legacy = máximo rendimiento, ShadowMap = equilibrado,
-        // Future = máxima calidad, Voxel = iluminación global (SDFGI)
+        // ── Technology → como se calcula la ILUMINACION (igual que Roblox) ──
+        // OJO: Technology NO controla el bloom. Antes este switch encendia/apagaba
+        // el glow, y como ShadowMap es el valor por defecto, apagaba el glow SIEMPRE
+        // — pisando al BloomEffect del juego (que ya respeta su propio Enabled).
+        // Aqui solo se tocan oclusion/luz indirecta, que es lo que cambia de verdad
+        // entre las tecnologias de Roblox.
         switch (technology) {
-            case 0: case 1: // Compatibility / Legacy
+            case 0: case 1: // Compatibility / Legacy: iluminacion plana y barata
                 env->set_ssao_enabled(false);
                 env->set_ssil_enabled(false);
-                env->set_glow_enabled(false);
                 env->set_sdfgi_enabled(false);
                 break;
-            case 2:         // Future
+            case 2:         // Future: sombras y luz indirecta de maxima calidad
                 env->set_ssao_enabled(true);
                 env->set_ssao_intensity(1.5f);
                 env->set_ssil_enabled(true);
-                env->set_glow_enabled(true);
-                env->set_glow_intensity(0.35f);
-                env->set_glow_bloom(0.08f);
                 env->set_sdfgi_enabled(false);
                 break;
-            case 4:         // Voxel
+            case 4:         // Voxel: iluminacion global
                 env->set_ssao_enabled(true);
                 env->set_ssil_enabled(false);
-                env->set_glow_enabled(true);
-                env->set_glow_intensity(0.25f);
                 env->set_sdfgi_enabled(true);
                 break;
-            default:        // ShadowMap (equilibrado, por defecto)
+            default:        // ShadowMap (por defecto en Roblox moderno)
                 env->set_ssao_enabled(true);
                 env->set_ssao_intensity(1.0f);
                 env->set_ssil_enabled(false);
-                env->set_glow_enabled(false);
                 env->set_sdfgi_enabled(false);
                 break;
         }
