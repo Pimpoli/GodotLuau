@@ -432,6 +432,9 @@ private:
         if (prop == "TextScaled" && n->has_method("set_text_scaled")) {
             n->call("set_text_scaled", (bool)val); return true;
         }
+        // Alineacion / contorno / rotacion / recorte: las traduce el helper de
+        // roblox_gui.h (mismo sitio que usa el repintado desde metadatos).
+        if (gl_apply_rbx_gui_extra(n, prop, val)) return true;
         // Imagen (rbxassetid:// no se puede bajar; set_image marca el asset faltante)
         if ((prop == "Image" || prop == "Texture") && n->has_method("set_image")) {
             n->call("set_image", String(val)); return true;

@@ -122,6 +122,79 @@ static void _gl_gui_wire_relayout(Control* self, const char* method) {
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  Propiedades de GuiObject de Roblox que NO son simples setters de la clase.
+//  Se aplican aqui, en un solo sitio, para que las use tanto el importador como
+//  el repintado desde metadatos. Sin esto, un place importado perdia la
+//  alineacion del texto, el contorno, la rotacion y el recorte, y por eso las
+//  UIs se veian desordenadas aunque el tamaño y el color fueran correctos.
+////  Roblox GuiObject properties that need translation (not plain setters).
+inline bool gl_apply_rbx_gui_extra(Node* n, const String& prop, const Variant& v) {
+    Control* c = Object::cast_to<Control>(n);
+    if (!c) return false;
+
+    // ── Recorte y rotacion (cualquier GuiObject) ─────────────────────
+    if (prop == "ClipsDescendants") { c->set_clip_contents((bool)v); return true; }
+    if (prop == "Rotation") {
+        // Roblox rota alrededor del CENTRO del elemento.
+        c->set_pivot_offset(c->get_size() * 0.5f);
+        c->set_rotation((float)Math::deg_to_rad((double)v));
+        return true;
+    }
+    if (prop == "Visible")  { c->set_visible((bool)v); return true; }
+
+    // ── Texto (Label y Button) ───────────────────────────────────────
+    // Enum.TextXAlignment de Roblox: Left=0, Right=1, Center=2 (¡Right antes que
+    // Center!). Confundir ese orden descoloca todos los textos del juego.
+    if (prop == "TextXAlignment") {
+        const int rb = (int)(int64_t)v;
+        HorizontalAlignment h = (rb == 1) ? HORIZONTAL_ALIGNMENT_RIGHT
+                             : (rb == 2) ? HORIZONTAL_ALIGNMENT_CENTER
+                                         : HORIZONTAL_ALIGNMENT_LEFT;
+        if (Label* l = Object::cast_to<Label>(c))   { l->set_horizontal_alignment(h); return true; }
+        if (Button* b = Object::cast_to<Button>(c)) { b->set_text_alignment(h); return true; }
+        return false;
+    }
+    // Enum.TextYAlignment: Top=0, Center=1, Bottom=2
+    if (prop == "TextYAlignment") {
+        const int rb = (int)(int64_t)v;
+        VerticalAlignment va = (rb == 1) ? VERTICAL_ALIGNMENT_CENTER
+                            : (rb == 2) ? VERTICAL_ALIGNMENT_BOTTOM
+                                        : VERTICAL_ALIGNMENT_TOP;
+        if (Label* l = Object::cast_to<Label>(c)) { l->set_vertical_alignment(va); return true; }
+        return false;
+    }
+    if (prop == "TextWrapped") {
+        if (Label* l = Object::cast_to<Label>(c)) {
+            l->set_autowrap_mode((bool)v ? TextServer::AUTOWRAP_WORD_SMART : TextServer::AUTOWRAP_OFF);
+            return true;
+        }
+        return false;
+    }
+    // TextTransparency: 0 = opaco, 1 = invisible (al reves que el alfa de Godot)
+    if (prop == "TextTransparency") {
+        const float a = 1.0f - Math::clamp((float)v, 0.0f, 1.0f);
+        Color col = c->get_theme_color("font_color");
+        col.a = a;
+        c->add_theme_color_override("font_color", col);
+        return true;
+    }
+    // Contorno del texto: en Roblox se usa muchisimo para que el texto se lea
+    // sobre cualquier fondo. TextStrokeTransparency 0 = contorno bien visible.
+    if (prop == "TextStrokeTransparency") {
+        const float vis = 1.0f - Math::clamp((float)v, 0.0f, 1.0f);
+        c->add_theme_constant_override("outline_size", vis > 0.02f ? (int)(vis * 6.0f) + 2 : 0);
+        return true;
+    }
+    if (prop == "TextStrokeColor3") {
+        if (v.get_type() != Variant::COLOR) return false;
+        Color col = v;
+        c->add_theme_color_override("font_outline_color", col);
+        return true;
+    }
+    return false;
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Aplica las props de GUI de Roblox que el importador dejo como METADATA
 //  (Position/Size/BackgroundColor3/Text/...). Los .rbxl importados con
 //  versiones viejas guardaban esas props como meta porque no sabian
@@ -173,6 +246,13 @@ static void gl_apply_rbx_gui_meta(Node* n) {
             Color c = v; n->call("set_image_color", c.r, c.g, c.b); } }
     if (n->has_meta("ImageTransparency")) { Variant v = take("ImageTransparency");
         if (n->has_method("set_image_transparency")) n->call("set_image_transparency", (float)v); }
+
+    // Props que necesitan traduccion (alineacion, contorno, rotacion, recorte).
+    static const char* kExtra[] = { "ClipsDescendants", "Rotation", "TextXAlignment",
+        "TextYAlignment", "TextWrapped", "TextTransparency",
+        "TextStrokeTransparency", "TextStrokeColor3" };
+    for (int i = 0; i < 8; i++)
+        if (n->has_meta(kExtra[i])) gl_apply_rbx_gui_extra(n, kExtra[i], n->get_meta(kExtra[i]));
 }
 
 // ────────────────────────────────────────────────────────────────────
