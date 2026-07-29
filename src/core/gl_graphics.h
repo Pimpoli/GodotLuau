@@ -47,7 +47,7 @@ inline int& gl_quality_mode() { static int m = GL_QUALITY_AUTOMATIC; return m; }
 // estabiliza algo por debajo, asi que con 35 el resultado REAL queda en promedio
 // >25 y minimo >=20 (medido con el contador del motor: con objetivo 30 el
 // promedio se quedaba en 23).
-inline int& gl_auto_target_fps() { static int f = 35; return f; }
+inline int& gl_auto_target_fps() { static int f = 45; return f; }
 
 // ── Ajustes del modo Custom ──────────────────────────────────────────
 // Cada uno es independiente; asi el jugador puede, por ejemplo, bajar sombras

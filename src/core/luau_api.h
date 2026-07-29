@@ -50,6 +50,24 @@
 
 using namespace godot;
 
+// Roblox mantiene por compatibilidad los nombres en MINUSCULA de las señales
+// (:connect, :wait, :once). Muchos juegos antiguos los usan y sin ellos el script
+// muere con "attempt to call missing method 'connect'". Esto copia el metodo ya
+// puesto en la tabla de señal a su alias en minuscula.
+// Callbacks registrados con game:BindToClose (se ejecutan al cerrar el juego).
+static std::vector<int>& gl_bind_to_close_refs() { static std::vector<int> v; return v; }
+
+static void gl_signal_lowercase_aliases(lua_State* L) {
+    // La tabla de la señal esta en el tope de la pila.
+    static const char* kPairs[][2] = { {"Connect","connect"}, {"Wait","wait"}, {"Once","once"} };
+    for (int i = 0; i < 3; i++) {
+        lua_getfield(L, -1, kPairs[i][0]);
+        if (!lua_isnil(L, -1)) lua_setfield(L, -2, kPairs[i][1]);
+        else lua_pop(L, 1);
+    }
+}
+
+
 // ════════════════════════════════════════════════════════════════════
 //  Data structures for Luau types
 ////
@@ -252,6 +270,7 @@ static inline void _gl_push_inert_signal(lua_State* L) {
         return 1;
     }, "Connect");
     lua_setfield(L, -2, "Connect");
+    gl_signal_lowercase_aliases(L);
     lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "Once");
     lua_setfield(L, -2, "Once");
     lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnil(pL); return 1; }, "Wait");
@@ -555,6 +574,43 @@ static int method_isa(lua_State* L) {
     return 1;
 }
 
+// ── Watchers de atributos (GetAttributeChangedSignal) ────────────────
+// Los atributos de Roblox se guardan como metadatos de Godot y el motor no avisa
+// cuando cambian, asi que se lleva un registro propio: quien se suscribe queda
+// aqui, y SetAttribute dispara a los suscritos de ese nodo+atributo.
+struct GLAttrWatch { uint64_t node_id; String attr; lua_State* main_L; int ref; bool active; };
+static std::vector<GLAttrWatch>& gl_attr_watchers() {
+    static std::vector<GLAttrWatch> v;
+    return v;
+}
+static void gl_watch_attribute(Node* n, const String& attr, lua_State* L, int fn_idx) {
+    if (!n) return;
+    lua_getfield(L, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+    lua_State* mL = (lua_State*)lua_touserdata(L, -1); lua_pop(L, 1);
+    if (!mL) mL = L;
+    lua_pushvalue(L, fn_idx);
+    const int ref = lua_ref(L, -1);
+    lua_pop(L, 1);
+    gl_attr_watchers().push_back({ (uint64_t)n->get_instance_id(), attr, mL, ref, true });
+}
+static void gl_fire_attribute_changed(Node* n, const String& attr) {
+    if (!n) return;
+    const uint64_t id = (uint64_t)n->get_instance_id();
+    std::vector<GLAttrWatch>& v = gl_attr_watchers();
+    for (int i = (int)v.size() - 1; i >= 0; i--) {
+        GLAttrWatch& w = v[i];
+        if (!w.active || !gl_state_alive(w.main_L)) { v.erase(v.begin() + i); continue; }
+        if (w.node_id != id || w.attr != attr) continue;
+        lua_State* th = lua_newthread(w.main_L);
+        lua_rawgeti(w.main_L, LUA_REGISTRYINDEX, w.ref);
+        if (lua_isfunction(w.main_L, -1)) {
+            lua_xmove(w.main_L, th, 1);
+            gl_check_resume(th, lua_resume(th, nullptr, 0));
+        } else lua_pop(w.main_L, 1);
+        lua_pop(w.main_L, 1);
+    }
+}
+
 static int method_setattribute(lua_State* L) {
     GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(L, 1);
     if (w && gow_node(w)) {
@@ -566,6 +622,8 @@ static int method_setattribute(lua_State* L) {
         } else {
             gow_node(w)->set_meta(key, String(lua_tostring(L, 3)));
         }
+        gl_fire_attribute_changed(gow_node(w), String(key));
+        gl_fire_attribute_changed(gow_node(w), String("__any__"));   // Instance.Changed
     }
     return 0;
 }
@@ -909,6 +967,7 @@ static int godot_object_index(lua_State* L) {
                     int ref = lua_ref(pL, 2); p->add_char_added_cb(mL, ref); _gl_push_connection(pL, p, ref); return 1;
                 }, "Connect", 1);
                 lua_setfield(L, -2, "Connect");
+                gl_signal_lowercase_aliases(L);
                 lua_pushlightuserdata(L, (void*)plr);
                 lua_pushcclosure(L, [](lua_State* pL) -> int {
                     PlayerObject* p = (PlayerObject*)lua_touserdata(pL, lua_upvalueindex(1));
@@ -937,6 +996,7 @@ static int godot_object_index(lua_State* L) {
                     _gl_push_connection(pL, p, ref); return 1;
                 }, "Connect", 2);
                 lua_setfield(L, -2, "Connect");
+                gl_signal_lowercase_aliases(L);
                 return 1;
             }
             // Name, Parent, GetChildren, WaitForChild… caen al manejo genérico.
@@ -1028,7 +1088,8 @@ static int godot_object_index(lua_State* L) {
                     int ref = lua_ref(LL, 2);
                     d->add_changed_cb(gl_main_of(LL), ref); _gl_push_connection(LL, d, ref); return 1;
                 }, "Connect", 1);
-                lua_setfield(L, -2, "Connect"); return 1;
+                lua_setfield(L, -2, "Connect");
+                gl_signal_lowercase_aliases(L); return 1;
             }
             if (strcmp(key, "GetPropertyChangedSignal") == 0) {
                 lua_pushlightuserdata(L, (void*)rval);
@@ -1042,7 +1103,8 @@ static int godot_object_index(lua_State* L) {
                         int ref = lua_ref(L2, 2);
                         d2->add_changed_cb(gl_main_of(L2), ref); _gl_push_connection(L2, d2, ref); return 1;
                     }, "Connect", 1);
-                    lua_setfield(LL, -2, "Connect"); return 1;
+                    lua_setfield(LL, -2, "Connect");
+                    gl_signal_lowercase_aliases(LL); return 1;
                 }, "GetPropertyChangedSignal", 1); return 1;
             }
             if (strcmp(key, "IsA") == 0) {
@@ -1078,6 +1140,101 @@ static int godot_object_index(lua_State* L) {
     if (strcmp(key, "SetAttribute")     == 0) { lua_pushcfunction(L, method_setattribute,             "SetAttribute");            return 1; }
     if (strcmp(key, "GetAttribute")     == 0) { lua_pushcfunction(L, method_getattribute,             "GetAttribute");            return 1; }
     if (strcmp(key, "GetService")       == 0) { lua_pushcfunction(L, method_getservice,               "GetService");              return 1; }
+    // ── Propiedades del DataModel que consultan muchos juegos ────────────
+    // Sin esto, un DataService que lee game.PlaceId tumbaba todo el modulo. No
+    // hay servidores de Roblox detras, asi que se devuelven valores locales
+    // coherentes y editables como atributos del nodo Game.
+    if (n->is_class("RobloxTemplate") || n->get_name() == StringName("Game")) {
+        if (strcmp(key, "PlaceId") == 0) {
+            Variant v = n->get_meta("PlaceId", Variant());
+            lua_pushnumber(L, v.get_type() == Variant::NIL ? 0.0 : (double)v);
+            return 1;
+        }
+        if (strcmp(key, "PlaceVersion") == 0) {
+            Variant v = n->get_meta("PlaceVersion", Variant());
+            lua_pushnumber(L, v.get_type() == Variant::NIL ? 1.0 : (double)v);
+            return 1;
+        }
+        if (strcmp(key, "JobId") == 0) {
+            Variant v = n->get_meta("JobId", Variant());
+            lua_pushstring(L, v.get_type() == Variant::NIL ? "" : String(v).utf8().get_data());
+            return 1;
+        }
+        // game:BindToClose(fn) — Roblox lo llama al apagar el servidor para que el
+        // juego guarde datos. Aqui se acepta y se guarda: si no existiera, los
+        // modulos de datos (TycoonSystem, DataService) morian al arrancar.
+        if (strcmp(key, "BindToClose") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                // Se registra el callback; se ejecuta al cerrar (NOTIFICATION_WM_CLOSE).
+                for (int i = 1; i <= lua_gettop(pL); i++) {
+                    if (!lua_isfunction(pL, i)) continue;
+                    lua_pushvalue(pL, i);
+                    gl_bind_to_close_refs().push_back(lua_ref(pL, -1));
+                    lua_pop(pL, 1);
+                    break;
+                }
+                return 0;
+            }, "BindToClose");
+            return 1;
+        }
+        // El juego ya esta cargado cuando un script puede preguntarlo.
+        if (strcmp(key, "IsLoaded") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushboolean(pL, true); return 1; }, "IsLoaded");
+            return 1;
+        }
+    }
+    // Instance.Changed — señal generica de Roblox (se dispara al cambiar una
+    // propiedad). Se usa muchisimo: sin ella cada Animation, Part o Value que la
+    // consultaba mataba su script (eran cientos de errores en un place real).
+    // AVISO HONESTO: por ahora se acepta la CONEXION para que el script siga vivo,
+    // pero el disparo automatico solo ocurre en atributos (SetAttribute) y en las
+    // propiedades que ya tienen su propia señal. Falta cablear el resto.
+    if (strcmp(key, "Changed") == 0 && !n->is_class("ValueBase")) {
+        lua_newtable(L);
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
+            int fn = -1;
+            for (int i = 1; i <= lua_gettop(pL); i++) if (lua_isfunction(pL, i)) { fn = i; break; }
+            if (fn == -1 || !nd) return 0;
+            gl_watch_attribute(nd, String("__any__"), pL, fn);
+            _gl_push_connection(pL, nd, 0);
+            return 1;
+        }, "Connect", 1);
+        lua_setfield(L, -2, "Connect");
+        gl_signal_lowercase_aliases(L);
+        return 1;
+    }
+
+    // Instance:GetAttributeChangedSignal(nombre) — lo usan bastantes juegos para
+    // reaccionar a sus atributos. Devuelve una señal con Connect/Wait: se vigila
+    // el valor por sondeo, porque los atributos se guardan como metadatos y Godot
+    // no avisa cuando cambian.
+    if (strcmp(key, "GetAttributeChangedSignal") == 0) {
+        lua_pushlightuserdata(L, (void*)n);
+        lua_pushcclosure(L, [](lua_State* pL) -> int {
+            Node* nd = (Node*)lua_touserdata(pL, lua_upvalueindex(1));
+            const char* attr = lua_isstring(pL, -1) ? lua_tostring(pL, -1) : "";
+            lua_newtable(pL);
+            lua_pushlightuserdata(pL, (void*)nd);
+            lua_pushstring(pL, attr);
+            lua_pushcclosure(pL, [](lua_State* cL) -> int {
+                Node* node = (Node*)lua_touserdata(cL, lua_upvalueindex(1));
+                const char* a = lua_tostring(cL, lua_upvalueindex(2));
+                int fn = -1;
+                for (int i = 1; i <= lua_gettop(cL); i++) if (lua_isfunction(cL, i)) { fn = i; break; }
+                if (fn == -1 || !node) return 0;
+                gl_watch_attribute(node, String(a), cL, fn);
+                _gl_push_connection(cL, node, 0);
+                return 1;
+            }, "Connect", 2);
+            lua_setfield(pL, -2, "Connect");
+            gl_signal_lowercase_aliases(pL);
+            lua_pushvalue(pL, -1); lua_getfield(pL, -1, "Connect"); lua_setfield(pL, -3, "connect"); lua_pop(pL, 1);
+            return 1;
+        }, "GetAttributeChangedSignal", 1);
+        return 1;
+    }
 
     // game:UpdateStructure() — actualizador incremental (1.15): rellena lo que
     // falte y migra nodos sin borrar ni pisar la config. Mismo efecto que la
@@ -1158,6 +1315,7 @@ static int godot_object_index(lua_State* L) {
             return 1;
         }, "Connect", 2);
         lua_setfield(L, -2, "Connect");
+        gl_signal_lowercase_aliases(L);
         return 1;
     }
 
@@ -1272,6 +1430,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, ps, ref); return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             // :Once — igual que Connect pero se desconecta tras el primer disparo.
             lua_pushlightuserdata(L, (void*)players_svc);
             lua_pushstring(L, sig);
@@ -1464,6 +1623,7 @@ static int godot_object_index(lua_State* L) {
                 return 0;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
         if (strcmp(key, "SetPlayerName") == 0) {
@@ -1675,6 +1835,7 @@ static int godot_object_index(lua_State* L) {
             lua_newtable(L);
             lua_pushcclosure(L, [](lua_State* pL) -> int { return 0; }, "Connect", 0);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -1920,6 +2081,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
         if (strcmp(key, "HealthChanged") == 0) {
@@ -1943,6 +2105,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
         if (strcmp(key, "StateChanged") == 0) {
@@ -1966,6 +2129,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, h, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -2218,6 +2382,7 @@ static int godot_object_index(lua_State* L) {
                 return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -2292,6 +2457,7 @@ static int godot_object_index(lua_State* L) {
                 return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             // Once — calls the function only the first time, then disconnects / llama la función solo la primera vez, luego se desconecta
             lua_pushlightuserdata(L, (void*)rs);
             lua_pushstring(L, key);
@@ -2431,6 +2597,7 @@ static int godot_object_index(lua_State* L) {
                 return 0;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
 
@@ -2821,6 +2988,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, bev, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -2950,6 +3118,7 @@ static int godot_object_index(lua_State* L) {
                 return 0;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -2989,6 +3158,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
         if (strcmp(key,"MouseEnter") == 0) {
@@ -3008,6 +3178,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -3036,6 +3207,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
         if (strcmp(key,"MouseEnter") == 0) {
@@ -3055,6 +3227,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, btn, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -3082,6 +3255,7 @@ static int godot_object_index(lua_State* L) {
                 _gl_push_connection(pL, tb, ref); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -3216,6 +3390,7 @@ static int godot_object_index(lua_State* L) {
                 lua_pushnil(LL); return 1;
             }, "Connect", 1);
             lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
             return 1;
         }
     }
@@ -3321,7 +3496,8 @@ static int godot_object_index(lua_State* L) {
                 t->add_completed_cb(gl_main_of(LL), ref);
                 _gl_push_connection(LL, t, ref); return 1;
             }, "Connect", 1);
-            lua_setfield(L, -2, "Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L); return 1;
         }
         if (strcmp(key,"PlaybackState") == 0) {
             if (rtween->finished)     lua_pushstring(L, "Completed");
@@ -3347,7 +3523,8 @@ static int godot_object_index(lua_State* L) {
                 c->push_back({gl_main_of(LL), ref, true});
                 _gl_push_connection(LL, d, ref); return 1;
             }, "Connect", 2);
-            lua_setfield(L, -2, "Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L); return 1;
         };
         if (strcmp(key,"MouseClick")      == 0) return make_click_signal("MouseClick",      cd->mouse_click_cbs);
         if (strcmp(key,"MouseHoverEnter") == 0) return make_click_signal("MouseHoverEnter",  cd->hover_enter_cbs);
@@ -3374,7 +3551,8 @@ static int godot_object_index(lua_State* L) {
                 c->push_back({gl_main_of(LL), ref, true});
                 _gl_push_connection(LL, d, ref); return 1;
             }, "Connect", 2);
-            lua_setfield(L, -2, "Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L); return 1;
         };
         if (strcmp(key,"Triggered")  == 0) return make_pp_signal(pp->triggered_cbs);
         if (strcmp(key,"HoldBegan")  == 0) return make_pp_signal(pp->hold_began_cbs);
