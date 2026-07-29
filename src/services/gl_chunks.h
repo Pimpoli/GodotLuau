@@ -32,6 +32,9 @@
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/material.hpp>
 #include <godot_cpp/classes/rigid_body3d.hpp>
+#include <godot_cpp/classes/box_mesh.hpp>
+#include <godot_cpp/classes/sphere_mesh.hpp>
+#include <godot_cpp/classes/cylinder_mesh.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -41,6 +44,40 @@ using namespace godot;
 // Nombre del nodo que cuelga del Workspace y contiene todos los grupos, para
 // poder encontrarlos y borrarlos sin tocar nada mas.
 #define GL_CHUNKS_ROOT "__GLStaticChunks"
+
+// Mallas UNITARIAS (una por forma). La clave del agrupado deja de ser "la misma
+// malla" y pasa a ser "la misma FORMA": el tamaño de cada pieza viaja en la
+// escala de su instancia. Asi entran juntas piezas que miden distinto, que es
+// lo que dejaba fuera a la mayoria de la geometria en la fase 1.
+inline Ref<Mesh>& gl_unit_box() {
+    static Ref<Mesh> m;
+    if (!m.is_valid()) { Ref<BoxMesh> b; b.instantiate(); b->set_size(Vector3(1,1,1)); m = b; }
+    return m;
+}
+inline Ref<Mesh>& gl_unit_sphere() {
+    static Ref<Mesh> m;
+    if (!m.is_valid()) { Ref<SphereMesh> sp; sp.instantiate(); sp->set_radius(0.5f); sp->set_height(1.0f); m = sp; }
+    return m;
+}
+inline Ref<Mesh>& gl_unit_cylinder() {
+    static Ref<Mesh> m;
+    if (!m.is_valid()) { Ref<CylinderMesh> c; c.instantiate(); c->set_top_radius(0.5f); c->set_bottom_radius(0.5f); c->set_height(1.0f); m = c; }
+    return m;
+}
+inline bool gl_unit_form(const Ref<Mesh>& src, Ref<Mesh>& out_unit, Vector3& out_scale, int& out_kind) {
+    if (BoxMesh* b = Object::cast_to<BoxMesh>(src.ptr())) {
+        out_unit = gl_unit_box(); out_scale = b->get_size(); out_kind = 0; return true;
+    }
+    if (SphereMesh* sp = Object::cast_to<SphereMesh>(src.ptr())) {
+        const float d = sp->get_radius() * 2.0f;
+        out_unit = gl_unit_sphere(); out_scale = Vector3(d, sp->get_height(), d); out_kind = 1; return true;
+    }
+    if (CylinderMesh* c = Object::cast_to<CylinderMesh>(src.ptr())) {
+        const float d = c->get_top_radius() * 2.0f;
+        out_unit = gl_unit_cylinder(); out_scale = Vector3(d, c->get_height(), d); out_kind = 2; return true;
+    }
+    return false;
+}
 
 struct GLChunkGroup {
     Ref<Mesh>          mesh;
@@ -69,25 +106,31 @@ inline void _gl_collect_static(Node* n, float chunk_size,
                 Ref<Material> mat = mi->get_material_override();
                 if (!mesh.is_valid()) continue;
 
+                Ref<Mesh> unit; Vector3 mscale; int kind = 0;
+                if (!gl_unit_form(mesh, unit, mscale, kind)) continue;
+
                 const Vector3 p = n3->get_global_position();
                 const String key =
                     String::num_int64((int64_t)Math::floor(p.x / chunk_size)) + "_" +
                     String::num_int64((int64_t)Math::floor(p.y / chunk_size)) + "_" +
                     String::num_int64((int64_t)Math::floor(p.z / chunk_size)) + "|" +
-                    String::num_int64((int64_t)mesh.ptr()) + "|" +
+                    String::num_int64(kind) + "|" +
                     String::num_int64((int64_t)mat.ptr());
 
                 GLChunkGroup* g = groups.getptr(key);
                 if (!g) {
                     GLChunkGroup fresh;
-                    fresh.mesh = mesh;
+                    fresh.mesh = unit;
                     fresh.material = mat;
                     groups.insert(key, fresh);
                     g = groups.getptr(key);
                 }
-                // La transformada incluye la rotacion/escala del MeshInstance
-                // (el cilindro, por ejemplo, va girado 90 grados).
-                g->xforms.push_back(n3->get_global_transform() * mi->get_transform());
+                Transform3D t = n3->get_global_transform() * mi->get_transform();
+                // scaled_local: la escala va en el espacio LOCAL de la pieza. Con
+                // scaled() se aplicaria sobre los ejes del mundo y las piezas
+                // rotadas saldrian deformadas.
+                t.basis = t.basis.scaled_local(mscale);
+                g->xforms.push_back(t);
                 hidden.push_back(mi);
                 break;   // una malla por pieza
             }
@@ -160,12 +203,14 @@ inline int gl_build_static_chunks(Node* workspace, float chunk_size = 128.0f, in
             if (!p3) continue;
             Ref<Mesh> mesh = mi->get_mesh();
             Ref<Material> mat = mi->get_material_override();
+            Ref<Mesh> unit; Vector3 mscale; int kind = 0;
+            if (!mesh.is_valid() || !gl_unit_form(mesh, unit, mscale, kind)) continue;
             const Vector3 p = p3->get_global_position();
             const String key =
                 String::num_int64((int64_t)Math::floor(p.x / chunk_size)) + "_" +
                 String::num_int64((int64_t)Math::floor(p.y / chunk_size)) + "_" +
                 String::num_int64((int64_t)Math::floor(p.z / chunk_size)) + "|" +
-                String::num_int64((int64_t)mesh.ptr()) + "|" +
+                String::num_int64(kind) + "|" +
                 String::num_int64((int64_t)mat.ptr());
             GLChunkGroup* g = groups.getptr(key);
             if (g && (int)g->xforms.size() >= min_group) {
