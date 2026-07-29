@@ -61,6 +61,8 @@ private:
     // AUTODETECTAR: tomar la Y del objeto ANCLADO más bajo del mundo y restarle
     // un margen — así funciona en cualquier mapa sin calcular la altura a mano.
     // Configurable: apagar el auto y usar el límite fijo, o cambiar el margen.
+    // 0 = automatico (30 Hz en mapas grandes, 60 en pequeños); >0 = fijo
+    int   physics_fps          = 0;
     bool  auto_fall_height     = true;    // true = calcular desde el mapa
     float fall_height_margin   = 150.0f;  // se resta a la Y anclada más baja
     double _fall_scan_timer     = 0.0;    // recomputar el suelo cada ~1s, no por frame
@@ -222,6 +224,10 @@ protected:
         // Rehace las piezas del mundo que falten (cielo, sol, camara, terrain).
         // La llama el importador de .rbxl despues de llenar el Workspace.
         ClassDB::bind_method(D_METHOD("EnsureEnvironment"),                    &RobloxWorkspace::gl_ensure_environment);
+        ClassDB::bind_method(D_METHOD("set_physics_fps","v"),                  &RobloxWorkspace::set_physics_fps);
+        ClassDB::bind_method(D_METHOD("get_physics_fps"),                      &RobloxWorkspace::get_physics_fps);
+        ADD_PROPERTY(PropertyInfo(Variant::INT,"PhysicsFPS",PROPERTY_HINT_RANGE,"0,240,1"),
+            "set_physics_fps","get_physics_fps");
         ClassDB::bind_method(D_METHOD("set_gravity","g"),                      &RobloxWorkspace::set_gravity);
         ClassDB::bind_method(D_METHOD("get_gravity"),                          &RobloxWorkspace::get_gravity);
         ClassDB::bind_method(D_METHOD("set_fallen_parts_destroy_height","h"),  &RobloxWorkspace::set_fallen_parts_destroy_height);
@@ -538,6 +544,29 @@ public:
         build_local_character();
         set_process(true);   // muerte por vacío (1.15)
 
+        // ── Ritmo de física adaptativo (rendimiento) ─────────────────────
+        // El coste del tick de física crece con el numero de piezas. En un mapa
+        // grande bajar de 60 a 30 Hz da FPS sin que se note en el juego (el
+        // movimiento se interpola). En mapas pequeños se mantiene 60 Hz para
+        // conservar la sensacion exacta de Roblox.
+        const int nparts = _gl_count_parts(this);
+        if (physics_fps > 0) {
+            Engine::get_singleton()->set_physics_ticks_per_second(physics_fps);
+        } else {
+            Engine::get_singleton()->set_physics_ticks_per_second(nparts > 1500 ? 30 : 60);
+        }
+
+        // ── Distancia de sombra adaptativa en mapas grandes ──────────────
+        // Un rango de sombra amplio obliga a redibujar medio mundo en el shadow
+        // map cada frame. (El SSAO no se toca aqui: lo gobierna Lighting segun
+        // Technology, y ponerlo aqui solo creaba un conflicto — Lighting reaplica
+        // despues y lo volvia a encender.)
+        if (nparts > 1500) {
+            for (int i = 0; i < get_child_count(); i++)
+                if (DirectionalLight3D* dl = Object::cast_to<DirectionalLight3D>(get_child(i)))
+                    dl->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 120.0f);
+        }
+
         // Calidad gráfica (1.15): aplica sombras suaves REALES, bias anti-acne,
         // SSAO/glow y escala según el nivel guardado. Diferido para que el sol y
         // el WorldEnvironment ya estén en el árbol. Esto arregla las sombras feas.
@@ -547,6 +576,18 @@ public:
     void _gl_apply_quality_deferred() {
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
+
+    static int _gl_count_parts(Node* n) {
+        int c = n->is_class("RobloxPart") ? 1 : 0;
+        for (int i = 0; i < n->get_child_count(); i++) c += _gl_count_parts(n->get_child(i));
+        return c;
+    }
+    void set_physics_fps(int v) {
+        physics_fps = Math::clamp(v, 0, 240);
+        if (is_node_ready() && !Engine::get_singleton()->is_editor_hint() && physics_fps > 0)
+            Engine::get_singleton()->set_physics_ticks_per_second(physics_fps);
+    }
+    int get_physics_fps() const { return physics_fps; }
 
     // API de calidad gráfica para Lua (1.15): el módulo de ajustes en Modules la
     // usa. workspace:SetGraphicsQuality(1..10) / workspace:GetGraphicsQuality().

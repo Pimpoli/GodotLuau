@@ -323,7 +323,7 @@ private:
     // creandolas solo la primera vez que aparece esa combinacion. Sustituye a la
     // creacion por-pieza: miles de bloques del mismo tamaño comparten recurso.
     void _refresh_shape(int s) {
-        if (!mesh_instance || !collision_shape) return;
+        if (!mesh_instance) return;
 
         const String key = gl_shape_key(s, size);
         HashMap<String, Ref<Mesh>>&   mcache = gl_shared_meshes();
@@ -333,7 +333,7 @@ private:
 
         // Reset de rotación (el Cylinder la usa; el resto debe quedar recto)
         mesh_instance->set_rotation(Vector3(0, 0, 0));
-        collision_shape->set_rotation(Vector3(0, 0, 0));
+        if (collision_shape) collision_shape->set_rotation(Vector3(0, 0, 0));
 
         Ref<Mesh>    mesh;
         Ref<Shape3D> shape;
@@ -373,11 +373,22 @@ private:
         }
 
         mesh_instance->set_mesh(mesh);
-        collision_shape->set_shape(shape);
+        if (collision_shape) collision_shape->set_shape(shape);
         if (s == 2) {   // eje del cilindro en X
             mesh_instance->set_rotation(Vector3(0, 0, 1.5707964f));
-            collision_shape->set_rotation(Vector3(0, 0, 1.5707964f));
+            if (collision_shape) collision_shape->set_rotation(Vector3(0, 0, 1.5707964f));
         }
+    }
+
+    // Crea el collider solo cuando hace falta (CanCollide=true). Una pieza
+    // decorativa sin colision no debe costar nada a la fisica.
+    void _ensure_collider() {
+        if (collision_shape || !is_inside_tree()) return;
+        collision_shape = memnew(CollisionShape3D);
+        add_child(collision_shape);
+        collision_shape->set_owner(nullptr);
+        _refresh_shape(roblox_shape);
+        collision_shape->set_disabled(false);
     }
 
     void _apply_shape_internal(int s) { _refresh_shape(s); }
@@ -539,13 +550,44 @@ protected:
     void _notification(int p_what) {
         if (p_what == NOTIFICATION_ENTER_TREE) {
             if (!mesh_instance) {
-                mesh_instance = memnew(MeshInstance3D);
-                add_child(mesh_instance);
+                // ── ADOPTAR los hijos internos que ya existan (rendimiento) ──
+                // BUG GRAVE: la malla y el collider se creaban SIEMPRE aqui, pero
+                // al guardar la escena esos hijos quedaban dentro del .tscn. Al
+                // cargarla ya existian, y como el puntero C++ no se serializa se
+                // creaba OTRO par: cada pieza acababa con 2 mallas y 2 colliders,
+                // o sea el mapa entero se dibujaba y simulaba DOS VECES (medido:
+                // 13.152 colliders para 6.574 piezas). Ahora se adopta el que haya
+                // y se BORRAN los duplicados, lo que ademas repara escenas ya
+                // guardadas con el problema.
+                for (int i = 0; i < get_child_count(); i++) {
+                    Node* c = get_child(i);
+                    if (MeshInstance3D* m = Object::cast_to<MeshInstance3D>(c)) {
+                        if (!mesh_instance) mesh_instance = m;
+                        else { m->queue_free(); }
+                        continue;
+                    }
+                    if (CollisionShape3D* cs = Object::cast_to<CollisionShape3D>(c)) {
+                        if (!collision_shape) collision_shape = cs;
+                        else { cs->queue_free(); }
+                    }
+                }
+                if (!mesh_instance) {
+                    mesh_instance = memnew(MeshInstance3D);
+                    add_child(mesh_instance);
+                }
                 // El material lo resuelve _apply_material_visual() abajo
                 // (compartido por clave visual, o dedicado si hay textura).
-
-                collision_shape = memnew(CollisionShape3D);
-                add_child(collision_shape);
+                // Collider SOLO si la pieza colisiona: en un mapa importado hay
+                // miles de piezas decorativas con CanCollide=false que no deben
+                // pesar en la fisica. Si luego se activa, _ensure_collider lo crea.
+                if (!collision_shape && can_collide) {
+                    collision_shape = memnew(CollisionShape3D);
+                    add_child(collision_shape);
+                }
+                // Los hijos internos NO deben guardarse en la escena (sin owner):
+                // los recrea la propia clase. Con owner se duplicaban al recargar.
+                mesh_instance->set_owner(nullptr);
+                if (collision_shape) collision_shape->set_owner(nullptr);
 
                 phys_mat.instantiate();
                 set_physics_material_override(phys_mat);
@@ -558,7 +600,7 @@ protected:
                 set_freeze_enabled(anchored);
                 // CanCollide seteado ANTES del Parent (patron Roblox: configurar
                 // todo y parentear al final) debe aplicarse al crear la shape.
-                collision_shape->set_disabled(!can_collide);
+                if (collision_shape) collision_shape->set_disabled(!can_collide);
 
                 if (!cast_shadow)
                     mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
@@ -680,6 +722,7 @@ public:
     // ── Collision ──────────────────────────────────────────────────
     void set_can_collide(bool c) {
         can_collide = c;
+        if (c) _ensure_collider();   // se crea bajo demanda (no existe si nacio sin colision)
         if (collision_shape) collision_shape->set_disabled(!c);
     }
     bool get_can_collide() const { return can_collide; }
