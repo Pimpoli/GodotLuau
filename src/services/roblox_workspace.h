@@ -139,6 +139,15 @@ private:
         Node* lighting = dm->get_node_or_null(NodePath("Lighting"));
         return _gl_find_class_in(lighting ? lighting : dm, cls);
     }
+    // ¿Existe el servicio Lighting? Si existe, ES EL quien manda sobre el ambiente
+    // y la niebla (como en Roblox): el Workspace solo pone el look base cuando no
+    // hay Lighting, para no pisar Ambient/OutdoorAmbient/Fog del juego.
+    bool _gl_has_lighting() const {
+        Node* dm = get_parent();
+        if (!dm) return false;
+        Node* l = dm->get_node_or_null(NodePath("Lighting"));
+        return l && l->is_class("Lighting");
+    }
 
     void _apply_roblox_render(const Ref<Environment>& env, DirectionalLight3D* sun) {
         if (env.is_valid()) {
@@ -178,13 +187,18 @@ private:
             env->set_ssao_intensity(1.5f);
             env->set_ssao_power(1.5f);
 
-            env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-            env->set_ambient_light_sky_contribution(1.0f);
-            env->set_ambient_light_energy(1.0f);
+            // Ambiente: solo lo fija el Workspace si NO hay servicio Lighting.
+            // Con Lighting presente manda el (Ambient/OutdoorAmbient de Roblox).
+            if (!_gl_has_lighting()) {
+                env->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+                env->set_ambient_light_sky_contribution(1.0f);
+                env->set_ambient_light_energy(1.0f);
+            }
 
             // Atmosfera sutil de distancia (niebla muy leve): solo se fuerza si NO
-            // hay un Atmosphere que la controle (asi un Atmosphere apagado no revive).
-            if (!_gl_lighting_has("AtmosphereNode")) {
+            // hay un Atmosphere ni un Lighting que la controlen (asi un Atmosphere
+            // apagado no revive y la niebla de Roblox no se pisa).
+            if (!_gl_lighting_has("AtmosphereNode") && !_gl_has_lighting()) {
                 env->set_fog_enabled(true);
                 env->set_fog_light_color(Color(0.76f, 0.85f, 0.94f));
                 env->set_fog_density(0.0006f);

@@ -827,11 +827,16 @@ public:
 
 private:
     // ── Core ─────────────────────────────────────────────────────
+    // Valores POR DEFECTO IDENTICOS a los de Roblox Studio (no aproximados):
+    // Brightness 2, ClockTime 14, GeographicLatitude 41.7, Ambient NEGRO (000),
+    // OutdoorAmbient gris 128, FogColor gris 192, ShadowSoftness 0.2.
+    // El Ambient por defecto de Roblox es NEGRO: ponerlo en gris (como estaba)
+    // lavaba toda la escena y era una de las diferencias mas visibles.
     float brightness           = 2.0f;
     float clock_time           = 14.0f;
     float geographic_latitude  = 41.7f;
-    Color ambient              = Color(0.4f, 0.4f, 0.4f);
-    Color outdoor_ambient      = Color(0.5f, 0.5f, 0.5f);
+    Color ambient              = Color(0.0f, 0.0f, 0.0f);
+    Color outdoor_ambient      = Color(0.5019608f, 0.5019608f, 0.5019608f);
     bool  global_shadows       = true;
     float shadow_softness      = 0.2f;
     // ── Environment ──────────────────────────────────────────────
@@ -842,7 +847,7 @@ private:
     float fog_start            = 0.0f;
     float fog_end              = 100000.0f;
     float fog_density          = 0.0f;
-    Color fog_color            = Color(0.75f, 0.85f, 1.0f);
+    Color fog_color            = Color(0.7529412f, 0.7529412f, 0.7529412f);  // Roblox: gris 192
     // ── Color shifts (Roblox ColorShift_Top / ColorShift_Bottom) ──
     Color color_shift_top      = Color(0, 0, 0);
     Color color_shift_bottom   = Color(0, 0, 0);
@@ -930,22 +935,26 @@ private:
         sun->set_shadow(global_shadows);
         sun->set_param(Light3D::PARAM_SHADOW_BLUR, shadow_softness * 4.0f);
 
-        // Energy: smooth S-curve, zero below horizon, peak at noon
+        // ── FIEL A ROBLOX ────────────────────────────────────────────────
+        // Brightness ES la intensidad de la luz del sol, directa. Antes se
+        // multiplicaba por una curva "artistica" y ademas el sol se teñia solo de
+        // naranja al atardecer: Roblox NO hace eso (el color calido viene del
+        // Atmosphere/ColorShift, no del sol). Aqui solo se apaga bajo el horizonte
+        // (de noche manda la luna/ambiente), con un desvanecido corto para no dar
+        // un corte seco justo en el horizonte.
         float elev_norm = elev / Math::max(max_elev, 10.0f); // -1..1
-        float raw_e = Math::clamp(elev_norm * 2.0f + 0.5f, 0.0f, 1.0f);
-        float sun_ene = raw_e * raw_e * (3.0f - 2.0f * raw_e); // smoothstep
-        sun->set_param(Light3D::PARAM_ENERGY,          brightness * sun_ene);
-        sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale * sun_ene);
-        sun->set_param(Light3D::PARAM_SPECULAR,        env_specular_scale * 0.5f * sun_ene);
+        // En el horizonte (ocaso/amanecer, ClockTime 6 y 18) todavia hay luz, como
+        // en Roblox; se apaga del todo cuando el sol ya esta bajo el horizonte.
+        float above = Math::clamp(elev_norm * 5.0f + 0.42f, 0.0f, 1.0f);
+        sun->set_param(Light3D::PARAM_ENERGY,          brightness * above);
+        sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale);
+        sun->set_param(Light3D::PARAM_SPECULAR,        env_specular_scale);
 
-        // Color: white at noon, deep orange-red at horizon
-        float horizon_f = 1.0f - Math::clamp(elev_norm * 3.0f + 0.5f, 0.0f, 1.0f);
-        Color sun_col = Color(1.0f, 1.0f, 1.0f).lerp(Color(1.0f, 0.38f, 0.04f), horizon_f * 0.92f);
-        // ColorShift_Top tiñe la luz directa del sol (como en Roblox)
-        sun_col = Color(
-            Math::clamp(sun_col.r + color_shift_top.r * 0.6f, 0.0f, 1.0f),
-            Math::clamp(sun_col.g + color_shift_top.g * 0.6f, 0.0f, 1.0f),
-            Math::clamp(sun_col.b + color_shift_top.b * 0.6f, 0.0f, 1.0f));
+        // Color del sol: BLANCO, teñido solo por ColorShift_Top (como Roblox).
+        Color sun_col(
+            Math::clamp(1.0f + color_shift_top.r, 0.0f, 1.0f),
+            Math::clamp(1.0f + color_shift_top.g, 0.0f, 1.0f),
+            Math::clamp(1.0f + color_shift_top.b, 0.0f, 1.0f));
         sun->set_color(sun_col);
     }
 
@@ -953,49 +962,48 @@ private:
         Ref<Environment> env = _get_env();
         if (!env.is_valid()) return;
 
-        // Compute time-based factors from sun elevation
-        float max_elev = 0.0f;
-        float elev = _compute_elev(&max_elev);
-        float elev_norm = elev / Math::max(max_elev, 10.0f);
-        float t_day    = Math::clamp(elev_norm * 2.5f + 0.5f, 0.0f, 1.0f);
-        float t_sunset = Math::max(0.0f, 1.0f - Math::abs(elev_norm) * 4.0f) * (elev_norm > -0.25f ? 1.0f : 0.0f);
-        float t_night  = Math::clamp(-elev_norm * 3.0f, 0.0f, 1.0f);
+        // ── FIEL A ROBLOX ────────────────────────────────────────────────
+        // Roblox NO tiñe el ambiente de naranja al atardecer ni de azul de noche:
+        // eso eran efectos "artisticos" inventados que hacian que la iluminacion se
+        // pareciera pero NO fuera identica. Aqui las propiedades se mapean tal cual.
+        //
+        //   Ambient        — luz ambiental base (tambien en interiores)
+        //   OutdoorAmbient — luz ambiental donde se ve el cielo
+        // En Godot hay un solo termino ambiental: se usa OutdoorAmbient como color
+        // del ambiente exterior y Ambient como suelo minimo (el mayor de los dos por
+        // canal), que es como se percibe en Roblox a cielo abierto.
+        Color amb(
+            Math::max(ambient.r, outdoor_ambient.r),
+            Math::max(ambient.g, outdoor_ambient.g),
+            Math::max(ambient.b, outdoor_ambient.b));
+        // ColorShift_Bottom tiñe la luz ambiental (como en Roblox)
+        amb = Color(
+            Math::clamp(amb.r + color_shift_bottom.r, 0.0f, 1.0f),
+            Math::clamp(amb.g + color_shift_bottom.g, 0.0f, 1.0f),
+            Math::clamp(amb.b + color_shift_bottom.b, 0.0f, 1.0f));
 
-        // Dynamic ambient: neutral day → warm sunset → cool night
-        // De día domina OutdoorAmbient (luz del cielo); Ambient es la base interior
-        Color base_amb   = ambient.lerp(outdoor_ambient, 0.6f * t_day);
-        Color night_amb  = Color(0.04f, 0.05f, 0.10f);
-        Color sunset_amb = Color(0.52f, 0.26f, 0.08f);
-        Color dyn_amb    = base_amb.lerp(sunset_amb, t_sunset * 0.65f).lerp(night_amb, t_night);
-        // ColorShift_Bottom tiñe la luz ambiental que viene "del suelo" (como en Roblox)
-        dyn_amb = Color(
-            Math::clamp(dyn_amb.r + color_shift_bottom.r * 0.4f, 0.0f, 1.0f),
-            Math::clamp(dyn_amb.g + color_shift_bottom.g * 0.4f, 0.0f, 1.0f),
-            Math::clamp(dyn_amb.b + color_shift_bottom.b * 0.4f, 0.0f, 1.0f));
+        env->set_ambient_light_color(amb);
+        env->set_ambient_light_energy(1.0f);                       // el color YA lleva la intensidad
+        env->set_ambient_light_sky_contribution(env_diffuse_scale); // cuanto aporta el cielo
+        // ExposureCompensation de Roblox esta en PASOS (EV): exposicion = 2^EC.
+        env->set_tonemap_exposure(Math::pow(2.0f, exposure_comp));
 
-        env->set_ambient_light_color(dyn_amb);
-        env->set_ambient_light_energy(brightness * (0.15f + t_day * 0.35f));
-        env->set_ambient_light_sky_contribution(env_diffuse_scale * 0.5f);
-        env->set_tonemap_exposure(1.0f + exposure_comp * 0.5f);
-
-        // Dynamic fog color: neutral day → warm sunset → dark night
-        Color night_fog  = Color(0.025f, 0.032f, 0.07f);
-        Color sunset_fog = Color(0.92f, 0.42f, 0.10f);
-        Color dyn_fog    = fog_color.lerp(sunset_fog, t_sunset * 0.55f).lerp(night_fog, t_night);
-
+        // Niebla: LINEAL de FogStart a FogEnd con FogColor tal cual (como Roblox).
+        // Sin lerps de atardecer/noche.
         bool use_depth_fog = (fog_end < 99000.0f && fog_end > fog_start);
         bool use_exp_fog   = (fog_density > 0.001f);
         env->set_fog_enabled(use_depth_fog || use_exp_fog);
+        env->set_fog_light_color(fog_color);
+        env->set_fog_sky_affect(0.0f);   // el cielo de Roblox no se come la niebla
         if (use_depth_fog) {
             env->set_fog_mode(Environment::FOG_MODE_DEPTH);
             env->set_fog_depth_begin(fog_start);
             env->set_fog_depth_end(fog_end);
-            env->set_fog_light_color(dyn_fog);
-            env->set_fog_density(0.01f);
+            env->set_fog_depth_curve(1.0f);   // lineal, como Roblox
+            env->set_fog_density(1.0f);
         } else if (use_exp_fog) {
             env->set_fog_mode(Environment::FOG_MODE_EXPONENTIAL);
             env->set_fog_density(fog_density * 0.08f);
-            env->set_fog_light_color(dyn_fog);
         }
 
         // ── Technology → calidad visual real (antes era decorativo) ──
@@ -1034,7 +1042,35 @@ private:
         }
     }
 
-    void _apply_all() { _apply_sun(); _apply_env(); }
+    // El CIELO sigue a ClockTime, como en Roblox: azul de dia, oscuro de noche.
+    // Sin esto, a medianoche el sol se apagaba pero el cielo seguia azul brillante
+    // (la diferencia mas visible con Roblox). Si el usuario puso un Sky propio
+    // (LightingSkyNode con su shader) no se toca nada.
+    void _apply_sky() {
+        Ref<Environment> env = _get_env();
+        if (!env.is_valid()) return;
+        Ref<Sky> sky = env->get_sky();
+        if (!sky.is_valid()) return;
+        Ref<ProceduralSkyMaterial> m = sky->get_material();
+        if (!m.is_valid()) return;   // Sky personalizado (shader): no tocarlo
+
+        float max_elev = 0.0f;
+        float elev = _compute_elev(&max_elev);
+        float elev_norm = elev / Math::max(max_elev, 10.0f);       // -1..1
+        float day = Math::clamp(elev_norm * 3.0f + 0.5f, 0.0f, 1.0f);  // 0 noche, 1 dia
+
+        const Color day_top(0.306f, 0.588f, 0.804f), night_top(0.016f, 0.024f, 0.075f);
+        const Color day_hor(0.667f, 0.804f, 0.902f), night_hor(0.047f, 0.059f, 0.129f);
+        const Color day_gnd(0.529f, 0.549f, 0.588f), night_gnd(0.024f, 0.028f, 0.047f);
+
+        m->set_sky_top_color(night_top.lerp(day_top, day));
+        m->set_sky_horizon_color(night_hor.lerp(day_hor, day));
+        m->set_ground_bottom_color(night_gnd.lerp(day_gnd, day));
+        m->set_ground_horizon_color(night_hor.lerp(day_hor, day));
+        m->set_energy_multiplier(0.12f + 0.88f * day);
+    }
+
+    void _apply_all() { _apply_sun(); _apply_env(); _apply_sky(); }
 
     void _apply_preset(int p) {
         switch (p) {
@@ -1092,6 +1128,7 @@ private:
 
 protected:
     static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("_gl_reapply"),             &Lighting::_gl_reapply);
         ClassDB::bind_method(D_METHOD("set_lighting_preset","v"), &Lighting::set_lighting_preset);
         ClassDB::bind_method(D_METHOD("get_lighting_preset"),     &Lighting::get_lighting_preset);
         ADD_PROPERTY(PropertyInfo(Variant::INT,"LightingPreset",PROPERTY_HINT_ENUM,
@@ -1194,6 +1231,12 @@ protected:
             _apply_all();
             if (!Engine::get_singleton()->is_editor_hint() && day_night_cycle)
                 set_process(true);
+        } else if (p_what == NOTIFICATION_READY) {
+            // Re-aplicar DESPUES de que el Workspace monte su entorno: el
+            // Workspace corre su _ready despues del ENTER_TREE de Lighting y
+            // fijaba ambient/exposicion por su cuenta, pisando estos valores.
+            // Con esto manda Lighting, que es quien debe mandar (como Roblox).
+            call_deferred("_gl_reapply");
         } else if (p_what == NOTIFICATION_PROCESS) {
             if (!day_night_cycle || Engine::get_singleton()->is_editor_hint()) {
                 set_process(false);
@@ -1207,6 +1250,9 @@ protected:
     }
 
 public:
+    // Re-aplica todo (lo llama el READY diferido para ganarle al Workspace).
+    void _gl_reapply() { if (is_inside_tree()) _apply_all(); }
+
     void set_lighting_preset(int v) {
         lighting_preset = v;
         _apply_preset(v);
