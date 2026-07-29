@@ -574,15 +574,13 @@ public:
         if (physics_fps > 0) {
             Engine::get_singleton()->set_physics_ticks_per_second(physics_fps);
         } else {
-            // El coste del tick lo marcan sobre todo las piezas DINAMICAS, pero
-            // el conteo de dinamicas no es fiable en este punto (las piezas
-            // importadas aun pueden no tener Anchored aplicado), y exigirlo
-            // dejaba la fisica en 60 Hz perdiendo un 16% de FPS. Manda el total,
-            // que es robusto; las dinamicas solo permiten SUBIR el ritmo cuando
-            // el mapa es grande pero esta practicamente quieto.
-            const int ndyn = _gl_count_dynamic_parts(this);
-            const bool heavy = (nparts > 1500) && !(ndyn == 0 && nparts < 4000);
-            Engine::get_singleton()->set_physics_ticks_per_second(heavy ? 30 : 60);
+            // Manda el NUMERO TOTAL de piezas, que es un dato robusto.
+            // (Antes habia aqui una "proteccion" extra que exigia ademas un
+            // minimo de piezas dinamicas: como el conteo de dinamicas depende de
+            // que Anchored ya este aplicado, daba 0 y ANULABA el ajuste — la
+            // fisica se quedaba en 60 Hz y se perdia ~16% de FPS. Medido:
+            // nparts=3384 y aun asi salia a 60.)
+            Engine::get_singleton()->set_physics_ticks_per_second(nparts > 1500 ? 30 : 60);
         }
 
         // ── Distancia de sombra adaptativa en mapas grandes ──────────────
