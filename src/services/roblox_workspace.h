@@ -78,9 +78,12 @@ private:
         Ref<World3D> world = vp->find_world_3d();
         if (!world.is_valid()) return;
         RID space = world->get_space();
-        if (space.is_valid())
-            PhysicsServer3D::get_singleton()->area_set_param(
-                space, PhysicsServer3D::AREA_PARAM_GRAVITY, Variant(gravity));
+        // El servidor de fisica puede estar ya destruido (al cerrar el juego):
+        // sin esta comprobacion salian miles de errores "PhysicsServer3D
+        // get_singleton() is null" en la consola durante el apagado.
+        PhysicsServer3D* ps = PhysicsServer3D::get_singleton();
+        if (space.is_valid() && ps)
+            ps->area_set_param(space, PhysicsServer3D::AREA_PARAM_GRAVITY, Variant(gravity));
     }
 
     // Generates the Roblox-style grid texture
