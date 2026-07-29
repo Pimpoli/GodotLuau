@@ -1,0 +1,181 @@
+#ifndef GL_CHUNKS_H
+#define GL_CHUNKS_H
+
+// ════════════════════════════════════════════════════════════════════
+//  Agrupado de geometria estatica por ZONAS (chunks) — rendimiento
+//
+//  El problema medido: un place importado tiene miles de piezas y CADA una es
+//  un objeto que la GPU dibuja por separado. Ocultar toda la geometria daba
+//  +22% de FPS, asi que ese dibujado es una de las dos grandes facturas.
+//
+//  La idea (la misma que usa Roblox): las piezas ANCLADAS no se mueven, asi que
+//  se pueden dibujar EN GRUPO. Se agrupan por:
+//        zona del mapa  +  misma malla  +  mismo material
+//  y cada grupo pasa a ser UN MultiMesh: una sola llamada de dibujado para
+//  cientos de piezas, en vez de cientos de llamadas.
+//
+//  Los nodos Part NO se tocan ni se borran: siguen existiendo con todas sus
+//  propiedades para los scripts. Solo se OCULTA su MeshInstance (lo dibuja ya
+//  el grupo). Por eso es reversible: gl_clear_static_chunks() lo deshace.
+//
+//  Solo entran piezas ancladas y visibles. Una pieza que se mueva, cambie de
+//  color o se rompa deja su grupo desactualizado, por eso el sistema se puede
+//  reconstruir en cualquier momento (gl_build_static_chunks) y se ofrece como
+//  ajuste que el juego puede apagar.
+// ════════════════════════════════════════════════════════════════════
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/multi_mesh.hpp>
+#include <godot_cpp/classes/multi_mesh_instance3d.hpp>
+#include <godot_cpp/classes/mesh.hpp>
+#include <godot_cpp/classes/material.hpp>
+#include <godot_cpp/classes/rigid_body3d.hpp>
+#include <godot_cpp/templates/hash_map.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
+
+using namespace godot;
+
+// Nombre del nodo que cuelga del Workspace y contiene todos los grupos, para
+// poder encontrarlos y borrarlos sin tocar nada mas.
+#define GL_CHUNKS_ROOT "__GLStaticChunks"
+
+struct GLChunkGroup {
+    Ref<Mesh>          mesh;
+    Ref<Material>      material;
+    LocalVector<Transform3D> xforms;
+};
+
+// Recolecta las piezas ancladas y las reparte en grupos (zona+malla+material).
+inline void _gl_collect_static(Node* n, float chunk_size,
+                               HashMap<String, GLChunkGroup>& groups,
+                               LocalVector<MeshInstance3D*>& hidden) {
+    if (!n) return;
+
+    // Solo piezas ancladas: las dinamicas se mueven y no se pueden agrupar.
+    if (Object::cast_to<RigidBody3D>(n)) {
+        Variant anc = n->get("Anchored");
+        Variant tr  = n->get("Transparency");
+        const bool anchored = (anc.get_type() == Variant::BOOL) && (bool)anc;
+        const bool solid    = (tr.get_type() != Variant::FLOAT) || ((float)tr < 0.999f);
+        Node3D* n3 = Object::cast_to<Node3D>(n);
+        if (anchored && solid && n3) {
+            for (int i = 0; i < n->get_child_count(); i++) {
+                MeshInstance3D* mi = Object::cast_to<MeshInstance3D>(n->get_child(i));
+                if (!mi || !mi->is_visible()) continue;
+                Ref<Mesh> mesh = mi->get_mesh();
+                Ref<Material> mat = mi->get_material_override();
+                if (!mesh.is_valid()) continue;
+
+                const Vector3 p = n3->get_global_position();
+                const String key =
+                    String::num_int64((int64_t)Math::floor(p.x / chunk_size)) + "_" +
+                    String::num_int64((int64_t)Math::floor(p.y / chunk_size)) + "_" +
+                    String::num_int64((int64_t)Math::floor(p.z / chunk_size)) + "|" +
+                    String::num_int64((int64_t)mesh.ptr()) + "|" +
+                    String::num_int64((int64_t)mat.ptr());
+
+                GLChunkGroup* g = groups.getptr(key);
+                if (!g) {
+                    GLChunkGroup fresh;
+                    fresh.mesh = mesh;
+                    fresh.material = mat;
+                    groups.insert(key, fresh);
+                    g = groups.getptr(key);
+                }
+                // La transformada incluye la rotacion/escala del MeshInstance
+                // (el cilindro, por ejemplo, va girado 90 grados).
+                g->xforms.push_back(n3->get_global_transform() * mi->get_transform());
+                hidden.push_back(mi);
+                break;   // una malla por pieza
+            }
+        }
+    }
+    for (int i = 0; i < n->get_child_count(); i++)
+        _gl_collect_static(n->get_child(i), chunk_size, groups, hidden);
+}
+
+// Deshace el agrupado: borra los grupos y vuelve a mostrar las mallas propias.
+inline void gl_clear_static_chunks(Node* workspace) {
+    if (!workspace) return;
+    Node* root = workspace->get_node_or_null(NodePath(GL_CHUNKS_ROOT));
+    if (!root) return;
+    // Volver a hacer visibles las mallas que este sistema oculto.
+    Array marked = root->get_meta("hidden", Array());
+    for (int i = 0; i < marked.size(); i++) {
+        Object* o = ObjectDB::get_instance((ObjectID)(uint64_t)(int64_t)marked[i]);
+        if (MeshInstance3D* mi = Object::cast_to<MeshInstance3D>(o)) mi->set_visible(true);
+    }
+    workspace->remove_child(root);
+    root->queue_free();
+}
+
+// Construye los grupos. Devuelve cuantas piezas se agruparon.
+inline int gl_build_static_chunks(Node* workspace, float chunk_size = 128.0f, int min_group = 4) {
+    if (!workspace) return 0;
+    gl_clear_static_chunks(workspace);   // idempotente: primero se deshace lo anterior
+
+    HashMap<String, GLChunkGroup> groups;
+    LocalVector<MeshInstance3D*> candidates;
+    _gl_collect_static(workspace, chunk_size, groups, candidates);
+
+    Node3D* root = memnew(Node3D);
+    root->set_name(GL_CHUNKS_ROOT);
+    workspace->add_child(root);
+
+    Array hidden_ids;
+    int batched = 0;
+    for (HashMap<String, GLChunkGroup>::Iterator it = groups.begin(); it; ++it) {
+        GLChunkGroup& g = it->value;
+        // Grupos muy pequeños no compensan: un MultiMesh de 2 piezas no ahorra
+        // nada y añade un nodo mas.
+        if ((int)g.xforms.size() < min_group) continue;
+
+        Ref<MultiMesh> mm;
+        mm.instantiate();
+        mm->set_transform_format(MultiMesh::TRANSFORM_3D);
+        mm->set_mesh(g.mesh);
+        mm->set_instance_count((int)g.xforms.size());
+        for (uint32_t i = 0; i < g.xforms.size(); i++)
+            mm->set_instance_transform((int)i, g.xforms[i]);
+
+        MultiMeshInstance3D* mmi = memnew(MultiMeshInstance3D);
+        mmi->set_multimesh(mm);
+        if (g.material.is_valid()) mmi->set_material_override(g.material);
+        root->add_child(mmi);
+        batched += (int)g.xforms.size();
+    }
+
+    // Ocultar SOLO las mallas de los grupos que de verdad se crearon. Se hace en
+    // una segunda pasada: si un grupo se descarto por pequeño, su pieza debe
+    // seguir dibujandose ella misma.
+    if (batched > 0) {
+        for (uint32_t i = 0; i < candidates.size(); i++) {
+            MeshInstance3D* mi = candidates[i];
+            if (!mi) continue;
+            Node* parent = mi->get_parent();
+            Node3D* p3 = Object::cast_to<Node3D>(parent);
+            if (!p3) continue;
+            Ref<Mesh> mesh = mi->get_mesh();
+            Ref<Material> mat = mi->get_material_override();
+            const Vector3 p = p3->get_global_position();
+            const String key =
+                String::num_int64((int64_t)Math::floor(p.x / chunk_size)) + "_" +
+                String::num_int64((int64_t)Math::floor(p.y / chunk_size)) + "_" +
+                String::num_int64((int64_t)Math::floor(p.z / chunk_size)) + "|" +
+                String::num_int64((int64_t)mesh.ptr()) + "|" +
+                String::num_int64((int64_t)mat.ptr());
+            GLChunkGroup* g = groups.getptr(key);
+            if (g && (int)g->xforms.size() >= min_group) {
+                mi->set_visible(false);
+                hidden_ids.push_back((int64_t)(uint64_t)mi->get_instance_id());
+            }
+        }
+    }
+    root->set_meta("hidden", hidden_ids);
+    return batched;
+}
+
+#endif // GL_CHUNKS_H

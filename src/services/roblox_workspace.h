@@ -40,6 +40,7 @@
 #include "roblox_part.h"
 #include "roblox_services.h"
 #include "roblox_interactive.h"
+#include "gl_chunks.h"
 
 using namespace godot;
 
@@ -225,6 +226,8 @@ protected:
         ClassDB::bind_method(D_METHOD("build_local_character"),                &RobloxWorkspace::build_local_character);   // LoadCharacter (1.14.10)
         ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
         ClassDB::bind_method(D_METHOD("_gl_tune_for_map_size"),                &RobloxWorkspace::_gl_tune_for_map_size);
+        ClassDB::bind_method(D_METHOD("_gl_rebuild_chunks"),                   &RobloxWorkspace::_gl_rebuild_chunks);
+        ClassDB::bind_method(D_METHOD("RebuildStaticChunks"),                  &RobloxWorkspace::_gl_rebuild_chunks);
         ClassDB::bind_method(D_METHOD("set_graphics_quality","level"),         &RobloxWorkspace::set_graphics_quality);
         ClassDB::bind_method(D_METHOD("get_graphics_quality"),                 &RobloxWorkspace::get_graphics_quality);
         ClassDB::bind_method(D_METHOD("SetGraphicsMode","mode"),               &RobloxWorkspace::set_graphics_mode);
@@ -562,6 +565,7 @@ public:
         // movimiento se interpola). En mapas pequeños se mantiene 60 Hz para
         // conservar la sensacion exacta de Roblox.
         call_deferred("_gl_tune_for_map_size");
+        call_deferred("_gl_rebuild_chunks");
 
         // Calidad gráfica (1.15): aplica sombras suaves REALES, bias anti-acne,
         // SSAO/glow y escala según el nivel guardado. Diferido para que el sol y
@@ -597,6 +601,15 @@ public:
                     dl->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 120.0f);
         }
 
+    }
+
+    // Agrupa la geometria estatica en zonas (ver gl_chunks.h). Se puede volver a
+    // llamar en cualquier momento: primero deshace el agrupado anterior.
+    void _gl_rebuild_chunks() {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        if (!gl_custom().static_batching) { gl_clear_static_chunks(this); return; }
+        const int n = gl_build_static_chunks(this, gl_custom().chunk_size);
+        GL_DEBUG_PRINT("[GodotLuau] Chunks: ", n, " piezas agrupadas.");
     }
 
     void _gl_apply_quality_deferred() {
@@ -663,6 +676,8 @@ public:
         // Transparencia por borrado de pixeles: hay que rehacer los materiales
         // (cambia el modo de transparencia de cada pieza translucida).
         else if (name == "PixelTransparency") { c.pixel_transparency = value > 0.5f; _gl_refresh_transparency(this); }
+        else if (name == "StaticBatching") { c.static_batching = value > 0.5f; _gl_rebuild_chunks(); }
+        else if (name == "ChunkSize")      { c.chunk_size = CLAMP(value, 16.0f, 512.0f); _gl_rebuild_chunks(); }
         else return;
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
@@ -680,6 +695,8 @@ public:
         if (name == "OcclusionSize")    return c.occlusion_size;
         if (name == "OcclusionQuality") return (float)c.occlusion_bvh;
         if (name == "PixelTransparency") return c.pixel_transparency ? 1.0f : 0.0f;
+        if (name == "StaticBatching")    return c.static_batching ? 1.0f : 0.0f;
+        if (name == "ChunkSize")         return c.chunk_size;
         return 0.0f;
     }
 

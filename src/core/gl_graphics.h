@@ -61,6 +61,10 @@ struct GLCustomSettings {
     // con lo que hay detras; borrando pixeles se dibuja como si fuera opaca y
     // sale mucho mas barato (a cambio se ve un punteado fino de cerca).
     bool  pixel_transparency = false;
+    // Agrupado de geometria estatica por zonas (chunks): dibuja en UNA llamada
+    // todas las piezas ancladas iguales de una misma zona.
+    bool  static_batching = true;
+    float chunk_size      = 128.0f;
     float occlusion_size = 8.0f;   // tamaño minimo (studs) para que una pieza tape
     int   occlusion_bvh  = 1;      // 0=rapido 1=equilibrado 2=preciso (coste CPU)
 };
