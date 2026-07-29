@@ -61,19 +61,26 @@ class RobloxSound : public Node {
         // El audio vive en los servidores de Roblox y no se puede descargar. Se
         // deja constancia en el nodo (el importador lo lista en su reporte) y se
         // sale en silencio: no es un fallo del proyecto del usuario.
+        // Antes de rendirse se busca una copia LOCAL puesta por el usuario en
+        // GodotLuau/assets/rbx/<id>.ogg (ver gl_local_asset_path).
+        String src_path = sound_id;
         if (gl_is_roblox_asset(sound_id)) {
-            set_meta("__rbx_missing_asset", sound_id);
-            return;
+            src_path = gl_local_asset_path(sound_id);
+            if (src_path.is_empty()) {
+                set_meta("__rbx_missing_asset", sound_id);
+                return;
+            }
+            remove_meta("__rbx_missing_asset");
         }
 
         // exists() antes de load() evita el error rojo del cargador cuando la
         // ruta simplemente no esta: preferimos un aviso propio y legible.
         ResourceLoader* rl = ResourceLoader::get_singleton();
-        if (!rl || !rl->exists(sound_id, "AudioStream")) {
+        if (!rl || !rl->exists(src_path, "AudioStream")) {
             UtilityFunctions::print("[Sound] No se encontro el audio: ", sound_id);
             return;
         }
-        Ref<AudioStream> stream = rl->load(sound_id, "AudioStream");
+        Ref<AudioStream> stream = rl->load(src_path, "AudioStream");
         if (!stream.is_valid()) {
             UtilityFunctions::print("[Sound] No se pudo cargar: ", sound_id);
             return;

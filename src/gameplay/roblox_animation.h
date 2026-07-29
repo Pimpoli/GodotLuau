@@ -62,8 +62,10 @@ static inline void gl_anim_apply(Node* character, const String& anim_id, const S
         // Las animaciones de Roblox viven en su nube: no se pueden cargar aqui.
         ResourceLoader* rl = ResourceLoader::get_singleton();
         Ref<Animation> loaded;
-        if (rl && !gl_is_roblox_asset(anim_id) && rl->exists(anim_id, "Animation"))
-            loaded = rl->load(anim_id, "Animation");
+        String anim_path = anim_id;
+        if (gl_is_roblox_asset(anim_id)) anim_path = gl_local_asset_path(anim_id);
+        if (rl && !anim_path.is_empty() && rl->exists(anim_path, "Animation"))
+            loaded = rl->load(anim_path, "Animation");
         if (loaded.is_valid()) {
             Ref<AnimationLibrary> lib;
             lib.instantiate();

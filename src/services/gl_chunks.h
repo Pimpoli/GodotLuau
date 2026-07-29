@@ -32,6 +32,10 @@
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/material.hpp>
 #include <godot_cpp/classes/rigid_body3d.hpp>
+#include <godot_cpp/classes/static_body3d.hpp>
+#include <godot_cpp/classes/collision_shape3d.hpp>
+#include <godot_cpp/classes/shape3d.hpp>
+#include "gl_graphics.h"
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
@@ -151,8 +155,81 @@ inline void gl_clear_static_chunks(Node* workspace) {
         Object* o = ObjectDB::get_instance((ObjectID)(uint64_t)(int64_t)marked[i]);
         if (MeshInstance3D* mi = Object::cast_to<MeshInstance3D>(o)) mi->set_visible(true);
     }
+    // Reactivar los colliders individuales que se apagaron al agruparlos.
+    Array cols = root->get_meta("disabled_cols", Array());
+    for (int i = 0; i < cols.size(); i++) {
+        Object* o = ObjectDB::get_instance((ObjectID)(uint64_t)(int64_t)cols[i]);
+        if (CollisionShape3D* cs = Object::cast_to<CollisionShape3D>(o)) cs->set_disabled(false);
+    }
     workspace->remove_child(root);
     root->queue_free();
+}
+
+// ── FISICA por zonas ─────────────────────────────────────────────────
+// Medido: el tick de fisica se lleva ~29% del tiempo, y el motivo es que hay
+// MILES de cuerpos registrados (una pieza = un cuerpo). Aqui se juntan las formas
+// de las piezas ancladas de una zona en UN SOLO cuerpo estatico y se apagan los
+// colliders individuales: el broadphase pasa de miles de cuerpos a unas decenas.
+//
+// Se excluyen a proposito:
+//   · piezas NO ancladas (se mueven: necesitan su propio cuerpo)
+//   · piezas con Touched conectado (contact monitor activo): su collider tiene
+//     que seguir siendo suyo o el evento dejaria de dispararse
+//   · piezas sin colision (su CollisionShape ya viene desactivado)
+inline void _gl_collect_colliders(Node* n, float chunk_size,
+                                  HashMap<String, LocalVector<CollisionShape3D*>>& zones) {
+    if (!n) return;
+    if (RigidBody3D* rb = Object::cast_to<RigidBody3D>(n)) {
+        Variant anc = n->get("Anchored");
+        const bool anchored = (anc.get_type() == Variant::BOOL) && (bool)anc;
+        const bool touch = rb->is_contact_monitor_enabled();
+        if (anchored && !touch) {
+            for (int i = 0; i < n->get_child_count(); i++) {
+                CollisionShape3D* cs = Object::cast_to<CollisionShape3D>(n->get_child(i));
+                if (!cs || cs->is_disabled() || !cs->get_shape().is_valid()) continue;
+                const Vector3 p = rb->get_global_position();
+                const String key =
+                    String::num_int64((int64_t)Math::floor(p.x / chunk_size)) + "_" +
+                    String::num_int64((int64_t)Math::floor(p.y / chunk_size)) + "_" +
+                    String::num_int64((int64_t)Math::floor(p.z / chunk_size));
+                LocalVector<CollisionShape3D*>* z = zones.getptr(key);
+                if (!z) { zones.insert(key, LocalVector<CollisionShape3D*>()); z = zones.getptr(key); }
+                z->push_back(cs);
+                break;   // un collider por pieza
+            }
+        }
+    }
+    for (int i = 0; i < n->get_child_count(); i++)
+        _gl_collect_colliders(n->get_child(i), chunk_size, zones);
+}
+
+// Crea un cuerpo estatico por zona. Devuelve cuantos colliders se agruparon.
+inline int _gl_build_zone_bodies(Node* workspace, Node* root, float chunk_size,
+                                 int min_group, Array& disabled_out) {
+    HashMap<String, LocalVector<CollisionShape3D*>> zones;
+    _gl_collect_colliders(workspace, chunk_size, zones);
+
+    int merged = 0;
+    for (HashMap<String, LocalVector<CollisionShape3D*>>::Iterator it = zones.begin(); it; ++it) {
+        LocalVector<CollisionShape3D*>& list = it->value;
+        if ((int)list.size() < min_group) continue;
+
+        StaticBody3D* body = memnew(StaticBody3D);
+        root->add_child(body);
+        for (uint32_t i = 0; i < list.size(); i++) {
+            CollisionShape3D* src = list[i];
+            if (!src || !src->is_inside_tree()) continue;
+            const Transform3D gx = src->get_global_transform();
+            CollisionShape3D* copy = memnew(CollisionShape3D);
+            copy->set_shape(src->get_shape());   // la forma ya viene del cache compartido
+            body->add_child(copy);
+            copy->set_global_transform(gx);
+            src->set_disabled(true);             // su cuerpo deja de colisionar
+            disabled_out.push_back((int64_t)(uint64_t)src->get_instance_id());
+            merged++;
+        }
+    }
+    return merged;
 }
 
 // Construye los grupos. Devuelve cuantas piezas se agruparon.
@@ -220,6 +297,20 @@ inline int gl_build_static_chunks(Node* workspace, float chunk_size = 128.0f, in
         }
     }
     root->set_meta("hidden", hidden_ids);
+
+    // ── Fisica: un cuerpo estatico por zona ──────────────────────────────
+    // APAGADA por defecto: MEDIDO que empeora (22.3 -> 17.8 fps). Un cuerpo con
+    // cientos de formas dispersas tiene una caja envolvente enorme, asi que el
+    // motor lo considera candidato de colision casi siempre, y encima se crean
+    // miles de nodos de forma extra. Se deja disponible por si en un mapa muy
+    // compacto (formas juntas, cajas pequeñas) si compensa.
+    Array disabled_cols;
+    const int merged = gl_custom().merge_zone_physics
+        ? _gl_build_zone_bodies(workspace, root, chunk_size, min_group, disabled_cols) : 0;
+    root->set_meta("disabled_cols", disabled_cols);
+    if (merged > 0)
+        UtilityFunctions::print("[GodotLuau] Chunks: ", batched, " piezas dibujadas en grupo, ",
+                                merged, " colisiones unidas por zona.");
     return batched;
 }
 

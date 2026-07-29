@@ -953,6 +953,22 @@ private:
         // En el horizonte (ocaso/amanecer, ClockTime 6 y 18) todavia hay luz, como
         // en Roblox; se apaga del todo cuando el sol ya esta bajo el horizonte.
         float above = Math::clamp(elev_norm * 5.0f + 0.42f, 0.0f, 1.0f);
+
+        // ── LUNA (1:1 con Roblox) ────────────────────────────────────────
+        // De noche Roblox NO deja el mundo a oscuras planas: la luna ilumina con
+        // una luz tenue y azulada desde el lado opuesto al sol. Antes aqui la luz
+        // se apagaba del todo y la noche salia plana y sin relieve. Se reutiliza
+        // el mismo DirectionalLight (como hace Roblox con su sol/luna opuestos):
+        // si el sol esta bajo el horizonte, se apunta a la posicion de la luna.
+        const bool night = (above <= 0.001f);
+        if (night) {
+            sun->set_rotation_degrees(Vector3(-(-elev), sun_y + 180.0f, 0.0f));
+            sun->set_param(Light3D::PARAM_ENERGY, 0.35f);
+            sun->set_color(Color(0.55f, 0.66f, 0.95f));   // luz lunar fria
+            sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale * 0.5f);
+            sun->set_param(Light3D::PARAM_SPECULAR,        env_specular_scale * 0.5f);
+            return;
+        }
         sun->set_param(Light3D::PARAM_ENERGY,          brightness * above);
         sun->set_param(Light3D::PARAM_INDIRECT_ENERGY, env_diffuse_scale);
         sun->set_param(Light3D::PARAM_SPECULAR,        env_specular_scale);

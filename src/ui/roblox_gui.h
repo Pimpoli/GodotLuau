@@ -614,10 +614,15 @@ public:
     void set_image(String path) {
         _image_path = path;
         if (path.is_empty()) return;
-        if (gl_is_roblox_asset(path)) { set_meta("__rbx_missing_asset", path); return; }
+        String real = path;
+        if (gl_is_roblox_asset(path)) {
+            real = gl_local_asset_path(path);
+            if (real.is_empty()) { set_meta("__rbx_missing_asset", path); return; }
+            remove_meta("__rbx_missing_asset");
+        }
         ResourceLoader* rl = ResourceLoader::get_singleton();
-        if (!rl || !rl->exists(path)) return;
-        Ref<Texture2D> tex = rl->load(path);
+        if (!rl || !rl->exists(real)) return;
+        Ref<Texture2D> tex = rl->load(real);
         if (tex.is_valid()) set_button_icon(tex);
     }
     void set_image_color(float r, float g, float b) {
@@ -765,10 +770,17 @@ public:
         // Imagen de la nube de Roblox: no se puede descargar. Se guarda el id y
         // se sale sin tocar ResourceLoader; si no, cada ImageLabel importado
         // suelta dos errores rojos y un place trae cientos.
-        if (gl_is_roblox_asset(path)) { set_meta("__rbx_missing_asset", path); return; }
+        // Asset de la nube: se busca primero una copia LOCAL puesta por el usuario
+        // en GodotLuau/assets/rbx/<id>.png (ver gl_local_asset_path).
+        String real = path;
+        if (gl_is_roblox_asset(path)) {
+            real = gl_local_asset_path(path);
+            if (real.is_empty()) { set_meta("__rbx_missing_asset", path); return; }
+            remove_meta("__rbx_missing_asset");
+        }
         ResourceLoader* rl = ResourceLoader::get_singleton();
-        if (!rl || !rl->exists(path)) return;
-        Ref<Texture2D> tex = rl->load(path);
+        if (!rl || !rl->exists(real)) return;
+        Ref<Texture2D> tex = rl->load(real);
         if (tex.is_valid()) set_texture(tex);
     }
 

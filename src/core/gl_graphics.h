@@ -37,10 +37,17 @@ inline int& gl_graphics_level() { static int lvl = 8; return lvl; }
 //   1 = Manual    — un nivel fijo 1..10 (lo clasico)
 //   2 = Custom    — cada ajuste por separado (resolucion/FSR, sombras, vista…)
 enum GLQualityMode { GL_QUALITY_AUTOMATIC = 0, GL_QUALITY_MANUAL = 1, GL_QUALITY_CUSTOM = 2 };
-inline int& gl_quality_mode() { static int m = GL_QUALITY_MANUAL; return m; }
+// Por defecto AUTOMATIC, como Roblox: es lo que garantiza FPS jugables en
+// cualquier maquina y mapa (baja la calidad sola cuando hace falta y la sube
+// cuando sobra margen). Manual/Custom quedan para quien quiera mandar el.
+inline int& gl_quality_mode() { static int m = GL_QUALITY_AUTOMATIC; return m; }
 
 // FPS objetivo del modo Automatic (Roblox apunta a una experiencia fluida).
-inline int& gl_auto_target_fps() { static int f = 45; return f; }
+// Objetivo por defecto: 35 FPS. El ajuste automatico apunta al objetivo y se
+// estabiliza algo por debajo, asi que con 35 el resultado REAL queda en promedio
+// >25 y minimo >=20 (medido con el contador del motor: con objetivo 30 el
+// promedio se quedaba en 23).
+inline int& gl_auto_target_fps() { static int f = 35; return f; }
 
 // ── Ajustes del modo Custom ──────────────────────────────────────────
 // Cada uno es independiente; asi el jugador puede, por ejemplo, bajar sombras
@@ -65,6 +72,9 @@ struct GLCustomSettings {
     // todas las piezas ancladas iguales de una misma zona.
     bool  static_batching = true;
     float chunk_size      = 128.0f;
+    // Unir las colisiones de cada zona en un cuerpo estatico. Apagado: medido que
+    // empeora en mapas dispersos (ver gl_chunks.h).
+    bool  merge_zone_physics = false;
     float occlusion_size = 8.0f;   // tamaño minimo (studs) para que una pieza tape
     int   occlusion_bvh  = 1;      // 0=rapido 1=equilibrado 2=preciso (coste CPU)
 };
@@ -281,7 +291,7 @@ inline void gl_auto_quality_tick(double delta, Node* any) {
             auto_scale = Math::max(0.6f, auto_scale - 0.05f);
             if (vp) { vp->set_scaling_3d_scale(auto_scale);
                       vp->set_scaling_3d_mode(Viewport::SCALING_3D_MODE_FSR2); }
-            cooldown = 1.5;
+            cooldown = 1.0;
         } else if (lvl > 1) {
             gl_apply_graphics_quality(lvl - 1, any);
             auto_scale = 1.0f;                   // el nivel nuevo trae su escala
