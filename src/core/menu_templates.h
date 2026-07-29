@@ -366,6 +366,15 @@ function Settings.Build(ui, page, player)
 		function(v) return v == 0 and "Off" or (v .. " / 5") end)
 	customStepper("View distance (Custom)", "ViewDistance",
 		{ 0.25, 0.5, 0.75, 1.0, 1.5, 2.0 }, pct)
+	-- Occlusion culling: skips what is hidden behind walls. It is OFF by default
+	-- because the culling runs on the CPU: with thousands of small parts it costs
+	-- more than it saves. It pays off on maps with few, large walls.
+	customStepper("Occlusion culling (Custom)", "Occlusion", { 0, 1 },
+		function(v) return v > 0.5 and "On" or "Off" end)
+	customStepper("Occluder min size (Custom)", "OcclusionSize",
+		{ 4, 8, 16, 32 }, function(v) return v .. " studs" end)
+	customStepper("Occlusion quality (Custom)", "OcclusionQuality", { 0, 1, 2 },
+		function(v) return ({ [0] = "Fast", [1] = "Balanced", [2] = "Precise" })[v] or "?" end)
 	ui:Stepper(page, "Velocidad máxima de fotogramas",
 		function() local f = fpsOptions[fpsIdx]; return f == 0 and "Ilimitado" or (f .. " FPS") end,
 		function() fpsIdx = math.max(1, fpsIdx - 1); Workspace:SetMaxFPS(fpsOptions[fpsIdx]) end,

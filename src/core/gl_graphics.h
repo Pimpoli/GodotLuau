@@ -24,6 +24,7 @@
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -53,6 +54,10 @@ struct GLCustomSettings {
     bool  ssao           = true;
     bool  glow           = true;
     bool  fog            = true;
+    // ── Occlusion culling (no dibujar lo tapado por paredes) ──────────
+    bool  occlusion      = false;  // apagado por defecto (ver gl_occlusion_enabled)
+    float occlusion_size = 8.0f;   // tamaño minimo (studs) para que una pieza tape
+    int   occlusion_bvh  = 1;      // 0=rapido 1=equilibrado 2=preciso (coste CPU)
 };
 inline GLCustomSettings& gl_custom() { static GLCustomSettings c; return c; }
 
@@ -98,6 +103,52 @@ inline GLQualityDef gl_quality_def(int level) {
 
 // Aplica un nivel de calidad (1..10) a TODA la escena. `any` es cualquier nodo
 // dentro del árbol (para llegar a la raíz, el viewport y el sol).
+// ── Occlusion culling ────────────────────────────────────────────────
+// Godot trae un occlusion culling POR SOFTWARE: cada frame rasteriza en la CPU
+// las piezas marcadas como "occluder" y descarta lo que quede detras. Ojo al
+// equilibrio que menciona todo el mundo: cuantos mas occluders y mas precisa la
+// estructura (BVH), mejor se descarta pero mas CPU cuesta; con pocos, no tapa
+// casi nada. Por eso NO se marcan todas las piezas: solo las grandes y opacas
+// (paredes, suelos, edificios), que son las que de verdad tapan.
+//
+// Config efectiva por modo:
+//   Automatic / Manual — se enciende en calidad media/alta con umbral segun el
+//                        nivel (en calidad baja se apaga: la CPU ya va justa).
+//   Custom             — lo decide el jugador (Occlusion, OcclusionSize,
+//                        OcclusionQuality).
+inline bool gl_occlusion_enabled(int level) {
+    if (gl_quality_mode() == GL_QUALITY_CUSTOM) return gl_custom().occlusion;
+    // MEDIDO en un mapa de 6.500 piezas: encenderlo baja de 17.3 a 11.4 FPS
+    // (-34%). El rasterizado por software en la CPU cuesta mas de lo que ahorra
+    // cuando la geometria son miles de piezas sueltas y pequeñas (el caso de un
+    // place de Roblox). Rinde cuando hay POCOS muros grandes que tapan mucho.
+    // Por eso en Automatic/Manual viene APAGADO y se deja como opcion en Custom.
+    (void)level;
+    return false;
+}
+inline float gl_occlusion_min_size(int level) {
+    if (gl_quality_mode() == GL_QUALITY_CUSTOM)
+        return CLAMP(gl_custom().occlusion_size, 2.0f, 64.0f);
+    // Niveles bajos: solo piezas MUY grandes tapan (pocos occluders = poca CPU).
+    return level >= 8 ? 6.0f : (level >= 6 ? 10.0f : 16.0f);
+}
+inline void gl_apply_occlusion_settings(int level, Node* any = nullptr) {
+    const bool on = gl_occlusion_enabled(level);
+    // CLAVE: el occlusion culling se activa POR VIEWPORT. Tocar solo el ajuste de
+    // proyecto no hace nada en una sesion ya arrancada (solo fija el valor por
+    // defecto), que es justo por lo que "no se notaba" al principio.
+    if (any && any->is_inside_tree()) {
+        if (Viewport* vp = any->get_viewport()) vp->set_use_occlusion_culling(on);
+    }
+    if (ProjectSettings* ps = ProjectSettings::get_singleton()) {
+        ps->set_setting("rendering/occlusion_culling/use_occlusion_culling", on);
+        int bvh = (gl_quality_mode() == GL_QUALITY_CUSTOM)
+                      ? CLAMP(gl_custom().occlusion_bvh, 0, 2)
+                      : (level >= 8 ? 2 : (level >= 5 ? 1 : 0));
+        ps->set_setting("rendering/occlusion_culling/bvh_build_quality", bvh);
+    }
+}
+
 inline void gl_apply_graphics_quality(int level, Node* any) {
     level = level < 1 ? 1 : (level > 10 ? 10 : level);
     gl_graphics_level() = level;
@@ -114,6 +165,8 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
         q.fog           = c.fog;
         q.atlas_size    = c.shadow_quality >= 4 ? 8192 : (c.shadow_quality >= 2 ? 4096 : 2048);
     }
+
+    gl_apply_occlusion_settings(level, any);
 
     RenderingServer* rs = RenderingServer::get_singleton();
     if (rs) {

@@ -6,6 +6,9 @@
 #include <godot_cpp/classes/collision_shape3d.hpp>
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/occluder_instance3d.hpp>
+#include <godot_cpp/classes/box_occluder3d.hpp>
+#include "gl_graphics.h"
 #include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
@@ -73,6 +76,7 @@ private:
 
     // Active shape meshes (only one set of refs valid at a time)
     // (las mallas/formas ya no se guardan por pieza: vienen del cache compartido)
+    OccluderInstance3D* occluder = nullptr;   // solo en piezas grandes y opacas
 
     // ── BasePart core properties ──────────────────────────────────
     bool    anchored      = true;
@@ -398,6 +402,31 @@ private:
         mesh_instance->set_visibility_range_end(dist);
     }
 
+    // ── Occluder (occlusion culling) ─────────────────────────────────────
+    // Marca la pieza como "tapadora" para que Godot descarte lo que quede detras.
+    // SOLO piezas grandes, opacas y ancladas: son las que de verdad tapan (muros,
+    // suelos, edificios). Marcar piezas pequeñas dispararia el coste de CPU sin
+    // ocultar casi nada — ese es el equilibrio del occlusion culling por software.
+    void _gl_apply_occluder() {
+        const float minsize = gl_occlusion_min_size(gl_graphics_level());
+        const bool wants = gl_occlusion_enabled(gl_graphics_level())
+                        && anchored && transparency < 0.05f
+                        && size.x >= minsize && size.y >= minsize && size.z >= minsize;
+        if (!wants) {
+            if (occluder) { occluder->queue_free(); occluder = nullptr; }
+            return;
+        }
+        if (!occluder) {
+            occluder = memnew(OccluderInstance3D);
+            add_child(occluder);
+            occluder->set_owner(nullptr);   // interno: no se guarda en la escena
+        }
+        Ref<BoxOccluder3D> box = occluder->get_occluder();
+        if (!box.is_valid()) { box.instantiate(); }
+        box->set_size(size);
+        occluder->set_occluder(box);
+    }
+
     // Crea el collider solo cuando hace falta (CanCollide=true). Una pieza
     // decorativa sin colision no debe costar nada a la fisica.
     void _ensure_collider() {
@@ -417,6 +446,7 @@ private:
         _refresh_shape(roblox_shape);
         _update_mass_from_density();
         _apply_lod();   // la distancia de LOD depende del tamaño
+        _gl_apply_occluder();
     }
 
     void _update_mass_from_density() {
@@ -505,6 +535,7 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"CanQuery"),"set_can_query","get_can_query");
 
         // ── Rendering flags ─────────────────────────────────────────
+        ClassDB::bind_method(D_METHOD("_gl_apply_occluder"), &RobloxPart::_gl_apply_occluder);
         ClassDB::bind_method(D_METHOD("set_cast_shadow","b"), &RobloxPart::set_cast_shadow);
         ClassDB::bind_method(D_METHOD("get_cast_shadow"),     &RobloxPart::get_cast_shadow);
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"CastShadow"),"set_cast_shadow","get_cast_shadow");
@@ -625,6 +656,7 @@ protected:
                     mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 
                 _apply_lod();
+                _gl_apply_occluder();
 
                 // El contact monitor NO se activa aqui: con miles de parts el
                 // monitoreo de contactos de Jolt es carisimo. Se activa recien

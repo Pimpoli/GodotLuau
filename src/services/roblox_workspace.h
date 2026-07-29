@@ -622,6 +622,12 @@ public:
         else if (name == "SSAO")          c.ssao           = value > 0.5f;
         else if (name == "Glow")          c.glow           = value > 0.5f;
         else if (name == "Fog")           c.fog            = value > 0.5f;
+        // Occlusion culling: activarlo, desde que tamaño una pieza tapa, y como
+        // de precisa es la estructura (mas preciso = descarta mejor pero cuesta
+        // mas CPU; ese es el equilibrio del culling por software).
+        else if (name == "Occlusion")     { c.occlusion      = value > 0.5f; _gl_refresh_occluders(this); }
+        else if (name == "OcclusionSize") { c.occlusion_size = CLAMP(value, 2.0f, 64.0f); _gl_refresh_occluders(this); }
+        else if (name == "OcclusionQuality") c.occlusion_bvh = (int)CLAMP(value, 0.0f, 2.0f);
         else return;
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
@@ -635,7 +641,18 @@ public:
         if (name == "SSAO")          return c.ssao ? 1.0f : 0.0f;
         if (name == "Glow")          return c.glow ? 1.0f : 0.0f;
         if (name == "Fog")           return c.fog ? 1.0f : 0.0f;
+        if (name == "Occlusion")        return c.occlusion ? 1.0f : 0.0f;
+        if (name == "OcclusionSize")    return c.occlusion_size;
+        if (name == "OcclusionQuality") return (float)c.occlusion_bvh;
         return 0.0f;
+    }
+
+    // Rehace los occluders de todas las piezas (al cambiar los ajustes de
+    // occlusion hay que recalcular cuales tapan y cuales ya no).
+    static void _gl_refresh_occluders(Node* n) {
+        if (n->is_class("RobloxPart") && n->has_method("_gl_apply_occluder"))
+            n->call("_gl_apply_occluder");
+        for (int i = 0; i < n->get_child_count(); i++) _gl_refresh_occluders(n->get_child(i));
     }
 
     // ── Muerte por vacío (1.15) ──────────────────────────────────────────
