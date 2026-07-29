@@ -3629,6 +3629,28 @@ static int godot_object_index(lua_State* L) {
         }
     }
 
+    // ── UIGradient.Color (lectura) → ColorSequence ──────────────────────
+    // Escribirlo ya funcionaba, pero LEERLO daba "Color is not a valid member of
+    // UIGradient" y tumbaba modulos (p.ej. EasyVisuals.Presets.Rainbow, que lee
+    // el gradiente para animarlo). Se devuelve un ColorSequence de verdad
+    // construido con el ColorSequence.new del stdlib.
+    if (n->is_class("UIGradient") && strcmp(key, "Color") == 0) {
+        Color a = n->call("get_gl_color0");
+        Color b = n->call("get_gl_color1");
+        lua_getglobal(L, "ColorSequence");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "new");
+            lua_remove(L, -2);
+            if (lua_isfunction(L, -1)) {
+                push_color3(L, a.r, a.g, a.b);
+                push_color3(L, b.r, b.g, b.b);
+                if (lua_pcall(L, 2, 1, 0) == 0) return 1;
+            } else lua_pop(L, 1);
+        } else lua_pop(L, 1);
+        push_color3(L, a.r, a.g, a.b);   // fallback: al menos un Color3
+        return 1;
+    }
+
     // ── Puente genérico de lectura (solo clases nuevas con meta _gl_bridge) ──
     if (n->has_meta("_gl_bridge")) {
         if (gl_has_property(n, String(key))) {

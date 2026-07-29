@@ -258,6 +258,30 @@ class UIGradient : public Node {
     double rotation = 0.0;   // grados: 0 = horizontal, 90 = vertical
     bool   enabled  = true;
 
+    // El importador guarda el ColorSequence de Roblox como meta "Color": un array
+    // de keypoints {Color, Time, Envelope}. Sin esto los gradientes importados
+    // salian con los colores por defecto (blanco→gris) en vez de los suyos.
+    void _adopt_imported_color() {
+        if (!has_meta("Color")) return;
+        Variant v = get_meta("Color");
+        if (v.get_type() != Variant::ARRAY) return;
+        Array kps = v;
+        if (kps.size() == 0) return;
+        auto kp_color = [](const Variant& e, Color& out) -> bool {
+            if (e.get_type() != Variant::DICTIONARY) return false;
+            Dictionary d = e;
+            if (!d.has("Color")) return false;
+            Variant c = d["Color"];
+            if (c.get_type() != Variant::COLOR) return false;
+            out = c; return true;
+        };
+        Color a, b;
+        bool oka = kp_color(kps[0], a);
+        bool okb = kp_color(kps[kps.size() - 1], b);
+        if (oka) c0 = a;
+        if (okb) c1 = b; else if (oka) c1 = a;
+    }
+
     void _apply() {
         Control* p = Object::cast_to<Control>(get_parent());
         if (!p) return;
@@ -286,6 +310,8 @@ protected:
         ClassDB::bind_method(D_METHOD("set_Enabled", "e"),  &UIGradient::set_Enabled);
         ClassDB::bind_method(D_METHOD("get_Enabled"),       &UIGradient::get_Enabled);
         ClassDB::bind_method(D_METHOD("set_gl_colors", "a", "b"), &UIGradient::set_gl_colors);
+        ClassDB::bind_method(D_METHOD("get_gl_color0"),     &UIGradient::get_gl_color0);
+        ClassDB::bind_method(D_METHOD("get_gl_color1"),     &UIGradient::get_gl_color1);
         ClassDB::bind_method(D_METHOD("_apply"),            &UIGradient::_apply);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Rotation"), "set_Rotation", "get_Rotation");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Enabled"),  "set_Enabled",  "get_Enabled");
@@ -298,7 +324,9 @@ public:
     bool   get_Enabled() const { return enabled; }
     // Llamado desde el puente (ColorSequence → primer/último color).
     void set_gl_colors(Color a, Color b) { c0 = a; c1 = b; call_deferred("_apply"); }
-    void _ready() override { call_deferred("_apply"); }
+    Color get_gl_color0() const { return c0; }
+    Color get_gl_color1() const { return c1; }
+    void _ready() override { _adopt_imported_color(); call_deferred("_apply"); }
     UIGradient() { set_meta("_gl_bridge", true); }
 };
 
