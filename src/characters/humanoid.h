@@ -439,6 +439,23 @@ public:
         return ImageTexture::create_from_image(img);
     }
 
+    // Oculta el nombre y la barra cuando la camara esta lejos, usando las
+    // distancias de Roblox (NameDisplayDistance / HealthDisplayDistance). Antes
+    // esas propiedades existian pero NO se aplicaban: el cartel se dibujaba
+    // siempre, a cualquier distancia y para todos los personajes.
+    void _update_overhead_distance() {
+        if (!_overhead || !_overhead->is_inside_tree()) return;
+        Viewport* vp = _overhead->get_viewport();
+        Camera3D* cam = vp ? vp->get_camera_3d() : nullptr;
+        if (!cam) return;
+        const float d = cam->get_global_position().distance_to(_overhead->get_global_position());
+        if (_name_label) _name_label->set_visible(d <= name_display_distance);
+        if (_hp_sprite) {
+            const float ratio = max_health > 0.0f ? (health / max_health) : 0.0f;
+            _hp_sprite->set_visible(ratio < 0.999f && d <= health_display_distance);
+        }
+    }
+
     void _update_overhead() {
         if (_hp_sprite) {
             float ratio = max_health > 0.0f ? Math::clamp(health / max_health, 0.0f, 1.0f) : 0.0f;
@@ -455,6 +472,7 @@ public:
     void _physics_process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
         _ensure_overhead();
+        _update_overhead_distance();
         if (is_dead) { _update_overhead(); return; }
 
         CharacterBody3D* body = Object::cast_to<CharacterBody3D>(get_parent());

@@ -59,9 +59,9 @@ static HashMap<String, Ref<Shape3D>>& gl_shared_shapes() {
 // numero de variantes; 0.01 studs es mas fino de lo que se aprecia).
 static String gl_shape_key(int shape, const Vector3& s) {
     return String::num_int64(shape) + "|" +
-           String::num_int64((int64_t)Math::round(s.x * 100.0f)) + "," +
-           String::num_int64((int64_t)Math::round(s.y * 100.0f)) + "," +
-           String::num_int64((int64_t)Math::round(s.z * 100.0f));
+           String::num_int64((int64_t)Math::round(s.x * 20.0f)) + "," +
+           String::num_int64((int64_t)Math::round(s.y * 20.0f)) + "," +
+           String::num_int64((int64_t)Math::round(s.z * 20.0f));
 }
 
 class RobloxPart : public RigidBody3D {
@@ -91,6 +91,10 @@ private:
     bool    locked        = false;
     bool    massless      = false;
     float   reflectance   = 0.0f;
+    // Fuerza la transparencia por BORRADO DE PIXELES en ESTA pieza, aunque el
+    // jugador no lo tenga activado en los graficos. Para optimizar a mano las
+    // piezas donde el punteado no se nota (cristales, humo, vallas...).
+    bool    dither_transparency = false;
     // Shape: 0=Block 1=Ball 2=Cylinder 3=Wedge 4=CornerWedge
     int     roblox_shape  = 0;
     // Material: 0=Plastic 1=SmoothPlastic 2=Neon 3=Wood 4=WoodPlanks
@@ -120,6 +124,12 @@ private:
     float elasticity_weight = 1.0f;
 
     // ── Internal helpers ──────────────────────────────────────────
+    // ¿esta pieza usa transparencia por borrado de pixeles? Si el jugador lo activo
+    // en los graficos O la pieza lo fuerza desde el diseño del juego.
+    bool _gl_use_pixel_transparency() const {
+        return dither_transparency || gl_custom().pixel_transparency;
+    }
+
     void _update_albedo() {
         if (!material.is_valid()) return;
         material->set_albedo(Color(color.r, color.g, color.b, 1.0f - transparency));
@@ -132,7 +142,8 @@ private:
                String::num_int64((int64_t)Math::round(color.g * 255.0f)) + "|" +
                String::num_int64((int64_t)Math::round(color.b * 255.0f)) + "|" +
                String::num_int64((int64_t)Math::round(transparency * 255.0f)) + "|" +
-               String::num_int64((int64_t)Math::round(reflectance * 255.0f));
+               String::num_int64((int64_t)Math::round(reflectance * 255.0f)) + "|" +
+               String::num_int64(_gl_use_pixel_transparency() ? 1 : 0);
     }
 
     // Textura de la Part (PERSISTIDA): la usa el Baseplate para la cuadricula
@@ -307,9 +318,14 @@ private:
         // mas acerca las piezas al look de Roblox.
         material->set_specular(Math::clamp(0.5f + reflectance * 0.5f, 0.0f, 1.0f));
         // Activar alpha solo si la pieza es translucida (las de vidrio/hielo ya
-        // lo ponen en su case).
-        if (transparency > 0.001f)
-            material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+        // lo ponen en su case). Con "transparencia por pixeles" se usa ALPHA_HASH:
+        // la GPU descarta pixeles en vez de mezclar, asi la pieza se dibuja como
+        // si fuera opaca (sin ordenar ni mezclar) y cuesta mucho menos.
+        if (transparency > 0.001f) {
+            material->set_transparency(_gl_use_pixel_transparency()
+                ? BaseMaterial3D::TRANSPARENCY_ALPHA_HASH
+                : BaseMaterial3D::TRANSPARENCY_ALPHA);
+        }
         _update_albedo();
         // Materiales con transparencia inherente: conservan el Color de la pieza
         // pero fuerzan un alfa característico si el usuario no definió Transparency.
@@ -389,6 +405,28 @@ private:
     // un pixel. Las piezas grandes (suelos, paredes, edificios) se ven siempre.
     // La distancia es proporcional al tamaño, con un desvanecido para que no haga
     // "pop". Es lo que hace Roblox con las piezas lejanas.
+    // 11) Una pieza con Transparency = 1 es INVISIBLE: se saca del render por
+    // completo (asi la GPU no la procesa de ninguna forma). Vuelve sola en cuanto
+    // deja de ser invisible. Ojo: se apaga solo el dibujado, la fisica sigue.
+    // 10) Sombras: las piezas pequeñas NO proyectan sombra. Una pieza de menos de
+    // ~2 studs apenas aporta una sombra apreciable, pero pasa igual por el mapa de
+    // sombras; quitarlas alivia una pasada de render entera.
+    void _apply_visibility_and_shadow() {
+        if (!mesh_instance) return;
+        const bool invisible = transparency >= 0.999f;
+        mesh_instance->set_visible(!invisible);
+        if (invisible) return;
+
+        if (!cast_shadow) {
+            mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+            return;
+        }
+        const float maxdim = Math::max(size.x, Math::max(size.y, size.z));
+        mesh_instance->set_cast_shadows_setting(maxdim < 2.0f
+            ? GeometryInstance3D::SHADOW_CASTING_SETTING_OFF
+            : GeometryInstance3D::SHADOW_CASTING_SETTING_ON);
+    }
+
     void _apply_lod() {
         if (!mesh_instance) return;
         const float maxdim = Math::max(size.x, Math::max(size.y, size.z));
@@ -398,7 +436,11 @@ private:
         }
         // Sin desvanecido: el fade obliga a dibujar la pieza con transparencia
         // mientras se apaga, y eso cuesta mas de lo que ahorra (medido).
-        const float dist = Math::max(60.0f, maxdim * 90.0f);
+        // ViewDistance (modo Custom) escala la distancia a la que desaparecen:
+        // antes solo afectaba a las sombras, asi que bajarlo no ahorraba dibujado.
+        const float vd = (gl_quality_mode() == GL_QUALITY_CUSTOM)
+                       ? CLAMP(gl_custom().view_distance, 0.25f, 2.0f) : 1.0f;
+        const float dist = Math::max(60.0f, maxdim * 90.0f) * vd;
         mesh_instance->set_visibility_range_end(dist);
     }
 
@@ -536,6 +578,10 @@ protected:
 
         // ── Rendering flags ─────────────────────────────────────────
         ClassDB::bind_method(D_METHOD("_gl_apply_occluder"), &RobloxPart::_gl_apply_occluder);
+        ClassDB::bind_method(D_METHOD("set_dither_transparency","b"), &RobloxPart::set_dither_transparency);
+        ClassDB::bind_method(D_METHOD("get_dither_transparency"),     &RobloxPart::get_dither_transparency);
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,"DitherTransparency"),
+            "set_dither_transparency","get_dither_transparency");
         ClassDB::bind_method(D_METHOD("set_cast_shadow","b"), &RobloxPart::set_cast_shadow);
         ClassDB::bind_method(D_METHOD("get_cast_shadow"),     &RobloxPart::get_cast_shadow);
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,"CastShadow"),"set_cast_shadow","get_cast_shadow");
@@ -652,8 +698,7 @@ protected:
                 // todo y parentear al final) debe aplicarse al crear la shape.
                 if (collision_shape) collision_shape->set_disabled(!can_collide);
 
-                if (!cast_shadow)
-                    mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+                _apply_visibility_and_shadow();
 
                 _apply_lod();
                 _gl_apply_occluder();
@@ -743,13 +788,16 @@ public:
     Color get_color() const { return color; }
 
     // ── Size ───────────────────────────────────────────────────────
-    void set_size(Vector3 s) { size = s; _update_shape_dims(); }
+    void set_size(Vector3 s) { size = s; _update_shape_dims(); _apply_visibility_and_shadow(); }
     Vector3 get_size() const { return size; }
 
     // ── Transparency ───────────────────────────────────────────────
     void set_transparency(float t) {
         transparency = Math::clamp(t, 0.0f, 1.0f);
         _apply_material_visual();
+        // Al llegar a 1 la pieza se saca del render; al bajar de 1, vuelve.
+        _apply_visibility_and_shadow();
+        _gl_apply_occluder();   // una pieza invisible ya no puede tapar
     }
     float get_transparency() const { return transparency; }
 
@@ -773,6 +821,15 @@ public:
     int  get_roblox_material() const { return roblox_material; }
 
     // ── Collision ──────────────────────────────────────────────────
+    // Transparencia por borrado de pixeles SOLO en esta pieza (aunque el jugador
+    // no lo tenga activado). Util para optimizar a mano desde el diseño del juego.
+    void set_dither_transparency(bool b) {
+        dither_transparency = b;
+        _apply_material_visual();            // cambia la clave visual del material
+        _apply_visibility_and_shadow();
+    }
+    bool get_dither_transparency() const { return dither_transparency; }
+
     void set_can_collide(bool c) {
         can_collide = c;
         if (c) _ensure_collider();   // se crea bajo demanda (no existe si nacio sin colision)
@@ -788,10 +845,7 @@ public:
     // ── Rendering ──────────────────────────────────────────────────
     void set_cast_shadow(bool b) {
         cast_shadow = b;
-        if (mesh_instance)
-            mesh_instance->set_cast_shadows_setting(
-                b ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON
-                  : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+        _apply_visibility_and_shadow();   // respeta ademas el filtro por tamaño
     }
     bool get_cast_shadow() const { return cast_shadow; }
 

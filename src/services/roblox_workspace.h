@@ -66,6 +66,8 @@ private:
     bool  auto_fall_height     = true;    // true = calcular desde el mapa
     float fall_height_margin   = 150.0f;  // se resta a la Y anclada más baja
     double _fall_scan_timer     = 0.0;    // recomputar el suelo cada ~1s, no por frame
+    bool   _ground_cached       = false;  // el suelo se calcula una vez
+    float  _ground_value        = -500.0f;
     double _fall_destroy_timer  = 0.0;    // barrer partes caidas cada ~0.3s, no por frame
     float  _fall_effective      = -500.0f; // umbral vigente (cache)
 
@@ -219,6 +221,7 @@ protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("build_local_character"),                &RobloxWorkspace::build_local_character);   // LoadCharacter (1.14.10)
         ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
+        ClassDB::bind_method(D_METHOD("_gl_tune_for_map_size"),                &RobloxWorkspace::_gl_tune_for_map_size);
         ClassDB::bind_method(D_METHOD("set_graphics_quality","level"),         &RobloxWorkspace::set_graphics_quality);
         ClassDB::bind_method(D_METHOD("get_graphics_quality"),                 &RobloxWorkspace::get_graphics_quality);
         ClassDB::bind_method(D_METHOD("SetGraphicsMode","mode"),               &RobloxWorkspace::set_graphics_mode);
@@ -555,11 +558,31 @@ public:
         // grande bajar de 60 a 30 Hz da FPS sin que se note en el juego (el
         // movimiento se interpola). En mapas pequeños se mantiene 60 Hz para
         // conservar la sensacion exacta de Roblox.
+        call_deferred("_gl_tune_for_map_size");
+
+        // Calidad gráfica (1.15): aplica sombras suaves REALES, bias anti-acne,
+        // SSAO/glow y escala según el nivel guardado. Diferido para que el sol y
+        // el WorldEnvironment ya estén en el árbol. Esto arregla las sombras feas.
+        call_deferred("_gl_apply_quality_deferred");
+    }
+
+    // Ajustes que dependen del TAMAÑO del mapa. Va DIFERIDO: en _ready el arbol
+    // puede no estar completo todavia y el conteo salia bajo, con lo que la
+    // fisica se quedaba en 60 Hz (se perdia ~16% de FPS sin que se notara).
+    void _gl_tune_for_map_size() {
         const int nparts = _gl_count_parts(this);
         if (physics_fps > 0) {
             Engine::get_singleton()->set_physics_ticks_per_second(physics_fps);
         } else {
-            Engine::get_singleton()->set_physics_ticks_per_second(nparts > 1500 ? 30 : 60);
+            // El coste del tick lo marcan sobre todo las piezas DINAMICAS, pero
+            // el conteo de dinamicas no es fiable en este punto (las piezas
+            // importadas aun pueden no tener Anchored aplicado), y exigirlo
+            // dejaba la fisica en 60 Hz perdiendo un 16% de FPS. Manda el total,
+            // que es robusto; las dinamicas solo permiten SUBIR el ritmo cuando
+            // el mapa es grande pero esta practicamente quieto.
+            const int ndyn = _gl_count_dynamic_parts(this);
+            const bool heavy = (nparts > 1500) && !(ndyn == 0 && nparts < 4000);
+            Engine::get_singleton()->set_physics_ticks_per_second(heavy ? 30 : 60);
         }
 
         // ── Distancia de sombra adaptativa en mapas grandes ──────────────
@@ -573,10 +596,6 @@ public:
                     dl->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 120.0f);
         }
 
-        // Calidad gráfica (1.15): aplica sombras suaves REALES, bias anti-acne,
-        // SSAO/glow y escala según el nivel guardado. Diferido para que el sol y
-        // el WorldEnvironment ya estén en el árbol. Esto arregla las sombras feas.
-        call_deferred("_gl_apply_quality_deferred");
     }
 
     void _gl_apply_quality_deferred() {
@@ -584,8 +603,20 @@ public:
     }
 
     static int _gl_count_parts(Node* n) {
-        int c = n->is_class("RobloxPart") ? 1 : 0;
+        int c = Object::cast_to<RigidBody3D>(n) ? 1 : 0;
         for (int i = 0; i < n->get_child_count(); i++) c += _gl_count_parts(n->get_child(i));
+        return c;
+    }
+    // Lo que cuesta en el tick de fisica son las piezas DINAMICAS: un mapa con
+    // 5.000 piezas ancladas y 10 sueltas no necesita bajar el ritmo. Antes se
+    // miraba el total y se penalizaba a mapas grandes pero quietos.
+    static int _gl_count_dynamic_parts(Node* n) {
+        int c = 0;
+        if (Object::cast_to<RigidBody3D>(n)) {
+            Variant a = n->get("Anchored");
+            if (a.get_type() == Variant::BOOL && !(bool)a) c = 1;
+        }
+        for (int i = 0; i < n->get_child_count(); i++) c += _gl_count_dynamic_parts(n->get_child(i));
         return c;
     }
     void set_physics_fps(int v) {
@@ -628,6 +659,9 @@ public:
         else if (name == "Occlusion")     { c.occlusion      = value > 0.5f; _gl_refresh_occluders(this); }
         else if (name == "OcclusionSize") { c.occlusion_size = CLAMP(value, 2.0f, 64.0f); _gl_refresh_occluders(this); }
         else if (name == "OcclusionQuality") c.occlusion_bvh = (int)CLAMP(value, 0.0f, 2.0f);
+        // Transparencia por borrado de pixeles: hay que rehacer los materiales
+        // (cambia el modo de transparencia de cada pieza translucida).
+        else if (name == "PixelTransparency") { c.pixel_transparency = value > 0.5f; _gl_refresh_transparency(this); }
         else return;
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
@@ -644,11 +678,23 @@ public:
         if (name == "Occlusion")        return c.occlusion ? 1.0f : 0.0f;
         if (name == "OcclusionSize")    return c.occlusion_size;
         if (name == "OcclusionQuality") return (float)c.occlusion_bvh;
+        if (name == "PixelTransparency") return c.pixel_transparency ? 1.0f : 0.0f;
         return 0.0f;
     }
 
     // Rehace los occluders de todas las piezas (al cambiar los ajustes de
     // occlusion hay que recalcular cuales tapan y cuales ya no).
+    // Rehace el material de las piezas translucidas al cambiar el modo de
+    // transparencia (las opacas no se tocan: no cambian).
+    static void _gl_refresh_transparency(Node* n) {
+        if (n->is_class("RobloxPart")) {
+            Variant t = n->get("Transparency");
+            if (t.get_type() == Variant::FLOAT && (float)t > 0.001f)
+                n->set("Transparency", (float)t);   // el setter rehace el material
+        }
+        for (int i = 0; i < n->get_child_count(); i++) _gl_refresh_transparency(n->get_child(i));
+    }
+
     static void _gl_refresh_occluders(Node* n) {
         if (n->is_class("RobloxPart") && n->has_method("_gl_apply_occluder"))
             n->call("_gl_apply_occluder");
@@ -669,12 +715,22 @@ public:
         if (_fall_scan_timer <= 0.0) {
             _fall_scan_timer = 1.0;
             if (auto_fall_height) {
+                // El suelo se calcula UNA vez y se reutiliza: recorrer todo el
+                // arbol cada segundo costaba caro y el punto mas bajo del mapa no
+                // cambia (salvo que se construya por debajo, caso raro; se
+                // recalcula al respawnear con _gl_invalidate_ground).
+                if (_ground_cached) {
+                    _fall_effective = _ground_value;
+                } else {
                 bool found = false;
                 float lowest = 0.0f;
                 _scan_lowest_anchored(this, lowest, found);
                 // Sin geometría anclada (mapa solo de terreno o dinámico): mantener
                 // el fijo por defecto, para no matar a todos en +infinito.
                 _fall_effective = found ? (lowest - fall_height_margin) : fallen_parts_destroy_height;
+                _ground_value = _fall_effective;
+                _ground_cached = true;
+                }
             } else {
                 _fall_effective = fallen_parts_destroy_height;
             }

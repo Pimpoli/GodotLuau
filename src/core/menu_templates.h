@@ -369,6 +369,13 @@ function Settings.Build(ui, page, player)
 	-- Occlusion culling: skips what is hidden behind walls. It is OFF by default
 	-- because the culling runs on the CPU: with thousands of small parts it costs
 	-- more than it saves. It pays off on maps with few, large walls.
+	-- Transparency drawn by DISCARDING PIXELS instead of real blending. Real
+	-- transparency makes the GPU sort and blend every part against what is behind
+	-- it; discarding pixels draws it like a solid and costs far less (you may see
+	-- a fine dither pattern up close). Parts with Transparency = 1 are always
+	-- skipped entirely, with or without this option.
+	customStepper("Pixel transparency (Custom)", "PixelTransparency", { 0, 1 },
+		function(v) return v > 0.5 and "On" or "Off" end)
 	customStepper("Occlusion culling (Custom)", "Occlusion", { 0, 1 },
 		function(v) return v > 0.5 and "On" or "Off" end)
 	customStepper("Occluder min size (Custom)", "OcclusionSize",

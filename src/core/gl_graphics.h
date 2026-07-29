@@ -56,6 +56,11 @@ struct GLCustomSettings {
     bool  fog            = true;
     // ── Occlusion culling (no dibujar lo tapado por paredes) ──────────
     bool  occlusion      = false;  // apagado por defecto (ver gl_occlusion_enabled)
+    // Transparencia por BORRADO DE PIXELES (alpha hash) en vez de mezcla real.
+    // La transparencia de verdad obliga a la GPU a ordenar y mezclar cada pieza
+    // con lo que hay detras; borrando pixeles se dibuja como si fuera opaca y
+    // sale mucho mas barato (a cambio se ve un punteado fino de cerca).
+    bool  pixel_transparency = false;
     float occlusion_size = 8.0f;   // tamaño minimo (studs) para que una pieza tape
     int   occlusion_bvh  = 1;      // 0=rapido 1=equilibrado 2=preciso (coste CPU)
 };
@@ -261,12 +266,32 @@ inline void gl_auto_quality_tick(double delta, Node* any) {
 
     const int target = gl_auto_target_fps();
     const int lvl = gl_graphics_level();
-    if (fps < target - 3 && lvl > 1) {          // va justo: bajar calidad
-        gl_apply_graphics_quality(lvl - 1, any);
-        cooldown = 2.0;
-    } else if (fps > target + 15 && lvl < 10) { // sobra margen: subir calidad
-        gl_apply_graphics_quality(lvl + 1, any);
-        cooldown = 4.0;                          // subir con mas prudencia
+    // Primero se ajusta la RESOLUCION en pasos pequeños (5%), que apenas se nota;
+    // solo cuando se agota ese margen se cambia el nivel entero. Antes saltaba de
+    // nivel directamente y el cambio cantaba mucho.
+    static float auto_scale = 1.0f;
+    Viewport* vp = any->is_inside_tree() ? any->get_viewport() : nullptr;
+
+    if (fps < target - 3) {
+        if (auto_scale > 0.6f) {
+            auto_scale = Math::max(0.6f, auto_scale - 0.05f);
+            if (vp) { vp->set_scaling_3d_scale(auto_scale);
+                      vp->set_scaling_3d_mode(Viewport::SCALING_3D_MODE_FSR2); }
+            cooldown = 1.5;
+        } else if (lvl > 1) {
+            gl_apply_graphics_quality(lvl - 1, any);
+            auto_scale = 1.0f;                   // el nivel nuevo trae su escala
+            cooldown = 2.0;
+        }
+    } else if (fps > target + 15) {
+        if (auto_scale < 0.999f) {
+            auto_scale = Math::min(1.0f, auto_scale + 0.05f);
+            if (vp) vp->set_scaling_3d_scale(auto_scale);
+            cooldown = 3.0;
+        } else if (lvl < 10) {
+            gl_apply_graphics_quality(lvl + 1, any);
+            cooldown = 4.0;                      // subir con mas prudencia
+        }
     }
 }
 
