@@ -31,6 +31,31 @@ using namespace godot;
 // Nivel de calidad efectivo actual (1..10). Lo lee quien necesite saberlo.
 inline int& gl_graphics_level() { static int lvl = 8; return lvl; }
 
+// ── Modo de calidad (como Roblox) ────────────────────────────────────
+//   0 = Automatic — el motor sube/baja la calidad solo para sostener los FPS
+//   1 = Manual    — un nivel fijo 1..10 (lo clasico)
+//   2 = Custom    — cada ajuste por separado (resolucion/FSR, sombras, vista…)
+enum GLQualityMode { GL_QUALITY_AUTOMATIC = 0, GL_QUALITY_MANUAL = 1, GL_QUALITY_CUSTOM = 2 };
+inline int& gl_quality_mode() { static int m = GL_QUALITY_MANUAL; return m; }
+
+// FPS objetivo del modo Automatic (Roblox apunta a una experiencia fluida).
+inline int& gl_auto_target_fps() { static int f = 45; return f; }
+
+// ── Ajustes del modo Custom ──────────────────────────────────────────
+// Cada uno es independiente; asi el jugador puede, por ejemplo, bajar sombras
+// pero mantener la resolucion nativa.
+struct GLCustomSettings {
+    float render_scale   = 1.0f;   // 0.25..1.0 (con FSR sube la nitidez al reescalar)
+    int   upscaler       = 2;      // 0=Bilinear 1=FSR 2=FSR2
+    float sharpness      = 0.5f;   // nitidez del FSR
+    int   shadow_quality = 4;      // 0=off .. 5=ultra
+    float view_distance  = 1.0f;   // 0.25..2.0 (multiplica el LOD/distancia de sombra)
+    bool  ssao           = true;
+    bool  glow           = true;
+    bool  fog            = true;
+};
+inline GLCustomSettings& gl_custom() { static GLCustomSettings c; return c; }
+
 // Busca el primer nodo de una clase bajo la raíz (sun / WorldEnvironment).
 inline Node* gl_find_by_class(Node* n, const char* cls) {
     if (!n) return nullptr;
@@ -78,6 +103,18 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
     gl_graphics_level() = level;
     GLQualityDef q = gl_quality_def(level);
 
+    // En Custom cada ajuste lo decide el jugador, no la curva del nivel.
+    if (gl_quality_mode() == GL_QUALITY_CUSTOM) {
+        const GLCustomSettings& c = gl_custom();
+        q.render_scale  = c.render_scale;
+        q.shadow_filter = CLAMP(c.shadow_quality, 0, 5);
+        q.shadows       = c.shadow_quality > 0;
+        q.ssao          = c.ssao;
+        q.glow          = c.glow;
+        q.fog           = c.fog;
+        q.atlas_size    = c.shadow_quality >= 4 ? 8192 : (c.shadow_quality >= 2 ? 4096 : 2048);
+    }
+
     RenderingServer* rs = RenderingServer::get_singleton();
     if (rs) {
         // El filtro soft REAL: esto es lo que quita el "dithered" y da una
@@ -90,8 +127,19 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
     if (!any || !any->is_inside_tree()) return;
     Node* root = (Node*)any->get_tree()->get_root();
 
-    // Escala de render 3D (afecta al viewport principal).
-    if (Viewport* vp = any->get_viewport()) vp->set_scaling_3d_scale(q.render_scale);
+    // ── Escala de render 3D + reescalado FSR ─────────────────────────────
+    // Rebajar la resolucion interna es lo que MAS FPS da (medido: a la mitad,
+    // +28%). Con FSR2 la imagen se reconstruye a resolucion completa, asi que
+    // se gana rendimiento perdiendo mucha menos nitidez que con un simple
+    // escalado bilineal. En Custom manda lo que haya elegido el jugador.
+    if (Viewport* vp = any->get_viewport()) {
+        const bool custom = (gl_quality_mode() == GL_QUALITY_CUSTOM);
+        const float scale = custom ? gl_custom().render_scale : q.render_scale;
+        vp->set_scaling_3d_scale(scale);
+        int up = custom ? gl_custom().upscaler : (scale < 0.99f ? 2 : 0);
+        vp->set_scaling_3d_mode((Viewport::Scaling3DMode)CLAMP(up, 0, 2));
+        vp->set_fsr_sharpness(custom ? gl_custom().sharpness : 0.5f);
+    }
 
     // Sol: sombra on/off, tamaño de penumbra y bias que evita el acne.
     // Si existe el servicio Lighting, EL manda sobre GlobalShadows y ShadowSoftness
@@ -108,8 +156,13 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
             // Bias: suficiente para matar el acne (los "puntos") sin peter-panning.
             dl->set_param(Light3D::PARAM_SHADOW_NORMAL_BIAS, 1.0f);
             dl->set_param(Light3D::PARAM_SHADOW_BIAS, 0.06f);
-            // Rango de sombra amplio pero con más resolución cerca (menos ruido).
-            dl->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 200.0f);
+            // Rango de sombra: cuanto mas corto, menos mundo hay que redibujar en
+            // el mapa de sombras cada frame. En Custom lo escala ViewDistance.
+            float sdist = 200.0f;
+            if (gl_quality_mode() == GL_QUALITY_CUSTOM)
+                sdist = 200.0f * CLAMP(gl_custom().view_distance, 0.25f, 2.0f);
+            else if (level <= 5) sdist = 100.0f;
+            dl->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, sdist);
             dl->set_param(Light3D::PARAM_SHADOW_PANCAKE_SIZE, 20.0f);
         }
     }
@@ -130,6 +183,37 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
                 if (!has_fog_fx)  env->set_fog_enabled(q.fog);
             }
         }
+    }
+}
+
+// ── Modo Automatic ───────────────────────────────────────────────────
+// Como el "Automatic" de Roblox: vigila los FPS y sube o baja el nivel de
+// calidad solo, buscando mantenerse por encima del objetivo (45 FPS por
+// defecto). Cambia de UN nivel cada vez y espera entre ajustes para no ir
+// oscilando arriba y abajo. Llamar cada frame; no hace nada en otros modos.
+inline void gl_auto_quality_tick(double delta, Node* any) {
+    if (gl_quality_mode() != GL_QUALITY_AUTOMATIC || !any) return;
+    static double acc = 0.0, cooldown = 0.0;
+    static int frames = 0;
+    static double fps_sum = 0.0;
+
+    if (delta > 0.0) { fps_sum += 1.0 / delta; frames++; }
+    acc += delta;
+    if (cooldown > 0.0) cooldown -= delta;
+    if (acc < 1.0 || frames < 10) return;      // promediar ~1 segundo
+
+    const double fps = fps_sum / frames;
+    acc = 0.0; frames = 0; fps_sum = 0.0;
+    if (cooldown > 0.0) return;
+
+    const int target = gl_auto_target_fps();
+    const int lvl = gl_graphics_level();
+    if (fps < target - 3 && lvl > 1) {          // va justo: bajar calidad
+        gl_apply_graphics_quality(lvl - 1, any);
+        cooldown = 2.0;
+    } else if (fps > target + 15 && lvl < 10) { // sobra margen: subir calidad
+        gl_apply_graphics_quality(lvl + 1, any);
+        cooldown = 4.0;                          // subir con mas prudencia
     }
 }
 

@@ -314,12 +314,58 @@ function Settings.Build(ui, page, player)
 	local camLocked = false
 	local dynJoy = true
 
-	-- ── Pantalla y gráficos ──────────────────────────────────────────
-	ui:Section(page, "Pantalla y gráficos")
-	ui:Stepper(page, "Calidad de gráficos",
+	-- ── Graphics ─────────────────────────────────────────────────────
+	-- EDITABLE: three modes, like Roblox.
+	--   Automatic — the engine raises/lowers quality by itself to hold the FPS
+	--   Manual    — one fixed quality level (1..10)
+	--   Custom    — every setting separately (resolution/FSR, shadows, view...)
+	-- Delete any block below if you only want some of them.
+	local MODES = { "Automatic", "Manual", "Custom" }
+	local modeIdx = 2                      -- 1=Automatic 2=Manual 3=Custom
+	local targetFps = 45
+	pcall(function() modeIdx = Workspace:GetGraphicsMode() + 1 end)
+
+	ui:Section(page, "Graphics")
+	ui:Stepper(page, "Mode",
+		function() return MODES[modeIdx] end,
+		function() modeIdx = math.max(1, modeIdx - 1); Workspace:SetGraphicsMode(modeIdx - 1) end,
+		function() modeIdx = math.min(#MODES, modeIdx + 1); Workspace:SetGraphicsMode(modeIdx - 1) end)
+
+	-- Automatic: target frame rate to hold
+	ui:Stepper(page, "Target FPS (Automatic)",
+		function() return tostring(targetFps) end,
+		function() targetFps = math.max(30, targetFps - 15); Workspace:SetAutoTargetFPS(targetFps) end,
+		function() targetFps = math.min(240, targetFps + 15); Workspace:SetAutoTargetFPS(targetFps) end)
+
+	-- Manual: one level for everything
+	ui:Stepper(page, "Quality level (Manual)",
 		function() return quality .. " / 10" end,
 		function() quality = math.max(1, quality - 1); Workspace:SetGraphicsQuality(quality) end,
 		function() quality = math.min(10, quality + 1); Workspace:SetGraphicsQuality(quality) end)
+
+	-- Custom: each setting on its own. Remove the ones you don't want exposed.
+	local function customStepper(label, key, values, fmt)
+		local idx = 1
+		pcall(function()
+			local cur = Workspace:GetGraphicsSetting(key)
+			for i, v in ipairs(values) do if math.abs(v - cur) < 0.001 then idx = i end end
+		end)
+		ui:Stepper(page, label,
+			function() return fmt(values[idx]) end,
+			function() idx = math.max(1, idx - 1); Workspace:SetGraphicsSetting(key, values[idx]) end,
+			function() idx = math.min(#values, idx + 1); Workspace:SetGraphicsSetting(key, values[idx]) end)
+	end
+
+	local function pct(v) return math.floor(v * 100 + 0.5) .. "%" end
+	customStepper("Render resolution (Custom)", "RenderScale",
+		{ 0.25, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 }, pct)
+	customStepper("Upscaler (Custom)", "Upscaler", { 0, 1, 2 },
+		function(v) return ({ [0] = "Bilinear", [1] = "FSR", [2] = "FSR 2" })[v] or "?" end)
+	customStepper("Sharpness (Custom)", "Sharpness", { 0, 0.25, 0.5, 0.75, 1.0 }, pct)
+	customStepper("Shadows (Custom)", "ShadowQuality", { 0, 1, 2, 3, 4, 5 },
+		function(v) return v == 0 and "Off" or (v .. " / 5") end)
+	customStepper("View distance (Custom)", "ViewDistance",
+		{ 0.25, 0.5, 0.75, 1.0, 1.5, 2.0 }, pct)
 	ui:Stepper(page, "Velocidad máxima de fotogramas",
 		function() local f = fpsOptions[fpsIdx]; return f == 0 and "Ilimitado" or (f .. " FPS") end,
 		function() fpsIdx = math.max(1, fpsIdx - 1); Workspace:SetMaxFPS(fpsOptions[fpsIdx]) end,

@@ -221,6 +221,12 @@ protected:
         ClassDB::bind_method(D_METHOD("_gl_apply_quality_deferred"),           &RobloxWorkspace::_gl_apply_quality_deferred);
         ClassDB::bind_method(D_METHOD("set_graphics_quality","level"),         &RobloxWorkspace::set_graphics_quality);
         ClassDB::bind_method(D_METHOD("get_graphics_quality"),                 &RobloxWorkspace::get_graphics_quality);
+        ClassDB::bind_method(D_METHOD("SetGraphicsMode","mode"),               &RobloxWorkspace::set_graphics_mode);
+        ClassDB::bind_method(D_METHOD("GetGraphicsMode"),                      &RobloxWorkspace::get_graphics_mode);
+        ClassDB::bind_method(D_METHOD("SetAutoTargetFPS","fps"),               &RobloxWorkspace::set_auto_target_fps);
+        ClassDB::bind_method(D_METHOD("GetAutoTargetFPS"),                     &RobloxWorkspace::get_auto_target_fps);
+        ClassDB::bind_method(D_METHOD("SetGraphicsSetting","name","value"),    &RobloxWorkspace::set_custom_setting);
+        ClassDB::bind_method(D_METHOD("GetGraphicsSetting","name"),            &RobloxWorkspace::get_custom_setting);
         // Rehace las piezas del mundo que falten (cielo, sol, camara, terrain).
         // La llama el importador de .rbxl despues de llenar el Workspace.
         ClassDB::bind_method(D_METHOD("EnsureEnvironment"),                    &RobloxWorkspace::gl_ensure_environment);
@@ -594,9 +600,51 @@ public:
     void set_graphics_quality(int level) { gl_apply_graphics_quality(level, this); }
     int  get_graphics_quality() const    { return gl_graphics_level(); }
 
+    // ── Modos de calidad (Automatic / Manual / Custom) ───────────────────
+    // 0 = Automatic (ajusta solo para sostener los FPS), 1 = Manual (nivel fijo),
+    // 2 = Custom (cada ajuste por separado). La UI vive en el Module de Luau.
+    void set_graphics_mode(int mode) {
+        gl_quality_mode() = CLAMP(mode, 0, 2);
+        gl_apply_graphics_quality(gl_graphics_level(), this);
+    }
+    int  get_graphics_mode() const { return gl_quality_mode(); }
+    void set_auto_target_fps(int fps) { gl_auto_target_fps() = CLAMP(fps, 15, 240); }
+    int  get_auto_target_fps() const  { return gl_auto_target_fps(); }
+
+    // Ajustes del modo Custom (cada uno independiente).
+    void set_custom_setting(String name, float value) {
+        GLCustomSettings& c = gl_custom();
+        if      (name == "RenderScale")   c.render_scale   = CLAMP(value, 0.25f, 1.0f);
+        else if (name == "Upscaler")      c.upscaler       = (int)CLAMP(value, 0.0f, 2.0f);
+        else if (name == "Sharpness")     c.sharpness      = CLAMP(value, 0.0f, 2.0f);
+        else if (name == "ShadowQuality") c.shadow_quality = (int)CLAMP(value, 0.0f, 5.0f);
+        else if (name == "ViewDistance")  c.view_distance  = CLAMP(value, 0.25f, 2.0f);
+        else if (name == "SSAO")          c.ssao           = value > 0.5f;
+        else if (name == "Glow")          c.glow           = value > 0.5f;
+        else if (name == "Fog")           c.fog            = value > 0.5f;
+        else return;
+        gl_apply_graphics_quality(gl_graphics_level(), this);
+    }
+    float get_custom_setting(String name) const {
+        const GLCustomSettings& c = gl_custom();
+        if (name == "RenderScale")   return c.render_scale;
+        if (name == "Upscaler")      return (float)c.upscaler;
+        if (name == "Sharpness")     return c.sharpness;
+        if (name == "ShadowQuality") return (float)c.shadow_quality;
+        if (name == "ViewDistance")  return c.view_distance;
+        if (name == "SSAO")          return c.ssao ? 1.0f : 0.0f;
+        if (name == "Glow")          return c.glow ? 1.0f : 0.0f;
+        if (name == "Fog")           return c.fog ? 1.0f : 0.0f;
+        return 0.0f;
+    }
+
     // ── Muerte por vacío (1.15) ──────────────────────────────────────────
     void _process(double delta) override {
         if (Engine::get_singleton()->is_editor_hint()) return;
+
+        // Modo Automatic: ajusta la calidad sola para sostener los FPS objetivo
+        // (no hace nada en Manual/Custom).
+        gl_auto_quality_tick(delta, this);
 
         // Recalcular el umbral cada ~1s (no por frame: escanear el mapa entero
         // sale caro y el suelo casi nunca cambia).
