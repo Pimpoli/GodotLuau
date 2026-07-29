@@ -380,6 +380,24 @@ private:
         }
     }
 
+    // LOD por tamaño (rendimiento): una pieza pequeña deja de dibujarse — y de
+    // proyectar sombra — cuando esta lejos, porque a esa distancia ocupa menos de
+    // un pixel. Las piezas grandes (suelos, paredes, edificios) se ven siempre.
+    // La distancia es proporcional al tamaño, con un desvanecido para que no haga
+    // "pop". Es lo que hace Roblox con las piezas lejanas.
+    void _apply_lod() {
+        if (!mesh_instance) return;
+        const float maxdim = Math::max(size.x, Math::max(size.y, size.z));
+        if (maxdim >= 8.0f) {                       // piezas grandes: sin limite
+            mesh_instance->set_visibility_range_end(0.0f);
+            return;
+        }
+        // Sin desvanecido: el fade obliga a dibujar la pieza con transparencia
+        // mientras se apaga, y eso cuesta mas de lo que ahorra (medido).
+        const float dist = Math::max(60.0f, maxdim * 90.0f);
+        mesh_instance->set_visibility_range_end(dist);
+    }
+
     // Crea el collider solo cuando hace falta (CanCollide=true). Una pieza
     // decorativa sin colision no debe costar nada a la fisica.
     void _ensure_collider() {
@@ -398,6 +416,7 @@ private:
         // las piezas de ese tamaño). Se pide la variante del nuevo tamaño.
         _refresh_shape(roblox_shape);
         _update_mass_from_density();
+        _apply_lod();   // la distancia de LOD depende del tamaño
     }
 
     void _update_mass_from_density() {
@@ -604,6 +623,8 @@ protected:
 
                 if (!cast_shadow)
                     mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+
+                _apply_lod();
 
                 // El contact monitor NO se activa aqui: con miles de parts el
                 // monitoreo de contactos de Jolt es carisimo. Se activa recien
