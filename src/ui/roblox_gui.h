@@ -332,6 +332,7 @@ static void gl_apply_rbx_gui_meta(Node* n) {
     bool     _draggable = false;                          \
     int      _style = 0;                                  \
     String   _font_face;                                  \
+    Vector2  _last_mod_size = Vector2(-1, -1);            \
     int      _font_weight = 400;
 
 #define GUI_COMMON_APPLY_LAYOUT \
@@ -437,6 +438,20 @@ static void gl_apply_rbx_gui_meta(Node* n) {
     String get_FontFace() const { return _font_face; }             \
     void _gl_on_self_resized() {                                   \
         set_pivot_offset(get_size() * 0.5f);                       \
+        /* Los modificadores que dependen del TAMANO hay que rehacerlos: */ \
+        /* el radio del UICorner de Roblox es por ESCALA (0.3 x lado corto, */ \
+        /* 581 de los 662 del place lo usan asi) y el shader del UIGradient */ \
+        /* necesita el rect. Antes solo se aplicaban una vez, cuando el     */ \
+        /* elemento aun medía 0, y el redondeo salia siempre en 0.          */ \
+        /* FRENO: cambiar el radio de la caja cambia el tamano MINIMO del   */ \
+        /* control, y eso puede volver a disparar "resized" -> bucle. Solo  */ \
+        /* se rehacen si el tamano cambio de verdad (>1 px).                */ \
+        const Vector2 _sz_now = get_size();                        \
+        if (Math::abs(_sz_now.x - _last_mod_size.x) > 1.0f ||       \
+            Math::abs(_sz_now.y - _last_mod_size.y) > 1.0f) {       \
+            _last_mod_size = _sz_now;                              \
+            _gl_gui_reapply_modifiers(this);                       \
+        }                                                          \
         if (_auto_size != GL_AUTO_NONE) return; /* lo hace el layout */ \
         if (has_method("_gl_refit_text")) call("_gl_refit_text");   \
     }

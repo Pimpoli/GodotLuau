@@ -32,6 +32,9 @@
 #include <godot_cpp/classes/style_box_texture.hpp>
 #include <godot_cpp/classes/gradient.hpp>
 #include <godot_cpp/classes/gradient_texture2d.hpp>
+#include <godot_cpp/classes/gradient_texture1_d.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "gl_gui_core.h"
 
@@ -45,6 +48,44 @@ inline void gl_ui_restyle(Control* c) {
         Node* ch = c->get_child(i);
         if (ch && ch->has_method("_apply")) ch->call_deferred("_apply");
     }
+}
+
+// ── Shader del UIGradient ────────────────────────────────────────────
+//  Por que un shader y no una textura de fondo: la version anterior metia un
+//  StyleBoxTexture en el GuiObject, y eso PISABA la caja plana. Resultado: en
+//  cuanto un elemento tenia UIGradient perdia el redondeo del UICorner, el
+//  borde del UIStroke y su BackgroundColor3. En el place de prueba TODOS los
+//  botones del HUD tienen gradiente, asi que salian planos, cuadrados y blancos.
+//
+//  En Roblox el UIGradient MULTIPLICA el color de fondo, no lo sustituye. Aqui
+//  se hace igual: la caja sigue siendo un StyleBoxFlat (redondeo + borde) y el
+//  shader multiplica lo que se dibuja por el degradado. Asi los tres
+//  modificadores conviven y el orden en que se apliquen deja de importar.
+//
+//  El shader se comparte entre todos (se compila una vez); cada elemento tiene
+//  su ShaderMaterial porque el tamaño del rect es propio.
+inline Ref<Shader>& gl_gradient_shader() {
+    static Ref<Shader> sh;
+    if (sh.is_null()) {
+        sh.instantiate();
+        sh->set_code(
+            "shader_type canvas_item;\n"
+            "render_mode unshaded;\n"
+            "uniform sampler2D grad_tex : source_color, filter_linear, repeat_disable;\n"
+            "uniform vec2 rect_size = vec2(100.0, 100.0);\n"
+            "uniform vec2 grad_dir = vec2(1.0, 0.0);\n"
+            "uniform vec2 grad_off = vec2(0.0, 0.0);\n"
+            "uniform float grad_scale = 1.0;\n"
+            "varying vec2 v_local;\n"
+            "void vertex() { v_local = VERTEX; }\n"
+            "void fragment() {\n"
+            "    vec2 uv = v_local / max(rect_size, vec2(1.0));\n"
+            "    vec2 d = (uv - vec2(0.5) - grad_off) / max(grad_scale, 0.001);\n"
+            "    float t = clamp(0.5 + dot(d, grad_dir), 0.0, 1.0);\n"
+            "    COLOR *= texture(grad_tex, vec2(t, 0.5));\n"
+            "}\n");
+    }
+    return sh;
 }
 
 // ── UICorner ─────────────────────────────────────────────────────────
@@ -77,6 +118,16 @@ protected:
         ClassDB::bind_method(D_METHOD("set_gl_udim", "sc", "off"), &UICorner::set_gl_udim);
         ClassDB::bind_method(D_METHOD("_apply"),                &UICorner::_apply);
         ADD_PROPERTY(PropertyInfo(Variant::INT, "CornerRadius"), "set_CornerRadius", "get_CornerRadius");
+        // UDim COMPLETO como propiedad de guardado (oculta en el inspector).
+        // Sin ella, duplicate() -- el clon de StarterGui a PlayerGui -- solo
+        // copiaba el entero (el offset) y su setter ponia la ESCALA a 0. En el
+        // place, 581 de los 662 UICorner usan radio por escala (0.1), asi que el
+        // HUD del jugador salia con todas las esquinas cuadradas. Se registra
+        // DESPUES del entero para que gane al restaurar.
+        ClassDB::bind_method(D_METHOD("set_RadiusUDim", "v"), &UICorner::set_RadiusUDim);
+        ClassDB::bind_method(D_METHOD("get_RadiusUDim"),      &UICorner::get_RadiusUDim);
+        ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "RadiusUDim", PROPERTY_HINT_NONE, "",
+                                  PROPERTY_USAGE_STORAGE), "set_RadiusUDim", "get_RadiusUDim");
     }
 
 public:
@@ -84,6 +135,8 @@ public:
     int  get_CornerRadius() const { return r_offset; }
     // UDim completo (lo usa el importador y el puente Lua)
     void set_gl_udim(float sc, int off) { r_scale = sc; r_offset = off; call_deferred("_apply"); }
+    void set_RadiusUDim(Vector2 v) { r_scale = v.x; r_offset = (int)v.y; call_deferred("_apply"); }
+    Vector2 get_RadiusUDim() const { return Vector2(r_scale, (float)r_offset); }
     void _ready() override { call_deferred("_apply"); }
     UICorner() { set_meta("_gl_bridge", true); }
 };
@@ -118,6 +171,16 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::INT,"PaddingTop"),   "set_PaddingTop",   "get_PaddingTop");
         ADD_PROPERTY(PropertyInfo(Variant::INT,"PaddingRight"), "set_PaddingRight", "get_PaddingRight");
         ADD_PROPERTY(PropertyInfo(Variant::INT,"PaddingBottom"),"set_PaddingBottom","get_PaddingBottom");
+        // UDim COMPLETO como propiedad de guardado (oculta en el inspector).
+        // Sin ella, duplicate() -- el clon de StarterGui a PlayerGui -- solo
+        // copiaba el entero (el offset) y su setter ponia la ESCALA a 0. En el
+        // place, 581 de los 662 UIPadding usan margen por escala (0.1), asi que el
+        // HUD del jugador salia con los margenes a 0. Se registra
+        // DESPUES del entero para que gane al restaurar.
+        ClassDB::bind_method(D_METHOD("set_PadUDim", "v"), &UIPadding::set_PadUDim);
+        ClassDB::bind_method(D_METHOD("get_PadUDim"),      &UIPadding::get_PadUDim);
+        ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "PadUDim", PROPERTY_HINT_NONE, "",
+                                  PROPERTY_USAGE_STORAGE), "set_PadUDim", "get_PadUDim");
     }
 
 public:
@@ -139,6 +202,21 @@ public:
             default: sb = sc; ob = off; break;
         }
         _dirty();
+    }
+
+    // (escala L,T,R,B + offset L,T,R,B) en un solo array de guardado.
+    void set_PadUDim(PackedFloat32Array v) {
+        if (v.size() != 8) return;
+        sl = v[0]; st = v[1]; sr = v[2]; sb = v[3];
+        ol = (int)v[4]; ot = (int)v[5]; orr = (int)v[6]; ob = (int)v[7];
+        _dirty();
+    }
+    PackedFloat32Array get_PadUDim() const {
+        PackedFloat32Array v;
+        v.push_back(sl); v.push_back(st); v.push_back(sr); v.push_back(sb);
+        v.push_back((float)ol); v.push_back((float)ot);
+        v.push_back((float)orr); v.push_back((float)ob);
+        return v;
     }
 
     Vector4 _gl_pad_px(Vector2 psz) const {
@@ -391,6 +469,8 @@ class UIGradient : public Node {
     double  rotation = 0.0;
     bool    enabled  = true;
     double  scale    = 1.0;
+    PackedFloat32Array alpha_stops;   // Transparency (NumberSequence)
+    PackedFloat32Array alpha_vals;
 
     void _defaults_if_empty() {
         if (cols.size() >= 2) return;
@@ -418,6 +498,21 @@ class UIGradient : public Node {
             nc.push_back(c);
         }
         if (nc.size() >= 2) { stops = ns; cols = nc; }
+        // Transparency: el importador la deja como meta (array de keypoints).
+        if (has_meta("Transparency")) {
+            Variant tv = get_meta("Transparency");
+            if (tv.get_type() == Variant::ARRAY) {
+                Array tk = tv;
+                alpha_stops.clear(); alpha_vals.clear();
+                for (int i = 0; i < tk.size(); i++) {
+                    if (tk[i].get_type() != Variant::DICTIONARY) continue;
+                    Dictionary d = tk[i];
+                    if (!d.has("Value")) continue;
+                    alpha_stops.push_back(Math::clamp((float)d.get("Time", 0.0), 0.0f, 1.0f));
+                    alpha_vals.push_back((float)d["Value"]);
+                }
+            }
+        }
         else if (nc.size() == 1) {
             stops.clear(); cols.clear();
             stops.push_back(0.0f); cols.push_back(nc[0]);
@@ -425,9 +520,23 @@ class UIGradient : public Node {
         }
     }
 
+    void _gl_sync_size() {
+        Control* p = Object::cast_to<Control>(get_parent());
+        if (!p) return;
+        Ref<ShaderMaterial> m = p->get_material();
+        if (m.is_valid()) m->set_shader_parameter("rect_size", p->get_size());
+    }
+
     void _apply() {
         Control* p = Object::cast_to<Control>(get_parent());
-        if (!p || !enabled) return;
+        if (!p) return;
+        if (!enabled) {
+            // Al apagarlo hay que QUITAR el material o el degradado se queda.
+            Ref<ShaderMaterial> cur = p->get_material();
+            if (cur.is_valid() && cur->get_shader() == gl_gradient_shader())
+                p->set_material(Ref<Material>());
+            return;
+        }
         _defaults_if_empty();
         if (stops.size() != cols.size() || cols.size() < 2) return;
         Ref<Gradient> grad; grad.instantiate();
@@ -447,23 +556,51 @@ class UIGradient : public Node {
             if (so[i] < so[i - 1]) so.set(i, so[i - 1]);
         grad->set_offsets(so);
         grad->set_colors(cols);
-        Ref<GradientTexture2D> tex; tex.instantiate();
+        // Transparency de Roblox (NumberSequence) -> alfa de cada parada.
+        if (!alpha_stops.is_empty() && alpha_stops.size() == alpha_vals.size()) {
+            PackedColorArray ac = cols;
+            for (int i = 0; i < ac.size(); i++) {
+                Color cc = ac[i];
+                cc.a = 1.0f - Math::clamp(_sample_alpha(so[i]), 0.0f, 1.0f);
+                ac.set(i, cc);
+            }
+            grad->set_colors(ac);
+        }
+        Ref<GradientTexture1D> tex; tex.instantiate();
         tex->set_gradient(grad);
-        tex->set_width(128); tex->set_height(128);
+        tex->set_width(128);
+
+        Ref<ShaderMaterial> mat = p->get_material();
+        if (mat.is_null() || mat->get_shader() != gl_gradient_shader()) {
+            mat.instantiate();
+            mat->set_shader(gl_gradient_shader());
+        }
         const float rad = (float)Math::deg_to_rad(rotation);
-        const float c = Math::cos(rad), s = Math::sin(rad);
-        const float half = 0.5f * (float)CLAMP(scale, 0.05, 8.0);
-        const Vector2 mid(0.5f + Math::clamp(offset.x, -4.0f, 4.0f),
-                          0.5f + Math::clamp(offset.y, -4.0f, 4.0f));
-        Vector2 from(mid.x - half * c, mid.y - half * s);
-        Vector2 to(  mid.x + half * c, mid.y + half * s);
-        if (from.distance_to(to) < 0.01f) { from = Vector2(0, 0.5f); to = Vector2(1, 0.5f); }
-        tex->set_fill_from(from);
-        tex->set_fill_to(to);
-        Ref<StyleBoxTexture> sb; sb.instantiate();
-        sb->set_texture(tex);
-        const char* slot = p->has_theme_stylebox_override("panel") ? "panel" : "normal";
-        p->add_theme_stylebox_override(slot, sb);
+        mat->set_shader_parameter("grad_tex", tex);
+        mat->set_shader_parameter("grad_dir", Vector2(Math::cos(rad), Math::sin(rad)));
+        mat->set_shader_parameter("grad_off", Vector2(Math::clamp(offset.x, -4.0f, 4.0f),
+                                                     Math::clamp(offset.y, -4.0f, 4.0f)));
+        mat->set_shader_parameter("grad_scale", (float)CLAMP(scale, 0.05, 8.0));
+        mat->set_shader_parameter("rect_size", p->get_size());
+        p->set_material(mat);
+        // El tamaño del rect entra como uniform: hay que refrescarlo al cambiar.
+        if (!p->is_connected("resized", Callable(this, "_gl_sync_size")))
+            p->connect("resized", Callable(this, "_gl_sync_size"), Object::CONNECT_DEFERRED);
+    }
+
+    // Muestrea el NumberSequence de Transparency en t (interpolacion lineal).
+    float _sample_alpha(float t) const {
+        const int n = alpha_stops.size();
+        if (n == 0) return 0.0f;
+        if (t <= alpha_stops[0]) return alpha_vals[0];
+        for (int i = 1; i < n; i++) {
+            if (t <= alpha_stops[i]) {
+                const float span = alpha_stops[i] - alpha_stops[i - 1];
+                const float k = span > 0.0001f ? (t - alpha_stops[i - 1]) / span : 0.0f;
+                return alpha_vals[i - 1] + (alpha_vals[i] - alpha_vals[i - 1]) * k;
+            }
+        }
+        return alpha_vals[n - 1];
     }
 
 protected:
@@ -481,6 +618,7 @@ protected:
         ClassDB::bind_method(D_METHOD("get_gl_color0"),         &UIGradient::get_gl_color0);
         ClassDB::bind_method(D_METHOD("get_gl_color1"),         &UIGradient::get_gl_color1);
         ClassDB::bind_method(D_METHOD("_apply"),                &UIGradient::_apply);
+        ClassDB::bind_method(D_METHOD("_gl_sync_size"),         &UIGradient::_gl_sync_size);
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT,  "Rotation"), "set_Rotation", "get_Rotation");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,   "Enabled"),  "set_Enabled",  "get_Enabled");
         ADD_PROPERTY(PropertyInfo(Variant::VECTOR2,"Offset"),   "set_Offset",   "get_Offset");
@@ -559,6 +697,11 @@ protected:
         ClassDB::bind_method(D_METHOD("get_AbsoluteContentSize"), &UIListLayout::get_AbsoluteContentSize);
         ADD_PROPERTY(PropertyInfo(Variant::INT,  "FillDirection"),       "set_FillDirection",       "get_FillDirection");
         ADD_PROPERTY(PropertyInfo(Variant::INT,  "Padding"),             "set_Padding",             "get_Padding");
+        // UDim completo del Padding, por la misma razon que en UICorner.
+        ClassDB::bind_method(D_METHOD("set_PaddingUDim", "v"), &UIListLayout::set_PaddingUDim);
+        ClassDB::bind_method(D_METHOD("get_PaddingUDim"),      &UIListLayout::get_PaddingUDim);
+        ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "PaddingUDim", PROPERTY_HINT_NONE, "",
+                                  PROPERTY_USAGE_STORAGE), "set_PaddingUDim", "get_PaddingUDim");
         ADD_PROPERTY(PropertyInfo(Variant::INT,  "HorizontalAlignment"), "set_HorizontalAlignment", "get_HorizontalAlignment");
         ADD_PROPERTY(PropertyInfo(Variant::INT,  "VerticalAlignment"),   "set_VerticalAlignment",   "get_VerticalAlignment");
         ADD_PROPERTY(PropertyInfo(Variant::INT,  "SortOrder"),           "set_SortOrder",           "get_SortOrder");
@@ -574,6 +717,8 @@ public:
     void set_Padding(int p) { pad_offset = p; pad_scale = 0.0f; stamp = 0; }
     int  get_Padding() const { return pad_offset; }
     void set_gl_padding_udim(float sc, int off) { pad_scale = sc; pad_offset = off; stamp = 0; }
+    void set_PaddingUDim(Vector2 v) { pad_scale = v.x; pad_offset = (int)v.y; stamp = 0; }
+    Vector2 get_PaddingUDim() const { return Vector2(pad_scale, (float)pad_offset); }
     void set_HorizontalAlignment(int a) { h_align = a; stamp = 0; }
     int  get_HorizontalAlignment() const { return h_align; }
     void set_VerticalAlignment(int a) { v_align = a; stamp = 0; }
@@ -729,6 +874,12 @@ protected:
         ADD_PROPERTY(PropertyInfo(Variant::INT, "CellSizeX"),   "set_CellSizeX",   "get_CellSizeX");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "CellSizeY"),   "set_CellSizeY",   "get_CellSizeY");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "CellPadding"), "set_CellPadding", "get_CellPadding");
+        // CellSize/CellPadding son UDim2: se guardan enteros para que el clon
+        // no los pierda (los enteros solos borraban la escala).
+        ClassDB::bind_method(D_METHOD("set_CellUDim2", "v"), &UIGridLayout::set_CellUDim2);
+        ClassDB::bind_method(D_METHOD("get_CellUDim2"),      &UIGridLayout::get_CellUDim2);
+        ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "CellUDim2", PROPERTY_HINT_NONE, "",
+                                  PROPERTY_USAGE_STORAGE), "set_CellUDim2", "get_CellUDim2");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "FillDirection"),         "set_FillDirection","get_FillDirection");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "FillDirectionMaxCells"), "set_FillDirectionMaxCells","get_FillDirectionMaxCells");
         ADD_PROPERTY(PropertyInfo(Variant::INT, "StartCorner"),           "set_StartCorner","get_StartCorner");
@@ -746,6 +897,18 @@ public:
     int  get_CellPadding() const { return (int)cpad.xo; }
     void set_gl_cell_size(float xs, float xo, float ys, float yo)    { cell = {xs, xo, ys, yo}; stamp = 0; }
     void set_gl_cell_padding(float xs, float xo, float ys, float yo) { cpad = {xs, xo, ys, yo}; stamp = 0; }
+    void set_CellUDim2(PackedFloat32Array v) {
+        if (v.size() != 8) return;
+        cell = {v[0], v[1], v[2], v[3]};
+        cpad = {v[4], v[5], v[6], v[7]};
+        stamp = 0;
+    }
+    PackedFloat32Array get_CellUDim2() const {
+        PackedFloat32Array v;
+        v.push_back(cell.xs); v.push_back(cell.xo); v.push_back(cell.ys); v.push_back(cell.yo);
+        v.push_back(cpad.xs); v.push_back(cpad.xo); v.push_back(cpad.ys); v.push_back(cpad.yo);
+        return v;
+    }
     void set_FillDirection(int v) { fill_dir = v; stamp = 0; }
     int  get_FillDirection() const { return fill_dir; }
     void set_FillDirectionMaxCells(int v) { max_cells = v; stamp = 0; }

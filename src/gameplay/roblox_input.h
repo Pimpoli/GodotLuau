@@ -500,7 +500,16 @@ private:
 class CollectionService : public Node {
     GDCLASS(CollectionService, Node);
 
-    std::map<String, std::vector<Node*>> tagged;
+    // Se guardan IDs de objeto, NO punteros crudos.
+    //
+    // El bug que arregla: al destruirse una instancia etiquetada, su Node* se
+    // quedaba en la lista APUNTANDO A MEMORIA LIBERADA. La siguiente llamada a
+    // GetTagged leia ese puntero (n->is_inside_tree()) y el proceso se caia. En
+    // el place de prueba pasaba SIEMPRE en cuanto el sistema de dialogo pedia
+    // CollectionService:GetTagged("NPCprompt"): "ERROR: Parameter data.tree is
+    // null" y detras un segfault. Con el ID, un objeto ya liberado simplemente
+    // no aparece (y se limpia de la lista), que es lo que hace Roblox.
+    std::map<String, std::vector<uint64_t>> tagged;
 
 protected:
     static void _bind_methods() {
@@ -514,40 +523,53 @@ protected:
 public:
     void add_tag(Node* inst, const String& tag) {
         if (!inst) return;
+        const uint64_t id = (uint64_t)inst->get_instance_id();
         auto& list = tagged[tag];
-        for (auto* n : list) if (n == inst) return;
-        list.push_back(inst);
+        for (uint64_t v : list) if (v == id) return;
+        list.push_back(id);
     }
 
     void remove_tag(Node* inst, const String& tag) {
+        if (!inst) return;
         auto it = tagged.find(tag);
         if (it == tagged.end()) return;
+        const uint64_t id = (uint64_t)inst->get_instance_id();
         auto& list = it->second;
-        list.erase(std::remove(list.begin(), list.end(), inst), list.end());
+        list.erase(std::remove(list.begin(), list.end(), id), list.end());
     }
 
     bool has_tag(Node* inst, const String& tag) const {
+        if (!inst) return false;
         auto it = tagged.find(tag);
         if (it == tagged.end()) return false;
-        for (auto* n : it->second) if (n == inst) return true;
+        const uint64_t id = (uint64_t)inst->get_instance_id();
+        for (uint64_t v : it->second) if (v == id) return true;
         return false;
     }
 
-    TypedArray<Node> get_tagged(const String& tag) const {
+    TypedArray<Node> get_tagged(const String& tag) {
         TypedArray<Node> result;
         auto it = tagged.find(tag);
         if (it == tagged.end()) return result;
-        for (auto* n : it->second) {
-            if (n && n->is_inside_tree()) result.push_back(n);
+        auto& list = it->second;
+        // De paso se purgan los que ya no existen (asi la lista no crece sin fin
+        // en un juego que crea y destruye NPC todo el rato).
+        for (size_t i = 0; i < list.size();) {
+            Node* n = Object::cast_to<Node>(ObjectDB::get_instance(ObjectID(list[i])));
+            if (!n) { list.erase(list.begin() + i); continue; }
+            if (n->is_inside_tree()) result.push_back(n);
+            i++;
         }
         return result;
     }
 
     PackedStringArray get_tags(Node* inst) const {
         PackedStringArray result;
+        if (!inst) return result;
+        const uint64_t id = (uint64_t)inst->get_instance_id();
         for (auto& [tag, list] : tagged) {
-            for (auto* n : list) {
-                if (n == inst) { result.push_back(tag); break; }
+            for (uint64_t v : list) {
+                if (v == id) { result.push_back(tag); break; }
             }
         }
         return result;

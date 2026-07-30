@@ -1135,7 +1135,16 @@ public:
         double     timer;
         int        start_args = 0;     // args en la pila del hilo a pasar en el 1er resume (task.delay/defer)
         bool       started    = true;  // false hasta el 1er resume (delay/defer aún no arrancados)
+        double     waited     = 0.0;   // tiempo REAL esperado (lo devuelve wait())
     };
+
+    // Reloj de juego: es el segundo valor que devuelve wait() en Roblox
+    // (workspace.DistributedGameTime).
+    static double _gl_game_time() {
+        return (double)Time::get_singleton()->get_ticks_msec() / 1000.0;
+    }
+
+    double main_waited = 0.0;   // tiempo esperado del hilo principal (lo devuelve wait())
 
     // Coroutine waiting for a child to appear in the tree
     //// Coroutina esperando a que aparezca un hijo en el árbol
@@ -1487,8 +1496,13 @@ protected:
             // GodotLuauUpdater, que puede distinguir un borrado real de un cierre de escena.
         } else {
             if (p_what == NOTIFICATION_EXIT_TREE) {
-                if (L_main) {
-                    Node* root = get_tree()->get_root();
+                // OJO: al SALIR del arbol get_tree() ya puede ser nulo, y
+                // ->get_root() sobre nulo tira el proceso. Pasaba de verdad: en
+                // cuanto un script del juego destruia nodos con scripts dentro,
+                // GodotLuau se caia aqui (segfault tras "Parameter data.tree is null").
+                SceneTree* _st = get_tree();
+                if (L_main && _st && _st->get_root()) {
+                    Node* root = _st->get_root();
                     // Clean RunService callbacks
                     for (int _ri = 0; _ri < root->get_child_count(); _ri++) {
                         Node* game = root->get_child(_ri);
@@ -1602,9 +1616,17 @@ public:
 
         // ── Contexto cliente/servidor ─────────────────────────────────────────
         // LocalScript = cliente, ServerScript = servidor, ModuleScript = neutro
-        lua_pushboolean(L_main, (get_class() == "LocalScript")  ? 1 : 0);
+        // RunContext de Roblox moderno: un Script con RunContext=Client corre como
+        // si fuera un LocalScript, este donde este (ReplicatedStorage, Workspace...).
+        // El importador lo deja como meta; sin esto esos scripts corrian como
+        // servidor y Players.LocalPlayer les salia nil.
+        // Enum.RunContext: Legacy=0, Server=1, Client=2, Plugin=3.
+        const int _run_ctx = has_meta("RunContext") ? (int)(int64_t)get_meta("RunContext") : 0;
+        const bool _is_client = (get_class() == "LocalScript") || _run_ctx == 2;
+        const bool _is_server = (get_class() == "ServerScript") && _run_ctx != 2;
+        lua_pushboolean(L_main, _is_client ? 1 : 0);
         lua_setglobal(L_main, "__IS_CLIENT");
-        lua_pushboolean(L_main, (get_class() == "ServerScript") ? 1 : 0);
+        lua_pushboolean(L_main, _is_server ? 1 : 0);
         lua_setglobal(L_main, "__IS_SERVER");
 
         // ── Metatable: GodotObject ────────────────────────────────────────────
@@ -1754,7 +1776,9 @@ public:
         Node* game_node = nullptr;
         Node* ws_node = nullptr;
         {
-            Node* root = get_tree()->get_root();
+            SceneTree* _st2 = get_tree();
+            Node* root = _st2 ? (Node*)_st2->get_root() : nullptr;
+            if (!root) return;
             // Buscar nodo "game": RobloxTemplate, RobloxGame3D, RobloxGame2D,
             // o cualquier nodo llamado "Game"
             for (int _i = 0; _i < root->get_child_count() && !game_node; _i++) {
@@ -2594,7 +2618,15 @@ public:
     }
 
     void resume() {
-        int status = lua_resume(L_thread, nullptr, 0);
+        // wait() de Roblox devuelve (esperado, tiempoDeJuego).
+        int _nres = 0;
+        if (main_waited > 0.0) {
+            lua_pushnumber(L_thread, main_waited);
+            lua_pushnumber(L_thread, _gl_game_time());
+            _nres = 2;
+            main_waited = 0.0;
+        }
+        int status = lua_resume(L_thread, nullptr, _nres);
         if (status == LUA_YIELD) {
             if (lua_gettop(L_thread) > 0) {
                 if (lua_isnumber(L_thread, -1)) {
@@ -2642,6 +2674,7 @@ public:
         // ── 1. Main thread timer ────────────────────────────────────────
         if (!script_finished && is_waiting && !is_external_wait) {
             wait_timer -= delta;
+            main_waited += delta;
             if (wait_timer <= 0.0) {
                 is_waiting = false;
                 resume();
@@ -2653,10 +2686,18 @@ public:
             SpawnedThread& st = spawned_threads[i];
             if (st.timer < 0.0) continue;  // suspended by external condition
             st.timer -= delta;
+            st.waited += delta;
 
             if (st.timer <= 0.0) {
                 // 1er resume de task.delay/defer: pasar sus args; despues, 0.
                 int na = st.started ? 0 : st.start_args;
+                if (st.started && st.waited > 0.0) {
+                    // Valores de retorno de wait(): (esperado, tiempoDeJuego).
+                    lua_pushnumber(st.L, st.waited);
+                    lua_pushnumber(st.L, _gl_game_time());
+                    na = 2;
+                }
+                st.waited = 0.0;
                 st.started = true;
                 int status = lua_resume(st.L, nullptr, na);
 

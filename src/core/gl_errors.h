@@ -72,6 +72,16 @@ static godot::String gl_format_roblox_stack(const godot::String& trace) {
 
 // Imprime el error que esta en el tope de la pila de `th` + el stack dado.
 static void gl_report_script_error_with_trace(lua_State* th, const godot::String& trace) {
+    // Freno de REENTRADA. Si al informar de un error se produce otro (formatear
+    // la traza toca la pila de Lua, y print_rich puede acabar en otro script),
+    // se entra otra vez aqui y la pila de C se desborda: crash. Pasaba con los
+    // scripts que llaman a error() a proposito.
+    static bool reporting = false;
+    if (reporting) return;
+    reporting = true;
+    struct Unset { ~Unset() { reporting = false; } };
+    static bool* _flag = &reporting;
+    struct Guard { ~Guard() { *_flag = false; } } _guard;
     const char* raw = lua_tostring(th, -1);
     godot::String msg = raw ? godot::String::utf8(raw) : godot::String("Unknown error");
     godot::UtilityFunctions::print_rich(godot::String("[color=") + GL_ERR_COLOR + "]" + msg + "[/color]");

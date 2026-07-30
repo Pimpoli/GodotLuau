@@ -3760,6 +3760,15 @@ static int godot_object_index(lua_State* L) {
             lua_setfield(L, -2, "Connect");
             gl_signal_lowercase_aliases(L); return 1;
         };
+        // PromptShown/PromptHidden/TriggerEnded: los usan los sistemas de dialogo
+        // para saber cuando el cartel de "pulsa E" aparece o se va.
+        if (strcmp(key,"PromptShown")  == 0 || strcmp(key,"PromptHidden") == 0 ||
+            strcmp(key,"PromptButtonHoldBegan") == 0 ||
+            strcmp(key,"PromptButtonHoldEnded") == 0 ||
+            strcmp(key,"TriggerEnded")  == 0) {
+            _gl_push_inert_signal(L);
+            return 1;
+        }
         if (strcmp(key,"Triggered")  == 0) return make_pp_signal(pp->triggered_cbs);
         if (strcmp(key,"HoldBegan")  == 0) return make_pp_signal(pp->hold_began_cbs);
         if (strcmp(key,"HoldEnded")  == 0) return make_pp_signal(pp->hold_ended_cbs);
