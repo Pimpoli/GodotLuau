@@ -63,11 +63,31 @@ inline void gl_gui_apply_render_gate(Control* c) {
     if (!c) return;
     if (Engine::get_singleton()->is_editor_hint()) return;   // en el editor se ve todo
     gl_gui_cull_world_layer(c);
+    // La cadena tiene que ser ESTRICTA: padre GuiObject -> ... -> ScreenGui. Si un
+    // eslabon no es GUI (un Script, un Folder, un Model...), Roblox NO dibuja
+    // nada de ahi para abajo, aunque Visible sea true.
+    //
+    // Esto es lo que hacia que el HUD saliera con basura encima: el place guarda
+    // la plantilla del boton de inventario DENTRO de su LocalScript
+    // (CustomInventory/InventoryController/toolButton, un ImageButton con
+    // Size=(1,1) y Visible=true). Al saltarme el eslabon del script, esa
+    // plantilla se dibujaba a 648x648 -> el panel negro gigante, y su TextLabel
+    // "1" con TextScaled a 222x186 -> el "1" enorme. En Roblox no se ve NADA de
+    // eso porque su padre es un script.
+    //
+    // Se calcula heredando del padre: ENTER_TREE va de arriba a abajo, asi que
+    // cuando llega el hijo el padre ya tiene su capa decidida.
     uint32_t layer = GL_WORLD_GUI_CANVAS_LAYER;              // por defecto: no se pinta
-    for (Node* p = c->get_parent(); p; p = p->get_parent()) {
-        if (p->is_class("ScreenGui")) { layer = 1u; break; }
-        if (p->is_class("SurfaceGui") || p->is_class("BillboardGui")) break;  // UI de mundo
-        if (Object::cast_to<Viewport>(p)) break;
+    Node* p = c->get_parent();
+    if (p) {
+        if (p->is_class("ScreenGui")) {
+            layer = 1u;                                      // hijo directo de un ScreenGui
+        } else if (p->is_class("SurfaceGui") || p->is_class("BillboardGui")) {
+            layer = GL_WORLD_GUI_CANVAS_LAYER;               // UI de mundo
+        } else if (Control* pc = Object::cast_to<Control>(p)) {
+            layer = pc->get_visibility_layer();              // hereda la decision del padre
+        }
+        // Cualquier otro padre (Script, Folder, Model, servicio...) -> no se dibuja.
     }
     c->set_visibility_layer(layer);
 }

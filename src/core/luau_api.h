@@ -2,6 +2,7 @@
 #define LUAU_API_H
 
 #include "gl_errors.h"
+#include "gl_stackguard.h"
 #include "folder.h"
 #include "humanoid.h"
 #include "humanoid2d.h"
@@ -789,6 +790,9 @@ static int method_getservice(lua_State* L) {
 //  godot_object_index — __index de GodotObject
 // ════════════════════════════════════════════════════════════════════
 static int godot_object_index(lua_State* L) {
+    // Corta la recursion por el puente ANTES de quedarse sin pila (si no, el
+    // proceso se cae con un segfault sin mensaje).
+    GL_STACK_GUARD(L);
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) { lua_pushnil(L); return 1; }
@@ -4103,6 +4107,7 @@ static int godot_object_index(lua_State* L) {
 //  godot_object_newindex — __newindex de GodotObject
 // ════════════════════════════════════════════════════════════════════
 static int godot_object_newindex_impl(lua_State* L) {
+    GL_STACK_GUARD(L);
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) return 0;

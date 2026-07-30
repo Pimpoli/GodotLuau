@@ -671,7 +671,7 @@ class RobloxFrame : public Panel {
         Ref<StyleBoxFlat> style;
         style.instantiate();
         style->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f));
+        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         style->set_border_width_all(_border_px);
         style->set_corner_radius_all(0);
         add_theme_stylebox_override("panel", style);
@@ -912,7 +912,7 @@ class RobloxTextLabel : public Label {
         Ref<StyleBoxFlat> style;
         style.instantiate();
         style->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f));
+        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         style->set_border_width_all(_border_px);
         add_theme_stylebox_override("normal", style);
         _gl_gui_reapply_modifiers(this);
@@ -981,14 +981,14 @@ class RobloxTextButton : public Button {
         Ref<StyleBoxFlat> normal_style, hover_style, pressed_style;
         normal_style.instantiate();
         normal_style->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        normal_style->set_border_color(Color(_border_r, _border_g, _border_b));
+        normal_style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         normal_style->set_border_width_all(_border_px);
         hover_style.instantiate();
         hover_style->set_bg_color(Color(
             Math::clamp(_bg_r + d, 0.f, 1.f),
             Math::clamp(_bg_g + d, 0.f, 1.f),
             Math::clamp(_bg_b + d, 0.f, 1.f), 1.0f - _bg_alpha));
-        hover_style->set_border_color(Color(_border_r, _border_g, _border_b));
+        hover_style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         hover_style->set_border_width_all(_border_px);
         pressed_style.instantiate();
         pressed_style->set_bg_color(Color(
@@ -1190,7 +1190,7 @@ class RobloxImageButton : public Button {
     void _apply_style() {
         Ref<StyleBoxFlat> st; st.instantiate();
         st->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        st->set_border_color(Color(_border_r, _border_g, _border_b));
+        st->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         st->set_border_width_all(_border_px);
         add_theme_stylebox_override("normal",  st);
         add_theme_stylebox_override("hover",   st);
@@ -1323,7 +1323,7 @@ class RobloxTextBox : public LineEdit {
         Ref<StyleBoxFlat> style;
         style.instantiate();
         style->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        style->set_border_color(Color(_border_r, _border_g, _border_b));
+        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         style->set_border_width_all(_border_px);
         add_theme_stylebox_override("normal", style);
         _gl_gui_reapply_modifiers(this);
@@ -1524,7 +1524,7 @@ class RobloxScrollingFrame : public Panel {
         Ref<StyleBoxFlat> style;
         style.instantiate();
         style->set_bg_color(Color(_bg_r, _bg_g, _bg_b, 1.0f - _bg_alpha));
-        style->set_border_color(Color(_border_r, _border_g, _border_b));
+        style->set_border_color(Color(_border_r, _border_g, _border_b, 1.0f - _bg_alpha));
         style->set_border_width_all(_border_px);
         add_theme_stylebox_override("panel", style);
         _gl_gui_reapply_modifiers(this);

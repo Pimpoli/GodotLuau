@@ -1219,6 +1219,12 @@ public:
     // Resume a coroutine externally (Signal:Wait / WaitForChild resolved).
     // Updates spawned_threads timer or main-thread flags based on new yield.
     void resume_external_thread(lua_State* th, int nargs) {
+        // Mismo motivo que en _process: solo se reanuda si sigue SUSPENDIDA.
+        // Reanudar una corrutina ya terminada (o muerta por error) revienta
+        // dentro de luau_execute. Aqui llegan las que esperaban un hijo
+        // (WaitForChild) o una señal, y esas pueden haber muerto entretanto.
+        if (!th || !L_main || !gl_state_alive(L_main)) return;
+        if (lua_costatus(L_main, th) != LUA_COSUS) return;
         _after_resume(th, lua_resume(th, nullptr, nargs));
     }
 
@@ -2618,6 +2624,14 @@ public:
     }
 
     void resume() {
+        if (!L_thread || !L_main || !gl_state_alive(L_main)) return;
+        // Igual que arriba: si el hilo principal del script ya no esta
+        // suspendido, reanudarlo casca dentro de la VM.
+        if (lua_costatus(L_main, L_thread) != LUA_COSUS) {
+            script_finished = true;
+            is_waiting = false;
+            return;
+        }
         // wait() de Roblox devuelve (esperado, tiempoDeJuego).
         int _nres = 0;
         if (main_waited > 0.0) {
@@ -2671,6 +2685,19 @@ public:
     }
 
     void _process(double delta) override {
+        // Si la VM de ESTE script ya se cerro (script destruido, recargado, o
+        // sacado del arbol), reanudar sus corrutinas es un use-after-free:
+        // lua_resume sobre un lua_State liberado casca DENTRO de la VM de Luau.
+        // Era la causa del segfault intermitente del place real: aparecia solo
+        // cuando algun script moria en ese frame (por error() o porque el juego
+        // destruia nodos), y por eso salia 1 de cada 3 veces.
+        // El resto del puente ya comprobaba gl_state_alive antes de invocar
+        // refs; este camino era el que faltaba.
+        if (!L_main || !gl_state_alive(L_main)) {
+            spawned_threads.clear();
+            return;
+        }
+
         // ── 1. Main thread timer ────────────────────────────────────────
         if (!script_finished && is_waiting && !is_external_wait) {
             wait_timer -= delta;
@@ -2683,41 +2710,75 @@ public:
 
         // ── 2. Spawned threads ──────────────────────────────────────────
         for (int i = (int)spawned_threads.size() - 1; i >= 0; i--) {
-            SpawnedThread& st = spawned_threads[i];
-            if (st.timer < 0.0) continue;  // suspended by external condition
-            st.timer -= delta;
-            st.waited += delta;
+            // La lista puede CRECER o ENCOGER mientras se recorre (ver abajo).
+            if (i >= (int)spawned_threads.size()) continue;
+            if (spawned_threads[i].timer < 0.0) continue;  // suspendida por condicion externa
+            spawned_threads[i].timer  -= delta;
+            spawned_threads[i].waited += delta;
+            if (spawned_threads[i].timer > 0.0) continue;
 
-            if (st.timer <= 0.0) {
-                // 1er resume de task.delay/defer: pasar sus args; despues, 0.
-                int na = st.started ? 0 : st.start_args;
-                if (st.started && st.waited > 0.0) {
-                    // Valores de retorno de wait(): (esperado, tiempoDeJuego).
-                    lua_pushnumber(st.L, st.waited);
-                    lua_pushnumber(st.L, _gl_game_time());
-                    na = 2;
-                }
-                st.waited = 0.0;
-                st.started = true;
-                int status = lua_resume(st.L, nullptr, na);
+            // ── Todo lo que se necesita se copia POR VALOR antes de reanudar ──
+            //
+            // ESTO ERA EL SEGFAULT INTERMITENTE del place real (1 de cada 3
+            // partidas). lua_resume EJECUTA codigo Lua, y ese codigo puede
+            // llamar a task.spawn / task.delay / task.defer, que hacen push_back
+            // en ESTE MISMO vector y lo REALOCAN. La version anterior guardaba
+            // una referencia (SpawnedThread& st) y despues de reanudar escribia
+            // en ella: memoria ya liberada. Se corrompia st.L y al frame
+            // siguiente lua_resume sobre ese puntero basura cascaba DENTRO de la
+            // VM de Luau (por eso el backtrace acababa en luau_execute y no
+            // señalaba a ningun sitio nuestro).
+            lua_State* thL      = spawned_threads[i].L;
+            const bool was_started = spawned_threads[i].started;
+            const int  start_args  = spawned_threads[i].start_args;
+            const double waited    = spawned_threads[i].waited;
+            spawned_threads[i].waited  = 0.0;
+            spawned_threads[i].started = true;
 
-                if (status == LUA_YIELD) {
-                    if (lua_gettop(st.L) > 0) {
-                        if (lua_isnumber(st.L, -1)) {
-                            st.timer = lua_tonumber(st.L, -1);
-                        } else {
-                            // Sentinel yield — mark as suspended (externally managed)
-                            st.timer = -1.0;
-                        }
-                        lua_pop(st.L, 1);
+            // 1er resume de task.delay/defer: pasar sus args; despues, los
+            // valores de retorno de wait() -> (esperado, tiempoDeJuego).
+            int na = was_started ? 0 : start_args;
+            if (was_started && waited > 0.0) {
+                lua_pushnumber(thL, waited);
+                lua_pushnumber(thL, _gl_game_time());
+                na = 2;
+            }
+            // SOLO se puede reanudar una corrutina SUSPENDIDA. Reanudar una que
+            // ya termino (o que murio por un error, o que esta corriendo) es
+            // comportamiento indefinido: Luau no lo valida y el proceso se cae
+            // DENTRO de luau_execute, sin apuntar a nada nuestro. Es lo que
+            // pasaba de forma intermitente en el place real.
+            const int co_st = lua_costatus(L_main, thL);
+            if (co_st != LUA_COSUS) {
+                if (L_main) lua_unref(L_main, spawned_threads[i].ref);
+                spawned_threads.erase(spawned_threads.begin() + i);
+                continue;
+            }
+            int status = lua_resume(thL, nullptr, na);
+
+            // Se vuelve a localizar la entrada POR PUNTERO de hilo: el indice
+            // puede haber cambiado si el Lua reanudado creo o cancelo corrutinas.
+            int idx = -1;
+            for (int k = 0; k < (int)spawned_threads.size(); k++)
+                if (spawned_threads[k].L == thL) { idx = k; break; }
+            if (idx < 0) continue;   // el propio script ya la quito (task.cancel)
+
+            if (status == LUA_YIELD) {
+                if (lua_gettop(thL) > 0) {
+                    if (lua_isnumber(thL, -1)) {
+                        spawned_threads[idx].timer = lua_tonumber(thL, -1);
                     } else {
-                        st.timer = 0.0;
+                        // Yield centinela — queda suspendida (la gestiona otro)
+                        spawned_threads[idx].timer = -1.0;
                     }
+                    lua_pop(thL, 1);
                 } else {
-                    if (status != LUA_OK) gl_report_script_error(st.L);
-                    if (L_main) lua_unref(L_main, st.ref);
-                    spawned_threads.erase(spawned_threads.begin() + i);
+                    spawned_threads[idx].timer = 0.0;
                 }
+            } else {
+                if (status != LUA_OK) gl_report_script_error(thL);
+                if (L_main) lua_unref(L_main, spawned_threads[idx].ref);
+                spawned_threads.erase(spawned_threads.begin() + idx);
             }
         }
 
