@@ -25,12 +25,44 @@
 #include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 
 // Nivel de calidad efectivo actual (1..10). Lo lee quien necesite saberlo.
 inline int& gl_graphics_level() { static int lvl = 8; return lvl; }
+
+// ── V-Sync (sincronia vertical) ──────────────────────────────────────
+// APAGADO por defecto, a proposito. Dos razones:
+//   · Roblox NO ata los FPS a la tasa de refresco: su menu no tiene V-Sync, lo
+//     unico que limita es el "Maximum Framerate" que elige el jugador.
+//   · Godot deja V-Sync ACTIVADO por defecto, y con V-Sync el frame tiene que
+//     caber en el intervalo del monitor: si no cabe, espera al vblank SIGUIENTE
+//     y los FPS caen a la mitad exacta (medido: frames de 34,5 ms en un monitor
+//     de 60 Hz = 30 FPS clavados). Ese era el "tope de 30 FPS".
+// Quien prefiera imagen sin tearing lo enciende desde el menu de ajustes.
+inline bool& gl_vsync_enabled() { static bool on = false; return on; }
+
+// Aplica el V-Sync YA (el ajuste de proyecto solo se lee al arrancar, asi que no
+// sirve para un toggle en vivo). `any` es cualquier nodo del arbol: de el se saca
+// la ventana, que en el multijugador local no tiene por que ser la principal.
+inline void gl_apply_vsync(bool on, Node* any = nullptr) {
+    gl_vsync_enabled() = on;
+    DisplayServer* ds = DisplayServer::get_singleton();
+    if (!ds) return;
+    int32_t wid = DisplayServer::MAIN_WINDOW_ID;
+    if (any && any->is_inside_tree()) {
+        if (Window* w = any->get_window()) wid = w->get_window_id();
+    }
+    ds->window_set_vsync_mode(on ? DisplayServer::VSYNC_ENABLED : DisplayServer::VSYNC_DISABLED, wid);
+    // Se deja tambien en el ajuste de proyecto (en memoria, no se guarda) para que
+    // quede coherente con lo que consulte cualquier otra parte del motor.
+    if (ProjectSettings* ps = ProjectSettings::get_singleton())
+        ps->set_setting("display/window/vsync/vsync_mode",
+                        on ? (int)DisplayServer::VSYNC_ENABLED : (int)DisplayServer::VSYNC_DISABLED);
+}
 
 // ── Modo de calidad (como Roblox) ────────────────────────────────────
 //   0 = Automatic — el motor sube/baja la calidad solo para sostener los FPS
@@ -43,11 +75,18 @@ enum GLQualityMode { GL_QUALITY_AUTOMATIC = 0, GL_QUALITY_MANUAL = 1, GL_QUALITY
 inline int& gl_quality_mode() { static int m = GL_QUALITY_AUTOMATIC; return m; }
 
 // FPS objetivo del modo Automatic (Roblox apunta a una experiencia fluida).
-// Objetivo por defecto: 35 FPS. El ajuste automatico apunta al objetivo y se
-// estabiliza algo por debajo, asi que con 35 el resultado REAL queda en promedio
-// >25 y minimo >=20 (medido con el contador del motor: con objetivo 30 el
-// promedio se quedaba en 23).
-inline int& gl_auto_target_fps() { static int f = 45; return f; }
+// 60, la referencia de Roblox. Antes estaba en 45 y el efecto era el contrario
+// del buscado: el ajuste se estabiliza rondando el objetivo, asi que el juego se
+// quedaba clavado en ~45 FPS y PARECIA que el motor imponia un tope.
+inline int& gl_auto_target_fps() { static int f = 60; return f; }
+
+// ── Suelo del modo Automatic ─────────────────────────────────────────
+// El ajuste automatico NUNCA baja de aqui, aunque no llegue al objetivo. Por
+// debajo del nivel 5 se apagan las sombras y el glow y la resolucion interna se
+// queda al 50-70%: el juego deja de parecerse a Roblox (era la causa de "la
+// iluminacion se ve pesima"). Mejor pocos FPS que un juego que no se reconoce.
+static const int   GL_AUTO_MIN_LEVEL = 5;      // nivel 5 = sombras suaves + glow + niebla
+static const float GL_AUTO_MIN_SCALE = 0.75f;  // resolucion interna minima del ajuste fino
 
 // ── Ajustes del modo Custom ──────────────────────────────────────────
 // Cada uno es independiente; asi el jugador puede, por ejemplo, bajar sombras
@@ -79,6 +118,50 @@ struct GLCustomSettings {
     int   occlusion_bvh  = 1;      // 0=rapido 1=equilibrado 2=preciso (coste CPU)
 };
 inline GLCustomSettings& gl_custom() { static GLCustomSettings c; return c; }
+
+// Ajuste Custom por NOMBRE. Vive aqui (y no solo en el Workspace) porque hay dos
+// clientes: la API de Lua (workspace:SetGraphicsSetting) y las filas del menu de
+// ajustes; asi el mapeo nombre→campo y los limites estan escritos UNA vez.
+// Devuelve false si el nombre no existe (para que quien llame no reaplique nada).
+inline bool gl_custom_set(const String& name, float value) {
+    GLCustomSettings& c = gl_custom();
+    if      (name == "RenderScale")   c.render_scale   = CLAMP(value, 0.25f, 1.0f);
+    else if (name == "Upscaler")      c.upscaler       = (int)CLAMP(value, 0.0f, 2.0f);
+    else if (name == "Sharpness")     c.sharpness      = CLAMP(value, 0.0f, 2.0f);
+    else if (name == "ShadowQuality") c.shadow_quality = (int)CLAMP(value, 0.0f, 5.0f);
+    else if (name == "ViewDistance")  c.view_distance  = CLAMP(value, 0.25f, 2.0f);
+    else if (name == "SSAO")          c.ssao           = value > 0.5f;
+    else if (name == "Glow")          c.glow           = value > 0.5f;
+    else if (name == "Fog")           c.fog            = value > 0.5f;
+    else if (name == "Occlusion")     c.occlusion      = value > 0.5f;
+    else if (name == "OcclusionSize") c.occlusion_size = CLAMP(value, 2.0f, 64.0f);
+    else if (name == "OcclusionQuality") c.occlusion_bvh = (int)CLAMP(value, 0.0f, 2.0f);
+    else if (name == "PixelTransparency") c.pixel_transparency = value > 0.5f;
+    else if (name == "StaticBatching") c.static_batching = value > 0.5f;
+    else if (name == "ChunkSize")     c.chunk_size     = CLAMP(value, 16.0f, 512.0f);
+    else if (name == "MergeZonePhysics") c.merge_zone_physics = value > 0.5f;
+    else return false;
+    return true;
+}
+inline float gl_custom_get(const String& name) {
+    const GLCustomSettings& c = gl_custom();
+    if (name == "RenderScale")   return c.render_scale;
+    if (name == "Upscaler")      return (float)c.upscaler;
+    if (name == "Sharpness")     return c.sharpness;
+    if (name == "ShadowQuality") return (float)c.shadow_quality;
+    if (name == "ViewDistance")  return c.view_distance;
+    if (name == "SSAO")          return c.ssao ? 1.0f : 0.0f;
+    if (name == "Glow")          return c.glow ? 1.0f : 0.0f;
+    if (name == "Fog")           return c.fog ? 1.0f : 0.0f;
+    if (name == "Occlusion")        return c.occlusion ? 1.0f : 0.0f;
+    if (name == "OcclusionSize")    return c.occlusion_size;
+    if (name == "OcclusionQuality") return (float)c.occlusion_bvh;
+    if (name == "PixelTransparency") return c.pixel_transparency ? 1.0f : 0.0f;
+    if (name == "StaticBatching")    return c.static_batching ? 1.0f : 0.0f;
+    if (name == "ChunkSize")         return c.chunk_size;
+    if (name == "MergeZonePhysics")  return c.merge_zone_physics ? 1.0f : 0.0f;
+    return 0.0f;
+}
 
 // Busca el primer nodo de una clase bajo la raíz (sun / WorldEnvironment).
 inline Node* gl_find_by_class(Node* n, const char* cls) {
@@ -260,9 +343,15 @@ inline void gl_apply_graphics_quality(int level, Node* any) {
 
 // ── Modo Automatic ───────────────────────────────────────────────────
 // Como el "Automatic" de Roblox: vigila los FPS y sube o baja el nivel de
-// calidad solo, buscando mantenerse por encima del objetivo (45 FPS por
+// calidad solo, buscando mantenerse por encima del objetivo (60 FPS por
 // defecto). Cambia de UN nivel cada vez y espera entre ajustes para no ir
 // oscilando arriba y abajo. Llamar cada frame; no hace nada en otros modos.
+//
+// IMPORTANTE: esto ajusta CALIDAD, nunca FPS. No limita nada: si la maquina da
+// 300 FPS con todo al maximo, se queda en el maximo y no vuelve a tocar nada (el
+// tope de FPS lo pone solo el jugador con "Max FPS"). Y tampoco baja de
+// GL_AUTO_MIN_LEVEL / GL_AUTO_MIN_SCALE: si ni con el suelo se llega al objetivo,
+// se aceptan menos FPS antes que dejar el juego sin sombras y borroso.
 inline void gl_auto_quality_tick(double delta, Node* any) {
     if (gl_quality_mode() != GL_QUALITY_AUTOMATIC || !any) return;
     static double acc = 0.0, cooldown = 0.0;
@@ -280,23 +369,35 @@ inline void gl_auto_quality_tick(double delta, Node* any) {
 
     const int target = gl_auto_target_fps();
     const int lvl = gl_graphics_level();
-    // Primero se ajusta la RESOLUCION en pasos pequeños (5%), que apenas se nota;
-    // solo cuando se agota ese margen se cambia el nivel entero. Antes saltaba de
-    // nivel directamente y el cambio cantaba mucho.
-    static float auto_scale = 1.0f;
     Viewport* vp = any->is_inside_tree() ? any->get_viewport() : nullptr;
+    // La escala se LEE del viewport en vez de guardarla aparte: asi no se queda
+    // desfasada cuando el jugador pasa por Manual/Custom y vuelve a Automatic.
+    float auto_scale = vp ? vp->get_scaling_3d_scale() : 1.0f;
+
+    // Si se entra desde Manual con un nivel por debajo del suelo, se sube al suelo.
+    if (lvl < GL_AUTO_MIN_LEVEL) {
+        gl_apply_graphics_quality(GL_AUTO_MIN_LEVEL, any);
+        cooldown = 2.0;
+        return;
+    }
+    // Techo alcanzado (nivel 10, resolucion nativa y FPS de sobra): NADA que hacer.
+    // Sin este corte se seguia entrando cada segundo a "subir" lo que ya estaba
+    // arriba, y era lo que hacia parecer que el motor sujetaba los FPS.
+    if (lvl >= 10 && auto_scale >= 0.999f && fps >= (double)target) return;
 
     if (fps < target - 3) {
-        if (auto_scale > 0.6f) {
-            auto_scale = Math::max(0.6f, auto_scale - 0.05f);
+        // Primero se ajusta la RESOLUCION en pasos pequeños (5%), que apenas se
+        // nota; solo cuando se agota ese margen se baja el nivel entero.
+        if (auto_scale > GL_AUTO_MIN_SCALE + 0.001f) {
+            auto_scale = Math::max(GL_AUTO_MIN_SCALE, auto_scale - 0.05f);
             if (vp) { vp->set_scaling_3d_scale(auto_scale);
                       vp->set_scaling_3d_mode(Viewport::SCALING_3D_MODE_FSR2); }
             cooldown = 1.0;
-        } else if (lvl > 1) {
+        } else if (lvl > GL_AUTO_MIN_LEVEL) {
             gl_apply_graphics_quality(lvl - 1, any);
-            auto_scale = 1.0f;                   // el nivel nuevo trae su escala
-            cooldown = 2.0;
+            cooldown = 2.0;                      // el nivel nuevo trae su escala
         }
+        // En el suelo: no se toca nada mas. Se aceptan los FPS que salgan.
     } else if (fps > target + 15) {
         if (auto_scale < 0.999f) {
             auto_scale = Math::min(1.0f, auto_scale + 0.05f);

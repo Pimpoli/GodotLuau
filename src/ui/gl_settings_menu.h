@@ -8,8 +8,9 @@
 //    como en Roblox movil) o START del gamepad. No pausa el mundo.
 //  · Fondo oscurecido + panel con animacion de apertura (escala+fade).
 //  · PESTANAS: Players (lista en vivo) / Settings / Help (controles).
-//  · Settings: calidad grafica, FPS maximos (60 por defecto), volumen,
-//    sensibilidad del mouse, mostrar FPS / ping en pantalla.
+//  · Settings: modo grafico (Automatic/Manual/Custom), calidad en 10
+//    cuadraditos como Roblox, V-Sync, tope de FPS, volumen, sensibilidad
+//    del mouse, mostrar FPS / ping en pantalla.
 //  · Leave Game pide confirmacion (segundo click), como Roblox.
 //  · Cada jugador guarda SUS ajustes en user://gl_settings_player<N>.cfg.
 // ════════════════════════════════════════════════════════════════════
@@ -72,11 +73,22 @@ class GLSettingsMenu : public CanvasLayer {
     const Color COL_DIM     = Color(0.62f, 0.65f, 0.70f);
     const Color COL_GREEN   = Color(0.22f, 0.78f, 0.40f);
     const Color COL_RED     = Color(0.92f, 0.30f, 0.30f);
+    // Cuadraditos de "Graphics Quality": lleno = IGM_Selected de Roblox
+    // (217,217,217, casi blanco), vacío = gris oscuro semitransparente.
+    const Color COL_STEP_ON  = Color(0.851f, 0.851f, 0.851f);
+    const Color COL_STEP_OFF = Color(1, 1, 1, 0.13f);
+
+    // Topes de FPS. 0 = Ilimitado. Se sube muy por encima de los 240 de Roblox
+    // porque quien apaga el V-Sync quiere justo eso: que el motor dibuje todos los
+    // frames que pueda, incluso mas de los que el monitor puede mostrar.
+    static const int FPS_COUNT   = 10;
+    static const int FPS_DEFAULT = 5;   // 240: alto, y el maximo "sano" de Roblox
+    const int FPS_OPTIONS[FPS_COUNT] = { 30, 60, 120, 144, 165, 240, 300, 360, 480, 0 };
 
     // ── Estado persistente ────────────────────────────────────────────
     int    quality   = 8;      // 1..10 (como Roblox), 1.15
     bool   cam_lock  = false;  // bloquear cámara: 3ª persona se ve como 1ª (1.15)
-    int    fps_idx   = 2;      // default 120
+    int    fps_idx   = FPS_DEFAULT;
     bool   show_fps  = false;
     bool   show_ping = false;
     double volume    = 100.0;  // 0..100
@@ -84,11 +96,9 @@ class GLSettingsMenu : public CanvasLayer {
     bool   fullscreen  = false;
     bool   invert_cam  = false;
     bool   shift_lock  = false; // "Bloqueo de mayúsculas" (shift lock)
-    int    gfx_mode    = 0;     // 0 = Automatic, 1 = Manual
+    int    gfx_mode    = 0;     // 0 = Automatic, 1 = Manual, 2 = Custom
+    bool   vsync       = false; // ver _on_vsync: apagado a propósito
     double bg_trans    = 0.96;  // opacidad del PANEL del menú (0 transparente..1 opaco)
-
-    static const int FPS_COUNT = 6;
-    const int FPS_OPTIONS[FPS_COUNT] = { 30, 60, 120, 144, 240, 0 };
 
     int display_num = 0;
 
@@ -103,11 +113,27 @@ class GLSettingsMenu : public CanvasLayer {
     VBoxContainer*  players_list = nullptr;
     Label*          players_count = nullptr;
     Label*          ping_val    = nullptr;
-    Label*          quality_val = nullptr;
     Label*          fps_val     = nullptr;
     Label*          volume_val  = nullptr;
     Label*          sens_val    = nullptr;
     Label*          gfx_val     = nullptr;
+    // ── "Graphics Quality" en cuadraditos (como Roblox) ───────────────
+    static const int QUAL_STEPS = 10;
+    Control*        quality_row = nullptr;              // la fila entera (para atenuarla)
+    Button*         qual_seg[QUAL_STEPS] = { nullptr, nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr, nullptr, nullptr, nullptr };
+    Ref<StyleBoxFlat> qual_sb[QUAL_STEPS];              // se reusan: solo cambia su color
+    Button*         qual_prev   = nullptr;
+    Button*         qual_next   = nullptr;
+    // ── Filas del modo Custom (solo visibles en Custom) ───────────────
+    static const int CUSTOM_ROW_MAX = 16;
+    Control*        custom_rows[CUSTOM_ROW_MAX] = { nullptr };
+    int             custom_row_n = 0;
+    Label*          up_val      = nullptr;   // Upscaler
+    Label*          shadow_val  = nullptr;   // Shadow Quality
+    Label*          rscale_val  = nullptr;
+    Label*          sharp_val   = nullptr;
+    Label*          vdist_val   = nullptr;
     Button*         leave_btn   = nullptr;
     Button*         burger      = nullptr;   // botón-logo arriba-izquierda (abre el menú), estilo Roblox
     Button*         chat_btn    = nullptr;   // botón de chat en la topbar (como Roblox)
@@ -206,6 +232,80 @@ class GLSettingsMenu : public CanvasLayer {
         hb->add_child(t);
         return t;
     }
+    // Fila de 10 cuadraditos, como el "Graphics Quality" del menu de Roblox: los
+    // <= nivel se pintan casi blancos y el resto quedan oscuros. Cada cuadradito
+    // es CLICABLE (salta directo a ese nivel) y a los lados van las flechas < >
+    // de siempre. Medidas de Roblox: 24 px de alto y 4 px de separacion, con las
+    // dos puntas del conjunto redondeadas.
+    void _quality_bar(HBoxContainer* hb) {
+        qual_prev = memnew(Button);
+        qual_prev->set_text(" < ");
+        qual_prev->set_flat(true);
+        qual_prev->add_theme_color_override("font_color", COL_ACCENT);
+        qual_prev->connect("pressed", Callable(this, "_on_quality").bind(-1));
+        hb->add_child(qual_prev);
+
+        HBoxContainer* steps = memnew(HBoxContainer);
+        steps->add_theme_constant_override("separation", 4);
+        steps->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+        hb->add_child(steps);
+        for (int i = 0; i < QUAL_STEPS; i++) {
+            Ref<StyleBoxFlat> sb = _box(COL_STEP_OFF, 4, 0);
+            // Puntas exteriores mas redondeadas (el resto casi recto), igual que el
+            // UICorner que Roblox pone solo en el primer y el ultimo paso.
+            if (i == 0) { sb->set_corner_radius(CORNER_TOP_LEFT, 8); sb->set_corner_radius(CORNER_BOTTOM_LEFT, 8); }
+            if (i == QUAL_STEPS - 1) { sb->set_corner_radius(CORNER_TOP_RIGHT, 8); sb->set_corner_radius(CORNER_BOTTOM_RIGHT, 8); }
+            Button* b = memnew(Button);
+            b->set_custom_minimum_size(Vector2(14, 24));
+            b->set_focus_mode(Control::FOCUS_NONE);
+            b->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+            // El MISMO stylebox en los cuatro estados: asi refrescar el nivel es
+            // cambiarle el color de fondo (sin crear objetos nuevos cada frame) y
+            // los cuadraditos no cambian de aspecto al pasar el raton.
+            b->add_theme_stylebox_override("normal",   sb);
+            b->add_theme_stylebox_override("hover",    sb);
+            b->add_theme_stylebox_override("pressed",  sb);
+            b->add_theme_stylebox_override("disabled", sb);
+            b->set_tooltip_text(String("Graphics Quality ") + String::num_int64(i + 1));
+            b->connect("pressed", Callable(this, "_on_quality_set").bind(i + 1));
+            steps->add_child(b);
+            qual_seg[i] = b;
+            qual_sb[i]  = sb;
+        }
+
+        qual_next = memnew(Button);
+        qual_next->set_text(" > ");
+        qual_next->set_flat(true);
+        qual_next->add_theme_color_override("font_color", COL_ACCENT);
+        qual_next->connect("pressed", Callable(this, "_on_quality").bind(1));
+        hb->add_child(qual_next);
+    }
+    // _row() devuelve el HBox de DENTRO de la fila; para mostrar u ocultar la fila
+    // entera hace falta su PanelContainer, que es el padre.
+    Control* _row_of(HBoxContainer* hb) {
+        return hb ? Object::cast_to<Control>(hb->get_parent()) : nullptr;
+    }
+    void _mark_custom(Control* c) {
+        if (c && custom_row_n < CUSTOM_ROW_MAX) custom_rows[custom_row_n++] = c;
+    }
+    void _refresh_custom_rows() {
+        const bool on = (gfx_mode == GL_QUALITY_CUSTOM);
+        for (int i = 0; i < custom_row_n; i++)
+            if (custom_rows[i]) custom_rows[i]->set_visible(on);
+    }
+    Node* _workspace() {
+        if (!is_inside_tree()) return nullptr;
+        return _find_by_class((Node*)get_tree()->get_root(), "RobloxWorkspace");
+    }
+    // Un ajuste del modo Custom. Se pasa por el Workspace cuando existe porque
+    // algunos (occlusion, batching) necesitan rehacer cosas del mundo; si no hay
+    // Workspace (escena suelta o 2D) al menos se deja el valor puesto.
+    void _gfx_custom(const String& name, float value) {
+        if (Node* ws = _workspace()) ws->call("SetGraphicsSetting", name, value);
+        else if (gl_custom_set(name, value)) gl_apply_graphics_quality(gl_graphics_level(), this);
+        _refresh_labels();
+        _save_settings();
+    }
 
     // ── Logo del juego (topbar, como el logo de Roblox arriba-izquierda) ──
     // El desarrollador pone su logo en res://gamelogo.png (o define el ajuste
@@ -258,6 +358,7 @@ protected:
         ClassDB::bind_method(D_METHOD("toggle_menu"),         &GLSettingsMenu::toggle_menu);
         ClassDB::bind_method(D_METHOD("_on_tab", "i"),        &GLSettingsMenu::_on_tab);
         ClassDB::bind_method(D_METHOD("_on_quality", "dir"),  &GLSettingsMenu::_on_quality);
+        ClassDB::bind_method(D_METHOD("_on_quality_set", "lvl"), &GLSettingsMenu::_on_quality_set);
         ClassDB::bind_method(D_METHOD("_on_cam_lock", "on"),  &GLSettingsMenu::_on_cam_lock);
         ClassDB::bind_method(D_METHOD("_on_fps", "dir"),      &GLSettingsMenu::_on_fps);
         ClassDB::bind_method(D_METHOD("_on_volume", "v"),     &GLSettingsMenu::_on_volume);
@@ -275,6 +376,19 @@ protected:
         ClassDB::bind_method(D_METHOD("_on_gfxmode", "dir"),  &GLSettingsMenu::_on_gfxmode);
         ClassDB::bind_method(D_METHOD("_on_bgtrans", "v"),    &GLSettingsMenu::_on_bgtrans);
         ClassDB::bind_method(D_METHOD("_on_perfstats", "on"), &GLSettingsMenu::_on_perfstats);
+        ClassDB::bind_method(D_METHOD("_on_vsync", "on"),     &GLSettingsMenu::_on_vsync);
+        // Filas del modo Custom (todas conectadas con Callable: si falta una de
+        // estas altas, el juego casca al pulsar el control).
+        ClassDB::bind_method(D_METHOD("_on_render_scale", "v"), &GLSettingsMenu::_on_render_scale);
+        ClassDB::bind_method(D_METHOD("_on_upscaler", "dir"),   &GLSettingsMenu::_on_upscaler);
+        ClassDB::bind_method(D_METHOD("_on_sharpness", "v"),    &GLSettingsMenu::_on_sharpness);
+        ClassDB::bind_method(D_METHOD("_on_shadowq", "dir"),    &GLSettingsMenu::_on_shadowq);
+        ClassDB::bind_method(D_METHOD("_on_viewdist", "v"),     &GLSettingsMenu::_on_viewdist);
+        ClassDB::bind_method(D_METHOD("_on_ssao", "on"),        &GLSettingsMenu::_on_ssao);
+        ClassDB::bind_method(D_METHOD("_on_glow", "on"),        &GLSettingsMenu::_on_glow);
+        ClassDB::bind_method(D_METHOD("_on_fog", "on"),         &GLSettingsMenu::_on_fog);
+        ClassDB::bind_method(D_METHOD("_on_occlusion", "on"),   &GLSettingsMenu::_on_occlusion);
+        ClassDB::bind_method(D_METHOD("_on_batching", "on"),    &GLSettingsMenu::_on_batching);
     }
 
 public:
@@ -444,7 +558,49 @@ public:
             { HBoxContainer* hb = _row(vb, "Background transparency"); _slider(hb, 0, 100, 1, bg_trans * 100.0, nullptr, "_on_bgtrans"); }
             { HBoxContainer* hb = _row(vb, "Performance Stats"); _toggle(hb, show_fps, "_on_perfstats"); }
             { HBoxContainer* hb = _row(vb, "Graphics Mode"); _selector(hb, &gfx_val, "_on_gfxmode"); }
-            { HBoxContainer* hb = _row(vb, "Graphics Quality"); _selector(hb, &quality_val, "_on_quality"); }
+            { HBoxContainer* hb = _row(vb, "Graphics Quality"); _quality_bar(hb); quality_row = _row_of(hb); }
+            // V-Sync: Roblox no lo tiene en su menu, aqui hace falta porque Godot lo
+            // trae ENCENDIDO y eso ataba los FPS a la tasa de refresco del monitor
+            // (y al no llegar, a su mitad exacta: 30 clavados en un monitor de 60 Hz).
+            { HBoxContainer* hb = _row(vb, "V-Sync");
+              CheckButton* t = _toggle(hb, vsync, "_on_vsync");
+              t->set_tooltip_text("Off: the FPS grow up to your Max FPS, even above what the monitor shows.\nOn: no tearing, but the FPS get tied to the monitor refresh rate."); }
+
+            // ── Ajustes sueltos: SOLO en modo Custom ──────────────────────
+            // Son los campos de GLCustomSettings (gl_graphics.h). Se crean siempre
+            // pero se muestran/ocultan con el modo (_refresh_custom_rows).
+            {
+                Label* h = _mklabel("Custom graphics", 17, COL_DIM);
+                vb->add_child(h);
+                _mark_custom(h);
+            }
+            { HBoxContainer* hb = _row(vb, "Render Scale");
+              _slider(hb, 25, 100, 5, gl_custom().render_scale * 100.0, &rscale_val, "_on_render_scale");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Upscaler"); _selector(hb, &up_val, "_on_upscaler");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Sharpness");
+              _slider(hb, 0, 2, 0.1, gl_custom().sharpness, &sharp_val, "_on_sharpness");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Shadow Quality"); _selector(hb, &shadow_val, "_on_shadowq");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "View Distance");
+              _slider(hb, 25, 200, 5, gl_custom().view_distance * 100.0, &vdist_val, "_on_viewdist");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Ambient Occlusion"); _toggle(hb, gl_custom().ssao, "_on_ssao");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Glow"); _toggle(hb, gl_custom().glow, "_on_glow");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Fog"); _toggle(hb, gl_custom().fog, "_on_fog");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Occlusion Culling");
+              CheckButton* t = _toggle(hb, gl_custom().occlusion, "_on_occlusion");
+              t->set_tooltip_text("Skips what walls hide. Helps with few big walls, costs CPU with many small parts.");
+              _mark_custom(_row_of(hb)); }
+            { HBoxContainer* hb = _row(vb, "Static Batching");
+              CheckButton* t = _toggle(hb, gl_custom().static_batching, "_on_batching");
+              t->set_tooltip_text("Draws the anchored parts of each zone in a single call.");
+              _mark_custom(_row_of(hb)); }
 
             _section(vb, "Max Frame Rate");
             { HBoxContainer* hb = _row(vb, "Max FPS"); _selector(hb, &fps_val, "_on_fps"); }
@@ -546,6 +702,7 @@ public:
         }
 
         _apply_all();
+        _refresh_custom_rows();   // las filas de Custom nacen ocultas si el modo no lo es
         _select_tab(0);
         _refresh_labels();
         set_process(true);
@@ -691,7 +848,16 @@ public:
     }
 
     // ── Cambios de ajustes ────────────────────────────────────────────
-    void _on_quality(int dir) { quality = Math::clamp(quality + dir, 1, 10); _apply_all(); _refresh_labels(); _save_settings(); }
+    // Las flechas < > mueven un nivel; pulsar un cuadradito salta a ese nivel.
+    // En Automatic el nivel lo mueve el motor, asi que los dos no hacen nada (los
+    // controles ademas salen deshabilitados, como el slider gris de Roblox).
+    void _on_quality(int dir)     { _set_quality(quality + dir); }
+    void _on_quality_set(int lvl) { _set_quality(lvl); }
+    void _set_quality(int lvl) {
+        if (gfx_mode == GL_QUALITY_AUTOMATIC) return;
+        quality = Math::clamp(lvl, 1, 10);
+        _apply_all(); _refresh_labels(); _save_settings();
+    }
     void _on_cam_lock(bool on) { cam_lock = on; _apply_camera_lock(); _save_settings(); }
     void _on_fps(int dir)     { fps_idx = Math::clamp(fps_idx + dir, 0, FPS_COUNT - 1); _apply_all(); _refresh_labels(); _save_settings(); }
     void _on_volume(double v) { volume = v; _apply_all(); _refresh_labels(); _save_settings(); }
@@ -717,7 +883,47 @@ public:
         _save_settings();
     }
     void _on_shiftlock(bool on) { shift_lock = on; _save_settings(); }
-    void _on_gfxmode(int dir)   { gfx_mode = Math::clamp(gfx_mode + dir, 0, 1); _refresh_labels(); _save_settings(); }
+    // Graphics Mode: Automatic / Manual / Custom (en ese orden, como pide Roblox
+    // con su Custom detras de Manual). Antes solo cambiaba la etiqueta: el modo
+    // real nunca se movia y el selector estaba muerto.
+    void _on_gfxmode(int dir) {
+        gfx_mode = Math::clamp(gfx_mode + dir, 0, 2);
+        _apply_gfx_mode();
+        _refresh_labels();
+        _save_settings();
+    }
+    void _apply_gfx_mode() {
+        gl_quality_mode() = gfx_mode;
+        // En Manual/Custom manda el nivel del jugador; en Automatic lo mueve el
+        // motor (gl_auto_quality_tick), asi que se parte del nivel EFECTIVO.
+        const int lvl = (gfx_mode == GL_QUALITY_AUTOMATIC) ? gl_graphics_level() : quality;
+        // Si hay Workspace, que se entere el tambien: su SetGraphicsMode reaplica
+        // desde el nodo del mundo (occlusion por viewport, occluders, chunks).
+        if (Node* ws = _workspace()) ws->call("SetGraphicsMode", gfx_mode);
+        gl_apply_graphics_quality(lvl, this);
+        _refresh_custom_rows();
+    }
+    // V-Sync APAGADO por defecto: Roblox no ata los FPS a la tasa de refresco, y
+    // con V-Sync encendido un frame que no entra en el intervalo del monitor
+    // espera al vblank siguiente y los FPS caen a la mitad exacta (el "tope de 30
+    // FPS" en un monitor de 60 Hz). Encenderlo es para quien prefiera no ver
+    // tearing y acepte ese techo.
+    void _on_vsync(bool on) { vsync = on; gl_apply_vsync(vsync, this); _save_settings(); }
+    // ── Ajustes del modo Custom ───────────────────────────────────────
+    void _on_render_scale(double v) { _gfx_custom("RenderScale", (float)(v / 100.0)); }
+    void _on_upscaler(int dir) {
+        _gfx_custom("Upscaler", (float)Math::clamp(gl_custom().upscaler + dir, 0, 2));
+    }
+    void _on_sharpness(double v)    { _gfx_custom("Sharpness", (float)v); }
+    void _on_shadowq(int dir) {
+        _gfx_custom("ShadowQuality", (float)Math::clamp(gl_custom().shadow_quality + dir, 0, 5));
+    }
+    void _on_viewdist(double v)     { _gfx_custom("ViewDistance", (float)(v / 100.0)); }
+    void _on_ssao(bool on)          { _gfx_custom("SSAO",  on ? 1.0f : 0.0f); }
+    void _on_glow(bool on)          { _gfx_custom("Glow",  on ? 1.0f : 0.0f); }
+    void _on_fog(bool on)           { _gfx_custom("Fog",   on ? 1.0f : 0.0f); }
+    void _on_occlusion(bool on)     { _gfx_custom("Occlusion", on ? 1.0f : 0.0f); }
+    void _on_batching(bool on)      { _gfx_custom("StaticBatching", on ? 1.0f : 0.0f); }
     void _on_bgtrans(double v)  { bg_trans = Math::clamp(v / 100.0, 0.0, 1.0); _apply_bg_trans(); _save_settings(); }
     // "Background transparency": SOLO la opacidad del panel del menú, nada más.
     void _apply_bg_trans() {
@@ -728,9 +934,18 @@ public:
 
     // ── Aplicar ───────────────────────────────────────────────────────
     void _apply_all() {
+        // El tope de FPS lo manda SOLO el jugador (0 = ilimitado). Y el V-Sync se
+        // aplica siempre, tambien al arrancar: el ajuste de proyecto de Godot solo
+        // se lee al iniciar y viene ENCENDIDO, asi que sin esto los FPS seguirian
+        // atados a la tasa de refresco del monitor.
         Engine::get_singleton()->set_max_fps(FPS_OPTIONS[fps_idx]);
-        // Calidad 1..10: escala, sombras suaves reales, SSAO, glow… en un sitio (1.15)
-        gl_apply_graphics_quality(quality, this);
+        gl_apply_vsync(vsync, this);
+        // Modo grafico elegido (Automatic / Manual / Custom).
+        gl_quality_mode() = gfx_mode;
+        // Calidad 1..10: escala, sombras suaves reales, SSAO, glow… en un sitio (1.15).
+        // En Automatic se reaplica el nivel EFECTIVO y no el guardado: si no, tocar
+        // el volumen o la sensibilidad daria un salto de calidad hacia atras.
+        gl_apply_graphics_quality(gfx_mode == GL_QUALITY_AUTOMATIC ? gl_graphics_level() : quality, this);
         _apply_camera_lock();
         // Volumen maestro
         AudioServer* as = AudioServer::get_singleton();
@@ -754,12 +969,38 @@ public:
     }
 
     void _refresh_labels() {
-        // Calidad 1..10 estilo Roblox: se muestra el número (10 = máxima).
-        if (quality_val) quality_val->set_text(String::num_int64(quality) + "/10");
-        if (gfx_val) gfx_val->set_text(gfx_mode == 0 ? String::utf8("Automático") : String("Manual"));
-        if (fps_val) fps_val->set_text(FPS_OPTIONS[fps_idx] == 0 ? String::utf8("Ilimitado") : (String::num_int64(FPS_OPTIONS[fps_idx]) + " FPS"));
+        // ── Calidad: 10 cuadraditos (como Roblox), no un "8/10" ───────────
+        // En Automatic el nivel NO lo manda el jugador: los controles se
+        // deshabilitan y la fila se atenua, pero se sigue mostrando el nivel REAL
+        // que tiene el motor en ese momento.
+        const bool auto_mode = (gfx_mode == GL_QUALITY_AUTOMATIC);
+        const int  shown = auto_mode ? gl_graphics_level() : quality;
+        if (quality_row) quality_row->set_modulate(Color(1, 1, 1, auto_mode ? 0.55f : 1.0f));
+        for (int i = 0; i < QUAL_STEPS; i++) {
+            if (qual_sb[i].is_valid()) qual_sb[i]->set_bg_color(i < shown ? COL_STEP_ON : COL_STEP_OFF);
+            if (qual_seg[i]) qual_seg[i]->set_disabled(auto_mode);
+        }
+        if (qual_prev) qual_prev->set_disabled(auto_mode);
+        if (qual_next) qual_next->set_disabled(auto_mode);
+
+        if (gfx_val) gfx_val->set_text(gfx_mode == GL_QUALITY_MANUAL ? String("Manual")
+                                     : (gfx_mode == GL_QUALITY_CUSTOM ? String("Custom") : String("Automatic")));
+        if (fps_val) fps_val->set_text(FPS_OPTIONS[fps_idx] == 0 ? String("Unlimited") : (String::num_int64(FPS_OPTIONS[fps_idx]) + " FPS"));
         if (volume_val) volume_val->set_text(String::num_int64((int64_t)volume) + "%");
         if (sens_val) sens_val->set_text(String::num((double)sensitivity, 1) + "x");
+        // Filas del modo Custom
+        const GLCustomSettings& c = gl_custom();
+        if (rscale_val) rscale_val->set_text(String::num_int64((int64_t)(c.render_scale * 100.0f + 0.5f)) + "%");
+        if (sharp_val)  sharp_val->set_text(String::num((double)c.sharpness, 1));
+        if (vdist_val)  vdist_val->set_text(String::num_int64((int64_t)(c.view_distance * 100.0f + 0.5f)) + "%");
+        if (up_val) {
+            const char* ups[3] = { "Bilinear", "FSR", "FSR2" };
+            up_val->set_text(ups[Math::clamp(c.upscaler, 0, 2)]);
+        }
+        if (shadow_val) {
+            const char* sq[6] = { "Off", "Very Low", "Low", "Medium", "High", "Ultra" };
+            shadow_val->set_text(sq[Math::clamp(c.shadow_quality, 0, 5)]);
+        }
         Node* ns = _netservice();
         if (ping_val) {
             double ping = ns ? (double)ns->call("get_ping_ms") : -1.0;
@@ -810,12 +1051,27 @@ public:
     }
 
     // ── Persistencia por jugador ──────────────────────────────────────
+    // El tope de FPS se guarda como VALOR y no como indice: la lista de topes
+    // crecio (hasta 480 e Ilimitado) y con un indice guardado el 240 de antes se
+    // habria convertido en otra cosa. Si el valor no esta en la lista se coge el
+    // mas parecido.
+    int _fps_index_of(int fps) const {
+        for (int i = 0; i < FPS_COUNT; i++) if (FPS_OPTIONS[i] == fps) return i;
+        int best = FPS_DEFAULT, dist = 1 << 30;
+        for (int i = 0; i < FPS_COUNT; i++) {
+            if (FPS_OPTIONS[i] == 0) continue;          // Ilimitado no es "parecido" a nada
+            const int d = ABS(FPS_OPTIONS[i] - fps);
+            if (d < dist) { dist = d; best = i; }
+        }
+        return best;
+    }
     void _load_settings() {
         Ref<ConfigFile> cf; cf.instantiate();
         if (cf->load(_cfg_path()) == OK) {
             quality     = Math::clamp((int)(int64_t)cf->get_value("settings", "quality", 8), 1, 10);
             cam_lock    = (bool)cf->get_value("settings", "cam_lock", false);
-            fps_idx     = Math::clamp((int)(int64_t)cf->get_value("settings", "fps_idx", 1), 0, FPS_COUNT - 1);
+            const int saved_fps = (int)(int64_t)cf->get_value("settings", "max_fps", -1);
+            fps_idx     = saved_fps < 0 ? FPS_DEFAULT : _fps_index_of(saved_fps);
             show_fps    = (bool)cf->get_value("settings", "show_fps", false);
             show_ping   = (bool)cf->get_value("settings", "show_ping", false);
             volume      = Math::clamp((double)cf->get_value("settings", "volume", 100.0), 0.0, 100.0);
@@ -823,15 +1079,31 @@ public:
             fullscreen  = (bool)cf->get_value("settings", "fullscreen", false);
             invert_cam  = (bool)cf->get_value("settings", "invert_cam", false);
             shift_lock  = (bool)cf->get_value("settings", "shift_lock", false);
-            gfx_mode    = Math::clamp((int)(int64_t)cf->get_value("settings", "gfx_mode", 0), 0, 1);
+            gfx_mode    = Math::clamp((int)(int64_t)cf->get_value("settings", "gfx_mode", 0), 0, 2);
+            vsync       = (bool)cf->get_value("settings", "vsync", false);
             bg_trans    = Math::clamp((double)cf->get_value("settings", "bg_trans", 0.96), 0.0, 1.0);
+            // Ajustes del modo Custom: van a la struct global de gl_graphics.h, que
+            // es de donde los lee gl_apply_graphics_quality. `d` es una struct
+            // recien construida (= los valores por defecto): NO puede ser una
+            // referencia a gl_custom(), que es justo lo que se esta escribiendo.
+            const GLCustomSettings d{};
+            gl_custom_set("RenderScale",    (float)(double)cf->get_value("settings", "c_render_scale",  d.render_scale));
+            gl_custom_set("Upscaler",       (float)(double)cf->get_value("settings", "c_upscaler",      (double)d.upscaler));
+            gl_custom_set("Sharpness",      (float)(double)cf->get_value("settings", "c_sharpness",     d.sharpness));
+            gl_custom_set("ShadowQuality",  (float)(double)cf->get_value("settings", "c_shadow",        (double)d.shadow_quality));
+            gl_custom_set("ViewDistance",   (float)(double)cf->get_value("settings", "c_view_distance", d.view_distance));
+            gl_custom_set("SSAO",           (bool)cf->get_value("settings", "c_ssao",      d.ssao)      ? 1.0f : 0.0f);
+            gl_custom_set("Glow",           (bool)cf->get_value("settings", "c_glow",      d.glow)      ? 1.0f : 0.0f);
+            gl_custom_set("Fog",            (bool)cf->get_value("settings", "c_fog",       d.fog)       ? 1.0f : 0.0f);
+            gl_custom_set("Occlusion",      (bool)cf->get_value("settings", "c_occlusion", d.occlusion) ? 1.0f : 0.0f);
+            gl_custom_set("StaticBatching", (bool)cf->get_value("settings", "c_batching",  d.static_batching) ? 1.0f : 0.0f);
         }
     }
     void _save_settings() {
         Ref<ConfigFile> cf; cf.instantiate();
         cf->set_value("settings", "quality",     quality);
         cf->set_value("settings", "cam_lock",    cam_lock);
-        cf->set_value("settings", "fps_idx",     fps_idx);
+        cf->set_value("settings", "max_fps",     FPS_OPTIONS[fps_idx]);
         cf->set_value("settings", "show_fps",    show_fps);
         cf->set_value("settings", "show_ping",   show_ping);
         cf->set_value("settings", "volume",      volume);
@@ -840,7 +1112,19 @@ public:
         cf->set_value("settings", "invert_cam",  invert_cam);
         cf->set_value("settings", "shift_lock",  shift_lock);
         cf->set_value("settings", "gfx_mode",    gfx_mode);
+        cf->set_value("settings", "vsync",       vsync);
         cf->set_value("settings", "bg_trans",    bg_trans);
+        const GLCustomSettings& c = gl_custom();
+        cf->set_value("settings", "c_render_scale",  c.render_scale);
+        cf->set_value("settings", "c_upscaler",      c.upscaler);
+        cf->set_value("settings", "c_sharpness",     c.sharpness);
+        cf->set_value("settings", "c_shadow",        c.shadow_quality);
+        cf->set_value("settings", "c_view_distance", c.view_distance);
+        cf->set_value("settings", "c_ssao",          c.ssao);
+        cf->set_value("settings", "c_glow",          c.glow);
+        cf->set_value("settings", "c_fog",           c.fog);
+        cf->set_value("settings", "c_occlusion",     c.occlusion);
+        cf->set_value("settings", "c_batching",      c.static_batching);
         cf->save(_cfg_path());
     }
 

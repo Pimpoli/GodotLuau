@@ -25,7 +25,8 @@ CARPETAS = [
     "GodotLuau",   # TODO lo de la extension vive aqui (bin, icons, assets, shaders, DefaultScripts...)
 ]
 EXTENSIONES_BIN = (".dll", ".so", ".dylib", ".lib", ".exp")
-EXTENSIONES_TEXTO = (".cfg", ".gd", ".gdextension", ".txt", ".md", ".json", ".lua", ".uid")
+# ".luau" = plantillas de GodotLuau/DefaultScripts (el motor las lee de disco)
+EXTENSIONES_TEXTO = (".cfg", ".gd", ".gdextension", ".txt", ".md", ".json", ".lua", ".luau", ".uid")
 
 # Binarios por plataforma (para armar zips por plataforma en el release).
 BIN_POR_PLATAFORMA = {

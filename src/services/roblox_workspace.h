@@ -236,6 +236,8 @@ protected:
         ClassDB::bind_method(D_METHOD("GetAutoTargetFPS"),                     &RobloxWorkspace::get_auto_target_fps);
         ClassDB::bind_method(D_METHOD("SetGraphicsSetting","name","value"),    &RobloxWorkspace::set_custom_setting);
         ClassDB::bind_method(D_METHOD("GetGraphicsSetting","name"),            &RobloxWorkspace::get_custom_setting);
+        ClassDB::bind_method(D_METHOD("SetVSync","on"),                        &RobloxWorkspace::set_vsync);
+        ClassDB::bind_method(D_METHOD("GetVSync"),                             &RobloxWorkspace::get_vsync);
         // Rehace las piezas del mundo que falten (cielo, sol, camara, terrain).
         // La llama el importador de .rbxl despues de llenar el Workspace.
         ClassDB::bind_method(D_METHOD("EnsureEnvironment"),                    &RobloxWorkspace::gl_ensure_environment);
@@ -614,6 +616,12 @@ public:
 
     void _gl_apply_quality_deferred() {
         gl_apply_graphics_quality(gl_graphics_level(), this);
+        // V-Sync al arrancar: Godot lo trae ACTIVADO por ajuste de proyecto y eso
+        // clava los FPS en la tasa de refresco (o en su mitad). Aqui se fuerza el
+        // valor que manda el jugador — el menu ya cargo el suyo antes que este
+        // diferido, asi que esto respeta su eleccion y solo cubre el caso de un
+        // juego sin menu de ajustes.
+        gl_apply_vsync(gl_vsync_enabled(), this);
     }
 
     static int _gl_count_parts(Node* n) {
@@ -653,52 +661,34 @@ public:
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
     int  get_graphics_mode() const { return gl_quality_mode(); }
-    void set_auto_target_fps(int fps) { gl_auto_target_fps() = CLAMP(fps, 15, 240); }
+    // Objetivo del modo Automatic. El techo se deja alto (480) porque en pantallas
+    // de 144/240 Hz un objetivo de 240 es legitimo; el suelo son 15 FPS.
+    void set_auto_target_fps(int fps) { gl_auto_target_fps() = CLAMP(fps, 15, 480); }
     int  get_auto_target_fps() const  { return gl_auto_target_fps(); }
 
-    // Ajustes del modo Custom (cada uno independiente).
+    // ── V-Sync ───────────────────────────────────────────────────────────
+    // Roblox no lo expone en su menu, pero aqui hace falta: Godot lo trae
+    // ACTIVADO y eso ata los FPS a la tasa de refresco (ver gl_apply_vsync).
+    void set_vsync(bool on) { gl_apply_vsync(on, this); }
+    bool get_vsync() const  { return gl_vsync_enabled(); }
+
+    // Ajustes del modo Custom (cada uno independiente). El mapeo nombre→campo y
+    // los limites estan en gl_custom_set (gl_graphics.h), que tambien usa el menu
+    // de ajustes; aqui solo quedan los efectos que necesitan el nodo del mundo.
     void set_custom_setting(String name, float value) {
-        GLCustomSettings& c = gl_custom();
-        if      (name == "RenderScale")   c.render_scale   = CLAMP(value, 0.25f, 1.0f);
-        else if (name == "Upscaler")      c.upscaler       = (int)CLAMP(value, 0.0f, 2.0f);
-        else if (name == "Sharpness")     c.sharpness      = CLAMP(value, 0.0f, 2.0f);
-        else if (name == "ShadowQuality") c.shadow_quality = (int)CLAMP(value, 0.0f, 5.0f);
-        else if (name == "ViewDistance")  c.view_distance  = CLAMP(value, 0.25f, 2.0f);
-        else if (name == "SSAO")          c.ssao           = value > 0.5f;
-        else if (name == "Glow")          c.glow           = value > 0.5f;
-        else if (name == "Fog")           c.fog            = value > 0.5f;
-        // Occlusion culling: activarlo, desde que tamaño una pieza tapa, y como
-        // de precisa es la estructura (mas preciso = descarta mejor pero cuesta
-        // mas CPU; ese es el equilibrio del culling por software).
-        else if (name == "Occlusion")     { c.occlusion      = value > 0.5f; _gl_refresh_occluders(this); }
-        else if (name == "OcclusionSize") { c.occlusion_size = CLAMP(value, 2.0f, 64.0f); _gl_refresh_occluders(this); }
-        else if (name == "OcclusionQuality") c.occlusion_bvh = (int)CLAMP(value, 0.0f, 2.0f);
+        if (!gl_custom_set(name, value)) return;   // nombre desconocido: no tocar nada
+        // Occlusion culling: cambia desde que tamaño una pieza tapa, asi que hay
+        // que recalcular cuales son occluders (mas occluders = descarta mejor pero
+        // cuesta mas CPU; ese es el equilibrio del culling por software).
+        if (name == "Occlusion" || name == "OcclusionSize") _gl_refresh_occluders(this);
         // Transparencia por borrado de pixeles: hay que rehacer los materiales
         // (cambia el modo de transparencia de cada pieza translucida).
-        else if (name == "PixelTransparency") { c.pixel_transparency = value > 0.5f; _gl_refresh_transparency(this); }
-        else if (name == "StaticBatching") { c.static_batching = value > 0.5f; _gl_rebuild_chunks(); }
-        else if (name == "ChunkSize")      { c.chunk_size = CLAMP(value, 16.0f, 512.0f); _gl_rebuild_chunks(); }
-        else return;
+        else if (name == "PixelTransparency") _gl_refresh_transparency(this);
+        else if (name == "StaticBatching" || name == "ChunkSize" || name == "MergeZonePhysics")
+            _gl_rebuild_chunks();
         gl_apply_graphics_quality(gl_graphics_level(), this);
     }
-    float get_custom_setting(String name) const {
-        const GLCustomSettings& c = gl_custom();
-        if (name == "RenderScale")   return c.render_scale;
-        if (name == "Upscaler")      return (float)c.upscaler;
-        if (name == "Sharpness")     return c.sharpness;
-        if (name == "ShadowQuality") return (float)c.shadow_quality;
-        if (name == "ViewDistance")  return c.view_distance;
-        if (name == "SSAO")          return c.ssao ? 1.0f : 0.0f;
-        if (name == "Glow")          return c.glow ? 1.0f : 0.0f;
-        if (name == "Fog")           return c.fog ? 1.0f : 0.0f;
-        if (name == "Occlusion")        return c.occlusion ? 1.0f : 0.0f;
-        if (name == "OcclusionSize")    return c.occlusion_size;
-        if (name == "OcclusionQuality") return (float)c.occlusion_bvh;
-        if (name == "PixelTransparency") return c.pixel_transparency ? 1.0f : 0.0f;
-        if (name == "StaticBatching")    return c.static_batching ? 1.0f : 0.0f;
-        if (name == "ChunkSize")         return c.chunk_size;
-        return 0.0f;
-    }
+    float get_custom_setting(String name) const { return gl_custom_get(name); }
 
     // Rehace los occluders de todas las piezas (al cambiar los ajustes de
     // occlusion hay que recalcular cuales tapan y cuales ya no).
