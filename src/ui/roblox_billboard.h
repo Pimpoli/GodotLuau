@@ -13,6 +13,7 @@
 #include "lualib.h"
 #include "gl_errors.h"
 #include "gl_runtime.h"
+#include "gl_world_gui.h"
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
@@ -48,12 +49,19 @@ protected:
         ClassDB::bind_method(D_METHOD("get_always_on_top"),       &BillboardGui::get_always_on_top);
         ClassDB::bind_method(D_METHOD("set_max_distance", "v"),  &BillboardGui::set_max_distance);
         ClassDB::bind_method(D_METHOD("get_max_distance"),        &BillboardGui::get_max_distance);
+        ClassDB::bind_method(D_METHOD("set_StudsOffset", "v"),   &BillboardGui::set_studs_offset);
+        ClassDB::bind_method(D_METHOD("get_StudsOffset"),         &BillboardGui::get_studs_offset);
+        ClassDB::bind_method(D_METHOD("set_DistanceLowerLimit", "v"), &BillboardGui::set_min_distance);
+        ClassDB::bind_method(D_METHOD("get_DistanceLowerLimit"),      &BillboardGui::get_min_distance);
+        ClassDB::bind_method(D_METHOD("_gl_rebuild_world"),       &BillboardGui::_gl_rebuild_world);
 
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Enabled"),      "set_enabled",       "get_enabled");
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AlwaysOnTop"),  "set_always_on_top", "get_always_on_top");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "SizeX",  PROPERTY_HINT_RANGE, "0.1,50,0.1"), "set_size_x", "get_size_x");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "SizeY",  PROPERTY_HINT_RANGE, "0.1,50,0.1"), "set_size_y", "get_size_y");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "MaxDistance", PROPERTY_HINT_RANGE, "0,500,1"), "set_max_distance", "get_max_distance");
+        ADD_PROPERTY(PropertyInfo(Variant::VECTOR3,"StudsOffset"),        "set_StudsOffset", "get_StudsOffset");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "DistanceLowerLimit"), "set_DistanceLowerLimit", "get_DistanceLowerLimit");
     }
 
 public:
@@ -68,14 +76,41 @@ public:
     void set_max_distance(float v)  { max_distance = v; }
     float get_max_distance() const  { return max_distance; }
 
+    void set_studs_offset(Vector3 v) { studies_offset = v; set_position(v); }
+    Vector3 get_studs_offset() const { return studies_offset; }
+    void set_min_distance(float v)   { min_distance = v; }
+    float get_min_distance() const   { return min_distance; }
+
+    // Reconstruye el reflejo 3D del contenido. Se llama en diferido: los
+    // Control hijos necesitan un frame para tener su rect resuelto.
+    void _gl_rebuild_world() {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        gl_world_gui_cull(this);
+        gl_world_gui_mark(this);
+        if (!gl_world_gui_in_world(this)) return;   // plantilla guardada
+        Viewport* vp = get_viewport();
+        const Vector2 area = vp ? vp->get_visible_rect().size : Vector2(1280, 720);
+        LocalVector<GLWorldGuiItem> items;
+        for (int i = 0; i < get_child_count(); i++) {
+            Node* c = get_child(i);
+            if (c && !c->has_meta("__gl_world_gui"))
+                gl_world_gui_collect(c, area, items, 6);
+        }
+        // Size de un BillboardGui: el Offset del UDim2 va en studs.
+        const float w = MAX(0.2f, size_x);
+        const float h = MAX(0.2f, size_y);
+        gl_world_gui_build(this, items, w, h, true, max_distance);
+    }
+
     void _ready() override {
         if (Engine::get_singleton()->is_editor_hint()) return;
-        // All child Label3D/etc. placed as children from Lua will be
-        // billboard-mode by default when added to BillboardGui
+        // Los Label3D que un script haya puesto a mano siguen en modo billboard.
         for (int i = 0; i < get_child_count(); i++) {
             Label3D* lbl = Object::cast_to<Label3D>(get_child(i));
             if (lbl) lbl->set_billboard_mode(BaseMaterial3D::BILLBOARD_ENABLED);
         }
+        set_position(studies_offset);
+        call_deferred("_gl_rebuild_world");
     }
 };
 
@@ -97,6 +132,10 @@ class SurfaceGui : public Node3D {
     float   brightness     = 1.0f;
     float   light_influence = 1.0f;
     bool    active         = true;
+    Vector2 canvas_size    = Vector2(0, 0);
+    int     sizing_mode    = 0;      // FixedSize=0, PixelsPerStud=1
+    float   max_distance   = 0.0f;
+    float   z_offset       = 0.0f;
 
 protected:
     static void _bind_methods() {
@@ -108,11 +147,30 @@ protected:
         ClassDB::bind_method(D_METHOD("get_face"),                    &SurfaceGui::get_face);
         ClassDB::bind_method(D_METHOD("set_brightness", "v"),        &SurfaceGui::set_brightness);
         ClassDB::bind_method(D_METHOD("get_brightness"),              &SurfaceGui::get_brightness);
+        ClassDB::bind_method(D_METHOD("set_CanvasSize", "v"),        &SurfaceGui::set_CanvasSizeV);
+        ClassDB::bind_method(D_METHOD("get_CanvasSize"),              &SurfaceGui::get_CanvasSizeV);
+        ClassDB::bind_method(D_METHOD("set_SizingMode", "v"),        &SurfaceGui::set_SizingMode);
+        ClassDB::bind_method(D_METHOD("get_SizingMode"),              &SurfaceGui::get_SizingMode);
+        ClassDB::bind_method(D_METHOD("set_LightInfluence", "v"),    &SurfaceGui::set_LightInfluence);
+        ClassDB::bind_method(D_METHOD("get_LightInfluence"),          &SurfaceGui::get_LightInfluence);
+        ClassDB::bind_method(D_METHOD("set_MaxDistance", "v"),       &SurfaceGui::set_MaxDistanceS);
+        ClassDB::bind_method(D_METHOD("get_MaxDistance"),             &SurfaceGui::get_MaxDistanceS);
+        ClassDB::bind_method(D_METHOD("set_AlwaysOnTop", "v"),       &SurfaceGui::set_AlwaysOnTop);
+        ClassDB::bind_method(D_METHOD("get_AlwaysOnTop"),             &SurfaceGui::get_AlwaysOnTop);
+        ClassDB::bind_method(D_METHOD("set_ZOffset", "v"),           &SurfaceGui::set_ZOffset);
+        ClassDB::bind_method(D_METHOD("get_ZOffset"),                 &SurfaceGui::get_ZOffset);
+        ClassDB::bind_method(D_METHOD("_gl_rebuild_world"),           &SurfaceGui::_gl_rebuild_world);
 
         ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "Enabled"),       "set_enabled",         "get_enabled");
         ADD_PROPERTY(PropertyInfo(Variant::INT,   "PixelsPerStuds", PROPERTY_HINT_RANGE, "1,200,1"), "set_pixels_per_stud", "get_pixels_per_stud");
         ADD_PROPERTY(PropertyInfo(Variant::INT,   "Face",           PROPERTY_HINT_RANGE, "0,5,1"),   "set_face",            "get_face");
         ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "Brightness",     PROPERTY_HINT_RANGE, "0,2,0.01"), "set_brightness",     "get_brightness");
+        ADD_PROPERTY(PropertyInfo(Variant::VECTOR2,"CanvasSize"),      "set_CanvasSize",      "get_CanvasSize");
+        ADD_PROPERTY(PropertyInfo(Variant::INT,   "SizingMode"),      "set_SizingMode",      "get_SizingMode");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "LightInfluence"),  "set_LightInfluence",  "get_LightInfluence");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "MaxDistance"),     "set_MaxDistance",     "get_MaxDistance");
+        ADD_PROPERTY(PropertyInfo(Variant::BOOL,  "AlwaysOnTop"),     "set_AlwaysOnTop",     "get_AlwaysOnTop");
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ZOffset"),         "set_ZOffset",         "get_ZOffset");
     }
 
 public:
@@ -124,6 +182,67 @@ public:
     int  get_face() const            { return face; }
     void set_brightness(float v)     { brightness = v; }
     float get_brightness() const     { return brightness; }
+    void set_CanvasSizeV(Vector2 v)  { canvas_size = v; }
+    Vector2 get_CanvasSizeV() const  { return canvas_size; }
+    void set_SizingMode(int v)       { sizing_mode = v; }
+    int  get_SizingMode() const      { return sizing_mode; }
+    void set_LightInfluence(float v) { light_influence = v; }
+    float get_LightInfluence() const { return light_influence; }
+    void set_MaxDistanceS(float v)   { max_distance = v; }
+    float get_MaxDistanceS() const   { return max_distance; }
+    void set_AlwaysOnTop(bool v)     { always_on_top = v; }
+    bool get_AlwaysOnTop() const     { return always_on_top; }
+    void set_ZOffset(float v)        { z_offset = v; }
+    float get_ZOffset() const        { return z_offset; }
+
+    // Un SurfaceGui va PEGADO a una cara del Part padre. Se orienta a esa cara
+    // y se refleja el contenido con Label3D/Sprite3D. Face de Roblox:
+    // Right=0, Top=1, Back=2, Left=3, Bottom=4, Front=5.
+    void _gl_rebuild_world() {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        gl_world_gui_cull(this);
+        gl_world_gui_mark(this);
+        if (!gl_world_gui_in_world(this)) return;   // plantilla guardada
+
+        // Tamaño de la cara a partir del Size del Part padre (si lo tiene).
+        Vector3 psz(4, 4, 1);
+        Node* par = get_parent();
+        if (par) {
+            Variant v = par->get(StringName("Size"));
+            if (v.get_type() == Variant::VECTOR3) psz = v;
+        }
+        float w = psz.x, h = psz.y;
+        Vector3 rot, off;
+        const float eps = 0.02f + z_offset * 0.05f;
+        switch (face) {
+            case 0: w = psz.z; h = psz.y; rot = Vector3(0,  90, 0); off = Vector3( psz.x*0.5f+eps, 0, 0); break;  // Right
+            case 1: w = psz.x; h = psz.z; rot = Vector3(-90, 0, 0); off = Vector3(0,  psz.y*0.5f+eps, 0); break;  // Top
+            case 2: w = psz.x; h = psz.y; rot = Vector3(0, 180, 0); off = Vector3(0, 0,  psz.z*0.5f+eps); break;  // Back
+            case 3: w = psz.z; h = psz.y; rot = Vector3(0, -90, 0); off = Vector3(-psz.x*0.5f-eps, 0, 0); break;  // Left
+            case 4: w = psz.x; h = psz.z; rot = Vector3( 90, 0, 0); off = Vector3(0, -psz.y*0.5f-eps, 0); break;  // Bottom
+            default:w = psz.x; h = psz.y; rot = Vector3(0,   0, 0); off = Vector3(0, 0, -psz.z*0.5f-eps); break;  // Front
+        }
+        set_position(off);
+        set_rotation_degrees(rot);
+
+        LocalVector<GLWorldGuiItem> items;
+        Viewport* vp = get_viewport();
+        const Vector2 area = vp ? vp->get_visible_rect().size : Vector2(1280, 720);
+        for (int i = 0; i < get_child_count(); i++) {
+            Node* c = get_child(i);
+            if (c && !c->has_meta("__gl_world_gui"))
+                gl_world_gui_collect(c, area, items, 4);
+        }
+        // Distancia de corte: si el juego no la fija, un valor generoso pero
+        // finito para que 1185 carteles no se dibujen todos a la vez.
+        const float md = (max_distance > 0.5f && max_distance < 4000.0f) ? max_distance : 220.0f;
+        gl_world_gui_build(this, items, MAX(0.2f, w), MAX(0.2f, h), false, md);
+    }
+
+    void _ready() override {
+        if (Engine::get_singleton()->is_editor_hint()) return;
+        call_deferred("_gl_rebuild_world");
+    }
 };
 
 // ────────────────────────────────────────────────────────────────────

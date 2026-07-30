@@ -82,7 +82,7 @@ private:
         // El sampler NUNCA queda vacio: un descriptor set incompleto en
         // D3D12/Vulkan produce "Uniforms were never supplied for set ..."
         // (godot #120417 / #65732). Blanco 1x1 = neutro si no hay textura.
-        Ref<Image> white = Image::create(1, 1, false, Image::FORMAT_RGBA8);
+        Ref<Image> white = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
         white->fill(Color(1, 1, 1, 1));
         fade_mat->set_shader_parameter("albedo_tex", ImageTexture::create_from_image(white));
         // Recorrer las mallas del personaje: tomar su textura y registrarlas.

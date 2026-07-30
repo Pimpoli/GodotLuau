@@ -266,6 +266,8 @@ static inline void _gl_push_inert_signal(lua_State* L) {
         lua_newtable(pL);
         lua_pushcfunction(pL, [](lua_State*) -> int { return 0; }, "Disconnect");
         lua_setfield(pL, -2, "Disconnect");
+        lua_getfield(pL, -1, "Disconnect");   // alias legacy :disconnect()
+        lua_setfield(pL, -2, "disconnect");
         lua_pushboolean(pL, 0); lua_setfield(pL, -2, "Connected");
         return 1;
     }, "Connect");
@@ -295,6 +297,12 @@ static void _gl_push_connection(lua_State* L, Node* node, int ref) {
         return 0;
     }, "Disconnect", 2);
     lua_setfield(L, -2, "Disconnect");
+    lua_getfield(L, -1, "Disconnect");   // alias legacy :disconnect()
+    lua_setfield(L, -2, "disconnect");
+    // Alias en minuscula: Roblox lo mantiene por compatibilidad y los scripts
+    // de animacion que traen los places (Animate.lua) usan connection:disconnect().
+    lua_getfield(L, -1, "Disconnect");
+    lua_setfield(L, -2, "disconnect");
     // Connected DINÁMICO (1.14.15): antes era un booleano fijo en true, así que
     // seguía diciendo true después de Disconnect(). Va por __index para que se
     // lea del estado real; solo salta si la clave no está en la tabla.
@@ -752,16 +760,24 @@ static int method_getservice(lua_State* L) {
         gow_node(w)->add_child(ns);
         wrap_node(L, ns); return 1;
     }
-    // Players SIEMPRE existe (como en Roblox): si el juego no tiene el nodo,
-    // se crea al pedirlo. Sin esto game:GetService("Players") devolvia nil y
-    // cualquier framework con Players:GetPlayers() moria al instante.
-    if (strcmp(svc_name, "Players") == 0) {
-        Node* ps = Object::cast_to<Node>(ClassDB::instantiate(StringName("Players")));
-        if (ps) {
-            ps->set_name("Players");
-            gow_node(w)->add_child(ps);
-            wrap_node(L, ps); return 1;
-        }
+    // Los servicios SIEMPRE existen, igual que en Roblox: GetService los crea al
+    // pedirlos si no estan. Sin esto, un place importado (que no serializa los
+    // servicios de entrada ni de tiempo) devolvia nil y se llevaba por delante a
+    // todos los scripts de interfaz: UserInputService.InputBegan, RunService,
+    // ContextActionService... eran la mitad de los errores del place de prueba.
+    static const char* kAutoServices[] = {
+        "Players", "UserInputService", "ContextActionService", "RunService",
+        "TweenService", "CollectionService", "SoundService", "TextChatService",
+        "Lighting", "MaterialService", "PlayerScripts", NULL
+    };
+    for (int i = 0; kAutoServices[i]; i++) {
+        if (strcmp(svc_name, kAutoServices[i]) != 0) continue;
+        if (!ClassDB::class_exists(StringName(svc_name))) break;
+        Node* ps = Object::cast_to<Node>(ClassDB::instantiate(StringName(svc_name)));
+        if (!ps) break;
+        ps->set_name(svc_name);
+        gow_node(w)->add_child(ps);
+        wrap_node(L, ps); return 1;
     }
 
     lua_pushnil(L); return 1;
@@ -789,6 +805,72 @@ static int godot_object_index(lua_State* L) {
     }
     if (strcmp(key, "GetActor") == 0) {
         lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnil(pL); return 1; }, "GetActor"); return 1;
+    }
+
+    // ── StarterGui: SetCoreGuiEnabled / SetCore / GetCore ─────────────
+    // Aqui no existe la interfaz "core" de Roblox (mochila, lista de jugadores,
+    // chat oficial), pero CASI TODO HUD propio empieza apagandola. Si el metodo
+    // no existe, el script muere en su primera linea util y el inventario del
+    // juego se queda sin montar, con su plantilla a la vista. Se acepta y se
+    // recuerda el estado como atributo del nodo.
+    if (n->get_name() == StringName("StarterGui")) {
+        if (strcmp(key, "SetCoreGuiEnabled") == 0 || strcmp(key, "SetCoreGuiEnabledAll") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(pL, 1);
+                Node* sg = w ? gow_node(w) : nullptr;
+                if (!sg) return 0;
+                const int base = lua_isuserdata(pL, 1) ? 1 : 0;   // self implicito
+                String which = "All";
+                if (lua_isnumber(pL, base + 1)) which = String::num_int64((int64_t)lua_tonumber(pL, base + 1));
+                else if (lua_isstring(pL, base + 1)) which = String(lua_tostring(pL, base + 1));
+                const bool on = lua_toboolean(pL, base + 2) != 0;
+                sg->set_meta(String("_gl_coregui_") + which, on);
+                return 0;
+            }, "SetCoreGuiEnabled");
+            return 1;
+        }
+        if (strcmp(key, "GetCoreGuiEnabled") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int {
+                GodotObjectWrapper* w = (GodotObjectWrapper*)lua_touserdata(pL, 1);
+                Node* sg = w ? gow_node(w) : nullptr;
+                const int base = lua_isuserdata(pL, 1) ? 1 : 0;
+                String which = "All";
+                if (lua_isnumber(pL, base + 1)) which = String::num_int64((int64_t)lua_tonumber(pL, base + 1));
+                else if (lua_isstring(pL, base + 1)) which = String(lua_tostring(pL, base + 1));
+                const String mk = String("_gl_coregui_") + which;
+                lua_pushboolean(pL, (sg && sg->has_meta(mk)) ? ((bool)sg->get_meta(mk) ? 1 : 0) : 1);
+                return 1;
+            }, "GetCoreGuiEnabled");
+            return 1;
+        }
+        if (strcmp(key, "SetCore") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int { return 0; }, "SetCore");
+            return 1;
+        }
+        if (strcmp(key, "GetCore") == 0) {
+            lua_pushcfunction(L, [](lua_State* pL) -> int { lua_pushnil(pL); return 1; }, "GetCore");
+            return 1;
+        }
+    }
+
+    // ── Animator -> delega en el Humanoid padre ───────────────────────
+    // En Roblox lo normal es humanoid.Animator:LoadAnimation(anim). El Animator
+    // que trae un place importado es una instancia pelada, asi que se reenvia
+    // al Humanoid (sin esto los NPC no animaban: "LoadAnimation is not a valid
+    // member of RBXInstance").
+    if (n->get_name() == StringName("Animator") && !n->is_class("Humanoid")) {
+        static const char* kFwd[] = { "LoadAnimation", "GetPlayingAnimationTracks",
+                                      "AnimationPlayed", "StepAnimation",
+                                      "ApplyJointVelocities", nullptr };
+        for (int i = 0; kFwd[i]; i++) {
+            if (strcmp(key, kFwd[i]) != 0) continue;
+            Node* p = n->get_parent();
+            if (p && p->is_class("Humanoid")) {
+                wrap_node(L, p);
+                lua_replace(L, 1);
+                return godot_object_index(L);
+            }
+        }
     }
 
     // ── DataModel (game): PlaceId/JobId/CreatorId/BindToClose… (Ola 2) ──
@@ -837,6 +919,15 @@ static int godot_object_index(lua_State* L) {
             if (strcmp(key, "DisplayName") == 0) { lua_pushstring(L, plr->display_name.utf8().get_data()); return 1; }
             if (strcmp(key, "AccountAge") == 0)  { lua_pushnumber(L, (double)plr->account_age); return 1; }
             if (strcmp(key, "ClassName") == 0)   { lua_pushstring(L, "Player"); return 1; }
+            // Player.Chatted: el Animate.lua que traen los NPC de un place se
+            // engancha aqui para las animaciones de hablar. Aqui no hay chat de
+            // Roblox detras, asi que se acepta la conexion (senal inerte) para
+            // que el script llegue hasta el final en vez de morir a mitad.
+            if (strcmp(key, "Chatted") == 0 || strcmp(key, "Idled") == 0 ||
+                strcmp(key, "OnTeleport") == 0) {
+                _gl_push_inert_signal(L);
+                return 1;
+            }
             if (strcmp(key, "Team") == 0) {
                 Node* t = plr->get_team();
                 if (t) wrap_node(L, t); else lua_pushnil(L);
@@ -1146,17 +1237,17 @@ static int godot_object_index(lua_State* L) {
     // coherentes y editables como atributos del nodo Game.
     if (n->is_class("RobloxTemplate") || n->get_name() == StringName("Game")) {
         if (strcmp(key, "PlaceId") == 0) {
-            Variant v = n->get_meta("PlaceId", Variant());
+            Variant v = n->has_meta("PlaceId") ? n->get_meta("PlaceId") : Variant();
             lua_pushnumber(L, v.get_type() == Variant::NIL ? 0.0 : (double)v);
             return 1;
         }
         if (strcmp(key, "PlaceVersion") == 0) {
-            Variant v = n->get_meta("PlaceVersion", Variant());
+            Variant v = n->has_meta("PlaceVersion") ? n->get_meta("PlaceVersion") : Variant();
             lua_pushnumber(L, v.get_type() == Variant::NIL ? 1.0 : (double)v);
             return 1;
         }
         if (strcmp(key, "JobId") == 0) {
-            Variant v = n->get_meta("JobId", Variant());
+            Variant v = n->has_meta("JobId") ? n->get_meta("JobId") : Variant();
             lua_pushstring(L, v.get_type() == Variant::NIL ? "" : String(v).utf8().get_data());
             return 1;
         }
@@ -1289,7 +1380,10 @@ static int godot_object_index(lua_State* L) {
             if (!sn) { lua_pushnil(pL); return 1; }
             lua_pushvalue(pL, 2); int ref = lua_ref(pL, -1); lua_pop(pL, 1);
             const char* gsig = adding ? "child_entered_tree" : "child_exiting_tree";
-            if (nd->has_signal(gsig))
+            // .bind(ref) crea un Callable distinto por conexion, pero Godot
+            // compara solo el metodo base: sin este guardia salta un warning
+            // "Signal already connected" por cada script que escucha ChildAdded.
+            if (nd->has_signal(gsig) && !nd->is_connected(gsig, Callable(sn, "_gl_child_event").bind(ref)))
                 nd->connect(gsig, Callable(sn, "_gl_child_event").bind(ref));
             // Objeto conexión con Disconnect() (resuelve por ObjectID: seguro
             // aunque los nodos se hayan destruido cuando se llame).
@@ -1312,6 +1406,8 @@ static int godot_object_index(lua_State* L) {
                 return 0;
             }, "Disconnect", 4);
             lua_setfield(pL, -2, "Disconnect");
+            lua_getfield(pL, -1, "Disconnect");   // alias legacy :disconnect()
+            lua_setfield(pL, -2, "disconnect");
             return 1;
         }, "Connect", 2);
         lua_setfield(L, -2, "Connect");
@@ -1587,6 +1683,11 @@ static int godot_object_index(lua_State* L) {
 
     // ── TextChatService ───────────────────────────────────────────
     TextChatService* tcs = Object::cast_to<TextChatService>(n);
+    if (tcs) {
+        // Enum.ChatVersion: LegacyChatService=0, TextChatService=1. Los juegos lo
+        // consultan para elegir que API de chat usar; devolver nil los tumbaba.
+        if (strcmp(key, "ChatVersion") == 0) { lua_pushnumber(L, 1); return 1; }
+    }
     if (tcs) {
         if (strcmp(key, "SendMessage") == 0) {
             lua_pushcfunction(L, [](lua_State* pL) -> int {
@@ -1972,8 +2073,16 @@ static int godot_object_index(lua_State* L) {
                         // Load the animation from file if specified
                         String aid = ao->get_animation_id();
                         anim_id_s = aid;
-                        if (!aid.is_empty() && !ap->has_animation(StringName(anim_name_s))) {
-                            Ref<Animation> loaded_anim = ResourceLoader::get_singleton()->load(aid, "Animation");
+                        // Los ids de la nube de Roblox no se pueden cargar: se
+                        // busca la copia LOCAL del usuario y si no hay, no se
+                        // toca ResourceLoader (si no suelta dos ERROR rojos por
+                        // animacion; un place trae decenas).
+                        String apath = aid;
+                        if (gl_is_roblox_asset(aid)) apath = gl_local_asset_path(aid);
+                        ResourceLoader* arl = ResourceLoader::get_singleton();
+                        if (!apath.is_empty() && arl && arl->exists(apath, "Animation") &&
+                            !ap->has_animation(StringName(anim_name_s))) {
+                            Ref<Animation> loaded_anim = arl->load(apath, "Animation");
                             if (loaded_anim.is_valid()) {
                                 Ref<AnimationLibrary> lib;
                                 lib.instantiate();
@@ -2083,6 +2192,48 @@ static int godot_object_index(lua_State* L) {
             lua_setfield(L, -2, "Connect");
             gl_signal_lowercase_aliases(L);
             return 1;
+        }
+        // ── Senales de movimiento del Humanoid ────────────────────
+        // Running / Jumping / FreeFalling / Climbing / Swimming / GettingUp /
+        // Seated / MoveToFinished. Todas comparten el mismo cierre: el indice
+        // de la lista viaja como upvalue. Sin Running, el Animate.lua que trae
+        // cada NPC de un place moria en la primera linea (T-pose).
+        {
+            // El orden importa: el indice es la lista de callbacks del Humanoid
+            // (ver move_signal_list). Las que no tienen disparador propio se
+            // aceptan igual para que el script siga vivo, como en Roblox.
+            static const char* kMoveSig[] = { "Running", "Jumping", "FreeFalling",
+                                              "Climbing", "Swimming", "GettingUp",
+                                              "Seated", "MoveToFinished",
+                                              "FallingDown", "PlatformStanding",
+                                              "Strafing", "StateEnabledChanged",
+                                              "AnimationPlayed", "Touched", nullptr };
+            for (int mi = 0; kMoveSig[mi]; mi++) {
+                if (strcmp(key, kMoveSig[mi]) != 0) continue;
+                lua_newtable(L);
+                lua_pushlightuserdata(L, (void*)hum);
+                lua_pushinteger(L, mi);
+                lua_pushcclosure(L, [](lua_State* pL) -> int {
+                    Humanoid* h = static_cast<Humanoid*>(lua_touserdata(pL, lua_upvalueindex(1)));
+                    const int which = (int)lua_tointeger(pL, lua_upvalueindex(2));
+                    int fn_pos = -1;
+                    for (int ai = 1; ai <= lua_gettop(pL); ai++)
+                        if (lua_isfunction(pL, ai)) { fn_pos = ai; break; }
+                    if (fn_pos == -1 || !h) return 0;
+                    lua_getfield(pL, LUA_REGISTRYINDEX, "GODOTLUAU_MAIN_STATE");
+                    lua_State* main_L = static_cast<lua_State*>(lua_touserdata(pL, -1));
+                    lua_pop(pL, 1);
+                    if (!main_L) main_L = pL;
+                    lua_pushvalue(pL, fn_pos);
+                    int ref = lua_ref(pL, -1);
+                    lua_pop(pL, 1);
+                    h->add_move_signal_callback(which, main_L, ref);
+                    _gl_push_connection(pL, h, ref); return 1;
+                }, "Connect", 2);
+                lua_setfield(L, -2, "Connect");
+                gl_signal_lowercase_aliases(L);
+                return 1;
+            }
         }
         if (strcmp(key, "HealthChanged") == 0) {
             lua_newtable(L);
@@ -2379,6 +2530,8 @@ static int godot_object_index(lua_State* L) {
                 lua_newtable(pL);
                 lua_pushcfunction(pL, [](lua_State*) -> int { return 0; }, "Disconnect");
                 lua_setfield(pL, -2, "Disconnect");
+                lua_getfield(pL, -1, "Disconnect");   // alias legacy :disconnect()
+                lua_setfield(pL, -2, "disconnect");
                 return 1;
             }, "Connect", 2);
             lua_setfield(L, -2, "Connect");
@@ -2452,6 +2605,8 @@ static int godot_object_index(lua_State* L) {
                     return 0;
                 }, "Disconnect", 3);
                 lua_setfield(pL, -2, "Disconnect");
+                lua_getfield(pL, -1, "Disconnect");   // alias legacy :disconnect()
+                lua_setfield(pL, -2, "disconnect");
                 lua_pushboolean(pL, true);
                 lua_setfield(pL, -2, "Connected");
                 return 1;
@@ -2492,6 +2647,8 @@ static int godot_object_index(lua_State* L) {
                     return 0;
                 }, "Disconnect", 3);
                 lua_setfield(pL, -2, "Disconnect");
+                lua_getfield(pL, -1, "Disconnect");   // alias legacy :disconnect()
+                lua_setfield(pL, -2, "disconnect");
                 lua_pushboolean(pL, true);
                 lua_setfield(pL, -2, "Connected");
                 return 1;
@@ -3141,7 +3298,8 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key,"Text")     == 0) { lua_pushstring(L, rtbutton->get_text().utf8().get_data()); return 1; }
         if (strcmp(key,"Visible")  == 0) { lua_pushboolean(L, rtbutton->is_visible()); return 1; }
         if (strcmp(key,"ZIndex")   == 0) { lua_pushnumber(L, rtbutton->get_z_index()); return 1; }
-        if (strcmp(key,"MouseButton1Click") == 0 || strcmp(key,"Activated") == 0) {
+        if (strcmp(key,"MouseButton1Click") == 0 || strcmp(key,"Activated") == 0 ||
+            strcmp(key,"MouseButton1Down")  == 0 || strcmp(key,"MouseButton1Up") == 0) {
             lua_newtable(L);
             lua_pushlightuserdata(L, (void*)rtbutton);
             lua_pushcclosure(L, [](lua_State* pL)->int{
@@ -3190,7 +3348,8 @@ static int godot_object_index(lua_State* L) {
         if (strcmp(key,"BackgroundTransparency")== 0) { lua_pushnumber(L, rimgbtn->get_bg_alpha()); return 1; }
         if (strcmp(key,"Visible")  == 0) { lua_pushboolean(L, rimgbtn->is_visible()); return 1; }
         if (strcmp(key,"ZIndex")   == 0) { lua_pushnumber(L, rimgbtn->get_z_index()); return 1; }
-        if (strcmp(key,"MouseButton1Click") == 0 || strcmp(key,"Activated") == 0) {
+        if (strcmp(key,"MouseButton1Click") == 0 || strcmp(key,"Activated") == 0 ||
+            strcmp(key,"MouseButton1Down")  == 0 || strcmp(key,"MouseButton1Up") == 0) {
             lua_newtable(L);
             lua_pushlightuserdata(L, (void*)rimgbtn);
             lua_pushcclosure(L, [](lua_State* pL)->int{
@@ -3283,12 +3442,57 @@ static int godot_object_index(lua_State* L) {
             if (!cam) cam = lp->get_node_or_null("Camera2D");
             if (cam) { wrap_node(L, cam); return 1; }
         }
+        // Ultimo recurso y el mas fiel a Roblox: la camara ACTIVA del viewport,
+        // sea quien sea y donde este. Es lo que devuelve Roblox de verdad.
+        if (Viewport* vp = n->get_viewport()) {
+            if (Camera3D* c3 = vp->get_camera_3d()) { wrap_node(L, c3); return 1; }
+            if (Camera2D* c2 = vp->get_camera_2d()) { wrap_node(L, c2); return 1; }
+        }
         lua_pushnil(L); return 1;
+    }
+
+    // ── Camera: ViewportSize / GetPropertyChangedSignal ───────────────
+    // ViewportSize la leen casi todos los HUD para centrar y escalar paneles.
+    if (Camera3D* cam3 = Object::cast_to<Camera3D>(n)) {
+        if (strcmp(key, "ViewportSize") == 0) {
+            Viewport* vp = cam3->get_viewport();
+            const Vector2 sz = vp ? vp->get_visible_rect().size : Vector2(1280, 720);
+            push_vector2(L, sz.x, sz.y);
+            return 1;
+        }
+        if (strcmp(key, "FieldOfView") == 0) { lua_pushnumber(L, cam3->get_fov()); return 1; }
+        // Enum.CameraType: aqui la camara la mueve el PlayerModule, asi que el
+        // valor se guarda y se devuelve tal cual (Custom por defecto, como
+        // Roblox). Se lee en bucle en muchos scripts: devolver nil llenaba la
+        // consola con cientos de errores por segundo.
+        if (strcmp(key, "CameraType") == 0) {
+            lua_pushnumber(L, cam3->has_meta("_gl_camera_type")
+                              ? (double)(int64_t)cam3->get_meta("_gl_camera_type") : 5.0);
+            return 1;
+        }
+        if (strcmp(key, "CameraSubject") == 0) {
+            if (cam3->has_meta("_gl_camera_subject")) {
+                Node* sub = Object::cast_to<Node>(cam3->get_meta("_gl_camera_subject"));
+                if (sub) { wrap_node(L, sub); return 1; }
+            }
+            lua_pushnil(L); return 1;
+        }
+        if (strcmp(key, "NearPlaneZ") == 0)  { lua_pushnumber(L, -cam3->get_near()); return 1; }
     }
 
     // ── AnimationTrack ────────────────────────────────────────────────
     AnimationTrack* atrack = Object::cast_to<AnimationTrack>(n);
     if (atrack) {
+        // Senales de la pista. KeyframeReached lo usa el Animate.lua de todos los
+        // NPC de un place (herramientas, sonidos de paso): sin ella el script moria
+        // antes de arrancar las animaciones. Las animaciones importadas no traen
+        // marcas de keyframe, asi que se acepta la conexion y no dispara: el script
+        // sigue vivo y las animaciones se reproducen igual.
+        if (strcmp(key,"KeyframeReached") == 0 || strcmp(key,"Stopped") == 0 ||
+            strcmp(key,"DidLoop") == 0 || strcmp(key,"Ended") == 0) {
+            _gl_push_inert_signal(L);
+            return 1;
+        }
         if (strcmp(key,"IsPlaying")    == 0) { lua_pushboolean(L, atrack->is_playing()); return 1; }
         if (strcmp(key,"Looped")       == 0) { lua_pushboolean(L, atrack->get_looped()); return 1; }
         if (strcmp(key,"Speed")        == 0) { lua_pushnumber(L, atrack->get_speed());   return 1; }
@@ -3321,7 +3525,9 @@ static int godot_object_index(lua_State* L) {
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
                 c->push_back({gl_main_of(LL),ref,true}); _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
-            lua_setfield(L,-2,"Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
+            return 1;
         };
         if (strcmp(key,"Ended")   == 0) return make_atrack_sig(atrack->ended_cbs);
         if (strcmp(key,"Stopped") == 0) return make_atrack_sig(atrack->stopped_cbs);
@@ -3621,7 +3827,9 @@ static int godot_object_index(lua_State* L) {
                 c->push_back({gl_main_of(LL),ref,true});
                 _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
-            lua_setfield(L,-2,"Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
+            return 1;
         };
         if (strcmp(key,"Equipped")    == 0) return make_tool_sig(rtool->equipped_cbs);
         if (strcmp(key,"Unequipped")  == 0) return make_tool_sig(rtool->unequipped_cbs);
@@ -3729,11 +3937,23 @@ static int godot_object_index(lua_State* L) {
                 lua_pushvalue(LL,2); int ref=lua_ref(LL,-1); lua_pop(LL,1);
                 c->push_back({gl_main_of(LL),ref,true}); _gl_push_connection(LL, d, ref); return 1;
             },"Connect",2);
-            lua_setfield(L,-2,"Connect"); return 1;
+            lua_setfield(L, -2, "Connect");
+            gl_signal_lowercase_aliases(L);
+            return 1;
         };
         if (strcmp(key,"InputBegan")   == 0) return make_uis_sig(uis->input_began_cbs);
         if (strcmp(key,"InputEnded")   == 0) return make_uis_sig(uis->input_ended_cbs);
         if (strcmp(key,"InputChanged") == 0) return make_uis_sig(uis->input_changed_cbs);
+        // Tactil: se reencaminan a las mismas listas (un toque es una entrada
+        // mas). Sin esto cualquier HUD con soporte movil moria al arrancar.
+        if (strcmp(key,"TouchStarted") == 0 || strcmp(key,"TouchTap") == 0 ||
+            strcmp(key,"TouchLongPress") == 0)
+            return make_uis_sig(uis->input_began_cbs);
+        if (strcmp(key,"TouchEnded") == 0) return make_uis_sig(uis->input_ended_cbs);
+        if (strcmp(key,"TouchMoved") == 0 || strcmp(key,"TouchPinch") == 0 ||
+            strcmp(key,"TouchRotate") == 0 || strcmp(key,"TouchPan") == 0 ||
+            strcmp(key,"TouchSwipe") == 0)
+            return make_uis_sig(uis->input_changed_cbs);
     }
 
     // ── CollectionService ─────────────────────────────────────────────
@@ -3829,6 +4049,13 @@ static int godot_object_index(lua_State* L) {
         return 1;
     }
 
+    // Anchored en un Node3D que no es Part (el HumanoidRootPart del rig del
+    // personaje lo es): se guarda como estado propio en vez de reventar.
+    if (strcmp(key, "Anchored") == 0 && Object::cast_to<Node3D>(n) && !gl_has_property(n, "Anchored")) {
+        lua_pushboolean(L, n->has_meta("_gl_anchored") ? (bool)n->get_meta("_gl_anchored") : 0);
+        return 1;
+    }
+
     // ── Puente genérico de lectura (solo clases nuevas con meta _gl_bridge) ──
     if (n->has_meta("_gl_bridge")) {
         if (gl_has_property(n, String(key))) {
@@ -3841,6 +4068,18 @@ static int godot_object_index(lua_State* L) {
 
     Node* child = n->get_node_or_null(NodePath(key));
     if (child) { wrap_node(L, child); return 1; }
+
+    // Roblox conserva los miembros con INICIAL MINUSCULA por compatibilidad
+    // (humanoid.died, part.brickColor, señal:connect, :findFirstChild...). Los
+    // juegos publicados hace años los siguen usando, asi que antes de dar el
+    // error se reintenta con la inicial en mayuscula. La recursion termina
+    // siempre: la clave reintentada ya empieza en mayuscula.
+    if (key[0] >= 'a' && key[0] <= 'z') {
+        const String upper = String::chr((char32_t)(key[0] - 32)) + String(key).substr(1);
+        lua_pushstring(L, upper.utf8().get_data());
+        lua_replace(L, 2);
+        return godot_object_index(L);
+    }
 
     // COMO ROBLOX: indexar un miembro que no existe es un ERROR, no nil.
     // (Para sondear sin error existen FindFirstChild / pcall, igual que alla.)
@@ -3858,6 +4097,35 @@ static int godot_object_newindex_impl(lua_State* L) {
     GodotObjectWrapper* wrapper = (GodotObjectWrapper*)lua_touserdata(L, 1);
     const char* key = luaL_checkstring(L, 2);
     if (!wrapper || !gow_node(wrapper)) return 0;
+
+    // Camera.CameraType / CameraSubject: se guardan (la camara la mueve el
+    // PlayerModule). Antes escribirlos era un error y el script moria.
+    {
+        Node* _cn = gow_node(wrapper);
+        if (Object::cast_to<Camera3D>(_cn)) {
+            if (strcmp(key, "CameraType") == 0) {
+                _cn->set_meta("_gl_camera_type", (int64_t)lua_tonumber(L, 3));
+                return 0;
+            }
+            if (strcmp(key, "CameraSubject") == 0) {
+                GodotObjectWrapper* sw = (GodotObjectWrapper*)lua_touserdata(L, 3);
+                if (sw && gow_node(sw)) _cn->set_meta("_gl_camera_subject", gow_node(sw));
+                return 0;
+            }
+        }
+    }
+
+    // Anchored sobre un Node3D que no es Part (ver la lectura mas arriba).
+    {
+        Node* _n = gow_node(wrapper);
+        if (strcmp(key, "Anchored") == 0 && Object::cast_to<Node3D>(_n) && !gl_has_property(_n, "Anchored")) {
+            const bool on = lua_toboolean(L, 3) != 0;
+            _n->set_meta("_gl_anchored", on);
+            if (PhysicsBody3D* pb = Object::cast_to<PhysicsBody3D>(_n))
+                if (RigidBody3D* rb = Object::cast_to<RigidBody3D>(pb)) rb->set_freeze_enabled(on);
+            return 0;
+        }
+    }
     Node* n = gow_node(wrapper);
 
     // Mouse.TargetFilter — subárbol que el rayo ignora (1.14.10 Finish).
@@ -4377,7 +4645,7 @@ static int godot_object_newindex_impl(lua_State* L) {
     }
     GUI_NEWINDEX_COMMON(RobloxScrollingFrame, rscroll_w)
     if (rscroll_w) {
-        if (strcmp(key,"ScrollingEnabled")==0){ rscroll_w->set_scrolling_enabled_val(lua_toboolean(L,3)!=0); return 0; }
+        if (strcmp(key,"ScrollingEnabled")==0){ rscroll_w->set_ScrollingEnabled(lua_toboolean(L,3)!=0); return 0; }
     }
     #undef GUI_NEWINDEX_COMMON
 

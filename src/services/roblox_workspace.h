@@ -90,7 +90,7 @@ private:
     // Generates the Roblox-style grid texture
     //// Genera la textura de cuadros tipo Roblox
     Ref<ImageTexture> generar_textura_grid() {
-        Ref<Image> img = Image::create(64, 64, false, Image::FORMAT_RGBA8);
+        Ref<Image> img = Image::create_empty(64, 64, false, Image::FORMAT_RGBA8);
         Color color_fondo(0.64, 0.635, 0.647);  // gris piedra medio de Roblox (RGB 163,162,165)
         Color color_linea(0.5, 0.5, 0.52);       // lineas de stud, mas oscuras para que se vean
         

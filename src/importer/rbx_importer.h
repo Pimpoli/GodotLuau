@@ -419,7 +419,56 @@ private:
         if (prop == "BorderSizePixel" && n->has_method("set_border_px")) {
             n->call("set_border_px", (int)(int64_t)val); return true;
         }
-        // Texto
+        // ── UDim2 -> metodos con 4 floats ────────────────────────────
+        // TileSize/CanvasSize/CellSize/CellPadding se guardan como UDim2 y
+        // necesitan su setter propio (no son una propiedad simple).
+        if (t == Variant::VECTOR4) {
+            Vector4 u = val;
+            struct { const char *prop; const char *method; } kU2[] = {
+                { "TileSize",    "set_gl_tile_size" },
+                { "CanvasSize",  "set_gl_canvas_size" },
+                { "CellSize",    "set_gl_cell_size" },
+                { "CellPadding", "set_gl_cell_padding" },
+            };
+            for (int i = 0; i < 4; i++)
+                if (prop == kU2[i].prop && n->has_method(kU2[i].method)) {
+                    n->call(kU2[i].method, u.x, u.y, u.z, u.w); return true;
+                }
+        }
+        // ── UDim (escala + offset) -> metodos ────────────────────────
+        // Roblox guarda UICorner.CornerRadius como los 4 radios, y el
+        // UIPadding / UIListLayout.Padding como UDim. Sin traducirlos, el
+        // redondeo y los margenes de TODA la interfaz se perdian.
+        if (t == Variant::VECTOR2) {
+            Vector2 d = val;   // (scale, offset)
+            if ((prop == "CornerRadius" || prop == "TopLeftRadius" ||
+                 prop == "TopRightRadius" || prop == "BottomLeftRadius" ||
+                 prop == "BottomRightRadius") && n->has_method("set_gl_udim")) {
+                n->call("set_gl_udim", d.x, (int)d.y); return true;
+            }
+            if (n->has_method("set_gl_pad")) {
+                int side = -1;
+                if (prop == "PaddingLeft")        side = 0;
+                else if (prop == "PaddingTop")    side = 1;
+                else if (prop == "PaddingRight")  side = 2;
+                else if (prop == "PaddingBottom") side = 3;
+                if (side >= 0) { n->call("set_gl_pad", side, d.x, (int)d.y); return true; }
+            }
+            if (prop == "Padding" && n->has_method("set_gl_padding_udim")) {
+                n->call("set_gl_padding_udim", d.x, (int)d.y); return true;
+            }
+        }
+        // FontFace llega como Dictionary {Family, Weight, Style}
+        if (prop == "FontFace" && t == Variant::DICTIONARY && n->has_method("set_FontFace")) {
+            Dictionary d = val;
+            n->call("set_FontFace", String(d.get("Family", "")));
+            return true;
+        }
+        // Texto: set_rbx_text guarda el original para que RichText pueda
+        // reprocesarlo cuando llegue esa propiedad (el orden no importa).
+        if (prop == "Text" && n->has_method("set_rbx_text")) {
+            n->call("set_rbx_text", String(val)); return true;
+        }
         if (prop == "Text" && n->has_method("set_text")) {
             n->call("set_text", String(val)); return true;
         }

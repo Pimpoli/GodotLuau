@@ -90,6 +90,8 @@ inline String map_class(const String &c) {
         m["UIPadding"] = "UIPadding";         m["UIScale"] = "UIScale";
         m["UIAspectRatioConstraint"] = "UIAspectRatioConstraint";
         m["UISizeConstraint"] = "UISizeConstraint";
+        m["UITextSizeConstraint"] = "UITextSizeConstraint";
+        m["UITableLayout"] = "UITableLayout";  m["UIFlexItem"] = "UIFlexItem";
         // Sonido
         m["Sound"] = "RobloxSound";        m["SoundGroup"] = "RobloxSoundGroup";
         // Interaccion

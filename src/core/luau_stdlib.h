@@ -114,11 +114,51 @@ Enum = {
     ApplyStrokeMode = { Contextual = 0, Border = 1 },
     AutomaticSize = { None = 0, X = 1, Y = 2, XY = 3 },
     CameraMode = { Classic = 0, LockFirstPerson = 1 },
+    CameraType = { Fixed = 0, Attach = 1, Watch = 2, Track = 3, Follow = 4,
+                   Custom = 5, Scriptable = 6, Orbital = 7 },
+    ChatVersion = { LegacyChatService = 0, TextChatService = 1 },
+    UserInputState = { Begin = 0, Change = 1, End = 2, Cancel = 3, None = 4 },
     PartType = { Block = 0, Sphere = 1, Cylinder = 2 },
     SurfaceType = { Smooth = 0, Weld = 1, Studs = 2, Inbox = 3, Hinge = 4, Motor = 5, SteppingMotor = 6 },
     MeshType = { Head = 0, Torso = 1, Wedge = 2, Prism = 3, Pyramid = 4, ParallelRamp = 5, RightAngleRamp = 6, CornerWedge = 7, Sphere = 8, Cylinder = 9, FileMesh = 10 },
     Font = { Legacy = 0, Arial = 1, ArialBold = 2, SourceSans = 3, SourceSansBold = 4, SourceSansLight = 5, SourceSansItalic = 6, Bodoni = 7, Garamond = 8, Cartoon = 9, Code = 10, Highway = 11, SciFi = 12, Arcade = 13, Fantasy = 14, Antique = 15, Gotham = 16, GothamMedium = 17, GothamBold = 18, GothamBlack = 19, Roboto = 20, RobotoCondensed = 21, RobotoMono = 22 },
-    TextXAlignment = { Left = 0, Center = 1, Right = 2 },
+    -- OJO: en Roblox el orden es Left=0, RIGHT=1, CENTER=2 (Right ANTES que
+    -- Center). Con el orden "natural" cualquier script que pidiera Center
+    -- alineaba a la derecha.
+    -- Enum.CoreGuiType: sin el, cualquier juego que apague la mochila o la lista
+    -- de jugadores de Roblox moria en su primera linea util
+    -- (StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)) y su
+    -- inventario propio se quedaba a medio montar, con la plantilla a la vista.
+    CoreGuiType = { PlayerList = 0, Health = 1, Backpack = 2, Chat = 3, All = 4,
+                    EmotesMenu = 5, SelfView = 6, Captures = 7 },
+    CoreGuiComponent = { All = 0, Backpack = 1, Chat = 2, Health = 3, PlayerList = 4 },
+    TextXAlignment = { Left = 0, Right = 1, Center = 2 },
+    TextTruncate = { None = 0, AtEnd = 1, SplitWord = 2 },
+    TextDirection = { Auto = 0, LeftToRight = 1, RightToLeft = 2 },
+    SizeConstraint = { RelativeXY = 0, RelativeXX = 1, RelativeYY = 2 },
+    BorderMode = { Outline = 0, Middle = 1, Inset = 2 },
+    StartCorner = { TopLeft = 0, TopRight = 1, BottomLeft = 2, BottomRight = 3 },
+    ScrollingDirection = { X = 1, Y = 2, XY = 4 },
+    ElasticBehavior = { WhenScrollable = 0, Always = 1, Never = 2 },
+    AutomaticCanvasSize = { None = 0, X = 1, Y = 2, XY = 3 },
+    VerticalScrollBarPosition = { Right = 0, Left = 1 },
+    ScrollBarInset = { None = 0, ScrollBar = 1, Always = 2 },
+    ResampleMode = { Default = 0, Pixelated = 1 },
+    AspectType = { FitWithinMaxSize = 0, ScaleWithParentSize = 1 },
+    DominantAxis = { Width = 0, Height = 1 },
+    TileMode = { Stretch = 0, Wrap = 1, Mirror = 2 },
+    LineJoinMode = { Round = 0, Bevel = 1, Miter = 2 },
+    UIFlexMode = { None = 0, Grow = 1, Shrink = 2, Fill = 3, Custom = 4 },
+    UIFlexAlignment = { None = 0, Fill = 1, SpaceAround = 2, SpaceBetween = 3, SpaceEvenly = 4 },
+    ItemLineAlignment = { Automatic = 0, Start = 1, Center = 2, End = 3, Stretch = 4 },
+    ScreenInsets = { None = 0, DeviceSafeInsets = 1, CoreUISafeInsets = 2, TopbarSafeInsets = 3 },
+    SafeAreaCompatibility = { None = 0, FullscreenExtension = 1 },
+    SelectionBehavior = { Escape = 0, Stop = 1 },
+    PlaybackState = { Begin = 0, Delayed = 1, Playing = 2, Paused = 3, Completed = 4, Cancelled = 5 },
+    FrameStyle = { Custom = 0, ChatBlue = 1, RobloxSquare = 2, RobloxRound = 3, ChatGreen = 4, ChatRed = 5, DropShadow = 6 },
+    ButtonStyle = { Custom = 0, RobloxButtonDefault = 1, RobloxButton = 2, RobloxRoundButton = 3, RobloxRoundDefaultButton = 4, RobloxRoundDropdownButton = 5 },
+    FontWeight = { Thin = 100, ExtraLight = 200, Light = 300, Regular = 400, Medium = 500, SemiBold = 600, Bold = 700, ExtraBold = 800, Heavy = 900 },
+    FontStyle = { Normal = 0, Italic = 1 },
     TextYAlignment = { Top = 0, Center = 1, Bottom = 2 },
     ScaleType = { Stretch = 0, Slice = 1, Tile = 2, Fit = 3, Crop = 4 },
     ZIndexBehavior = { Global = 0, Sibling = 1 },
@@ -305,24 +345,63 @@ local function _lerp_val(a, b, t)
     return t >= 1 and b or a
 end
 
+-- Senal de Lua COMPLETA (Connect/Once/Wait + los alias en minuscula que Roblox
+-- mantiene por compatibilidad + Disconnect real). Antes las senales escritas en
+-- Lua solo tenian Connect/Once, y cualquier script que hiciera
+-- `tween.Completed:Wait()` moria — es justo lo que hace la pantalla de carga de
+-- un place normal (234 errores en el place de prueba).
+function _gl_signal()
+    local cbs = {}
+    local sig = {}
+    local function add(fn, once)
+        if type(fn) ~= "function" then return { Connected = false, Disconnect = function() end } end
+        local entry = { fn = fn, once = once, alive = true }
+        table.insert(cbs, entry)
+        local conn = { Connected = true }
+        function conn:Disconnect()
+            self.Connected = false
+            entry.alive = false
+        end
+        conn.disconnect = conn.Disconnect
+        return conn
+    end
+    function sig:Connect(fn) return add(fn, false) end
+    function sig:Once(fn)    return add(fn, true) end
+    function sig:Wait()
+        local done, out = false, nil
+        add(function(...) done = true; out = table.pack(...) end, true)
+        while not done do task.wait() end
+        return table.unpack(out, 1, out.n)
+    end
+    function sig:Fire(...)
+        for i = #cbs, 1, -1 do
+            local e = cbs[i]
+            if not e.alive then
+                table.remove(cbs, i)
+            else
+                if e.once then e.alive = false; table.remove(cbs, i) end
+                task.spawn(e.fn, ...)
+            end
+        end
+    end
+    sig.connect = sig.Connect
+    sig.once    = sig.Once
+    sig.wait    = sig.Wait
+    return sig
+end
+
 local TweenService = {}
 TweenService.__index = TweenService
 
 function TweenService:Create(instance, tweenInfo, goals)
     if not instance or not tweenInfo then return nil end
 
-    local completedCbs = {}
+    local completed = _gl_signal()
     local tween = {
         PlaybackState = "Begin",
-        Completed = {
-            Connect = function(_, fn) table.insert(completedCbs, fn) end,
-            Once    = function(_, fn)
-                local conn; conn = { _fired = false }
-                table.insert(completedCbs, function()
-                    if not conn._fired then conn._fired = true; fn() end
-                end)
-            end,
-        },
+        Completed  = completed,
+        Instance   = instance,
+        TweenInfo  = tweenInfo,
         _playing   = false,
         _cancelled = false,
         _conn      = nil,
@@ -383,11 +462,15 @@ function TweenService:Create(instance, tweenInfo, goals)
                     startT  = now
                 else
                     rep += 1
-                    if rep > repeats then
+                    -- RepeatCount = -1 es INFINITO en Roblox. Antes `rep > -1`
+                    -- era cierto en la primera pasada, asi que los tweens en
+                    -- bucle (el balanceo del logo de la pantalla de carga) se
+                    -- daban por terminados de inmediato.
+                    if repeats >= 0 and rep > repeats then
                         conn:Disconnect(); self._conn = nil
                         self._playing = false
                         self.PlaybackState = "Completed"
-                        for _, fn in ipairs(completedCbs) do pcall(fn) end
+                        completed:Fire(Enum.PlaybackState.Completed)
                     else
                         forward = true
                         startT  = now
@@ -410,7 +493,17 @@ function TweenService:Create(instance, tweenInfo, goals)
         self._playing   = false
         self.PlaybackState = "Cancelled"
         if self._conn then self._conn:Disconnect(); self._conn = nil end
+        completed:Fire(Enum.PlaybackState.Cancelled)
     end
+
+    -- Un Tween es un Instance en Roblox, asi que se puede destruir. La pantalla
+    -- de carga lo usa para parar el balanceo del logo.
+    function tween:Destroy()
+        self._cancelled = true
+        self._playing   = false
+        if self._conn then self._conn:Disconnect(); self._conn = nil end
+    end
+    tween.destroy = tween.Destroy
 
     return tween
 end
@@ -1830,8 +1923,12 @@ end
 -- ══════════════════════════════════════════════════════════════════════
 ColorSequenceKeypoint = {}
 ColorSequenceKeypoint.__index = ColorSequenceKeypoint
-function ColorSequenceKeypoint.new(t, color)
-    return setmetatable({ Time=t, Color=color }, ColorSequenceKeypoint)
+-- En Roblox el campo se llama Value (no Color). Los modulos de gradientes
+-- que llevan los juegos leen keypoint.Value.R, y con el nombre viejo daba
+-- "attempt to index nil with 'R'". Se deja Color como alias.
+function ColorSequenceKeypoint.new(t, color, envelope)
+    return setmetatable({ Time=t, Value=color, Color=color, Envelope=envelope or 0 },
+                        ColorSequenceKeypoint)
 end
 
 ColorSequence = {}

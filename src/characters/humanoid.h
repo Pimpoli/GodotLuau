@@ -72,6 +72,21 @@ public:
     std::vector<LuaCallback> died_cbs;
     std::vector<LuaCallback> health_changed_cbs;
     std::vector<LuaCallback> state_changed_cbs;
+    // Senales de movimiento de Roblox. Se disparan desde _physics_process con el
+    // estado real del cuerpo, asi que Animate.lua (el script de animacion que
+    // trae cada NPC de un place importado) funciona tal cual.
+    std::vector<LuaCallback> running_cbs;
+    std::vector<LuaCallback> jumping_cbs;
+    std::vector<LuaCallback> freefalling_cbs;
+    std::vector<LuaCallback> climbing_cbs;
+    std::vector<LuaCallback> swimming_cbs;
+    std::vector<LuaCallback> gettingup_cbs;
+    std::vector<LuaCallback> seated_cbs;
+    std::vector<LuaCallback> moveto_cbs;
+    // Senales que Roblox tiene y aqui no tienen disparador propio todavia: se
+    // aceptan y guardan la conexion para que el script no muera (es lo que hace
+    // que Animate.lua llegue hasta el final y los NPC se animen).
+    std::vector<LuaCallback> other_move_cbs;
 
     // Estado de animación REAL de este personaje (1.14.17). Lo lee el
     // NetworkService para replicarlo tal cual, en vez de que cada máquina lo
@@ -88,15 +103,37 @@ public:
     void add_state_changed_callback(lua_State* main_L, int ref) {
         state_changed_cbs.push_back({main_L, ref, true});
     }
+    // add_move_signal_callback(which, ...) — 0=Running 1=Jumping 2=FreeFalling
+    // 3=Climbing 4=Swimming 5=GettingUp 6=Seated 7=MoveToFinished
+    std::vector<LuaCallback>* move_signal_list(int which) {
+        switch (which) {
+            case 0: return &running_cbs;
+            case 1: return &jumping_cbs;
+            case 2: return &freefalling_cbs;
+            case 3: return &climbing_cbs;
+            case 4: return &swimming_cbs;
+            case 5: return &gettingup_cbs;
+            case 6: return &seated_cbs;
+            case 7: return &moveto_cbs;
+            default: return &other_move_cbs;
+        }
+    }
+    void add_move_signal_callback(int which, lua_State* main_L, int ref) {
+        move_signal_list(which)->push_back({main_L, ref, true});
+    }
     void remove_callbacks_for_state(lua_State* L) {
         for (auto& cb : died_cbs)           if (cb.main_L == L) cb.active = false;
         for (auto& cb : health_changed_cbs) if (cb.main_L == L) cb.active = false;
         for (auto& cb : state_changed_cbs)  if (cb.main_L == L) cb.active = false;
+        for (int w = 0; w <= 13; w++)
+            for (auto& cb : *move_signal_list(w)) if (cb.main_L == L) cb.active = false;
     }
     void _gl_disconnect(int ref) {
         for (auto& cb : died_cbs)           if (cb.ref == ref) cb.active = false;
         for (auto& cb : health_changed_cbs) if (cb.ref == ref) cb.active = false;
         for (auto& cb : state_changed_cbs)  if (cb.ref == ref) cb.active = false;
+        for (int w = 0; w <= 13; w++)
+            for (auto& cb : *move_signal_list(w)) if (cb.ref == ref) cb.active = false;
     }
 
     static void fire_lua_died(std::vector<LuaCallback>& cbs) {
@@ -123,6 +160,24 @@ public:
                 lua_pushnumber(thread, new_state);
                 lua_pushnumber(thread, old_state);
                 gl_check_resume(thread, lua_resume(thread, nullptr, 2));
+            } else { lua_pop(cb.main_L, 1); }
+            lua_pop(cb.main_L, 1);
+        }
+    }
+
+    // Dispara una senal de movimiento con un solo argumento (velocidad para
+    // Running, booleano para Jumping/Climbing/...).
+    static void fire_lua_one(std::vector<LuaCallback>& cbs, const Variant& arg) {
+        for (int i = (int)cbs.size() - 1; i >= 0; i--) {
+            auto& cb = cbs[i];
+            if (!cb.active || !gl_state_alive(cb.main_L)) { cbs.erase(cbs.begin() + i); continue; }
+            lua_State* thread = lua_newthread(cb.main_L);
+            lua_rawgeti(cb.main_L, LUA_REGISTRYINDEX, cb.ref);
+            if (lua_isfunction(cb.main_L, -1)) {
+                lua_xmove(cb.main_L, thread, 1);
+                if (arg.get_type() == Variant::BOOL) lua_pushboolean(thread, (bool)arg);
+                else                                 lua_pushnumber(thread, (double)arg);
+                gl_check_resume(thread, lua_resume(thread, nullptr, 1));
             } else { lua_pop(cb.main_L, 1); }
             lua_pop(cb.main_L, 1);
         }
@@ -426,7 +481,8 @@ public:
 
     Ref<ImageTexture> _make_hp_texture(float ratio) {
         const int W = 100, H = 14;
-        Ref<Image> img = Image::create(W, H, false, Image::FORMAT_RGBA8);
+        Ref<Image> img = Image::create_empty(W, H, false, Image::FORMAT_RGBA8);
+        if (img.is_null() || img->is_empty()) return Ref<ImageTexture>();
         Color fill = Color(0.9f, 0.15f, 0.15f).lerp(Color(0.15f, 0.9f, 0.2f), ratio);
         Color bg(0.07f, 0.07f, 0.07f, 1.0f);
         Color border(0.0f, 0.0f, 0.0f, 1.0f);
@@ -676,6 +732,28 @@ public:
         // muñeco, y por eso el salto de otro jugador duraba más de la cuenta.
         anim_speed01  = (float)speed01;
         anim_airborne = !body->is_on_floor();
+        // Senales de Roblox: Running con la velocidad real (studs/s) cada vez que
+        // cambia de forma apreciable, y FreeFalling/Jumping al despegar y
+        // aterrizar. Es lo que consume Animate.lua para elegir la animacion.
+        //
+        // OJO: aqui solo se APUNTA lo que hay que avisar. Disparar Lua dentro del
+        // paso de fisica reventaba el motor: los manejadores crean y destruyen
+        // nodos (AnimationPlayer, tracks) y Godot no admite tocar el arbol de
+        // cuerpos a mitad del step. Se emite en _process, ya fuera del step.
+        {
+            const float spd = horiz.length();
+            if (Math::abs(spd - _last_running_speed) > 0.25f) {
+                _last_running_speed = spd;
+                _pending_running = spd;
+                _has_pending_running = true;
+            }
+            if (anim_airborne != _last_airborne) {
+                _last_airborne = anim_airborne;
+                _pending_airborne = anim_airborne;
+                _pending_jumped = anim_airborne && velocity.y > 0.1f;
+                _has_pending_air = true;
+            }
+        }
         if (anim) {
             anim->call("set_move_state", speed01, anim_airborne);
             return;
@@ -686,6 +764,34 @@ public:
     // ── Animacion de prueba: como el avatar es una malla unica sin huesos,
     //    animamos su transform (rebote al estar quieto/caminar + giro hacia
     //    la direccion de movimiento). Se restaura sola al apagar el toggle.
+    float _last_running_speed = -1.0f;
+    bool  _last_airborne = false;
+    float _pending_running = 0.0f;
+    bool  _has_pending_running = false;
+    bool  _has_pending_air = false;
+    bool  _pending_airborne = false;
+    bool  _pending_jumped = false;
+
+public:
+    // Emite las senales de movimiento pendientes FUERA del paso de fisica.
+    void _gl_flush_move_signals() {
+        if (_has_pending_running) {
+            _has_pending_running = false;
+            if (!running_cbs.empty()) fire_lua_one(running_cbs, (double)_pending_running);
+        }
+        if (_has_pending_air) {
+            _has_pending_air = false;
+            if (_pending_airborne) {
+                if (_pending_jumped && !jumping_cbs.empty()) fire_lua_one(jumping_cbs, true);
+                if (!freefalling_cbs.empty()) fire_lua_one(freefalling_cbs, true);
+            } else {
+                if (!freefalling_cbs.empty()) fire_lua_one(freefalling_cbs, false);
+                if (!gettingup_cbs.empty())   fire_lua_one(gettingup_cbs, true);
+            }
+        }
+    }
+
+private:
     float anim_time     = 0.0f;
     float anim_base_y   = 0.0f;
     bool  anim_base_set = false;
@@ -715,6 +821,11 @@ public:
         float sway = moving ? Math::sin(anim_time * freq) * 0.08f : 0.0f;
         mesh->set_rotation(Vector3(0.0f, yaw, sway));
     }
+
+public:
+    // Fuera del paso de fisica: aqui SI se puede llamar a Lua (los manejadores
+    // de Animate.lua crean y destruyen nodos).
+    void _process(double) override { _gl_flush_move_signals(); }
 };
 
 #endif // HUMANOID_H
